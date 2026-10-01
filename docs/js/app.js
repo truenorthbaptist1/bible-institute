@@ -4239,6 +4239,54 @@ function wirePersonLinks(scope) {
 }
 
 // ---------------------------------------------------------------------------
+// Site updates. When a new version of the site is published while someone
+// already has it open, offer a one-click refresh (never a forced reload —
+// they might be halfway through writing an assignment). Checks every five
+// minutes and whenever the tab comes back into view. Each check is a tiny
+// "has this file changed?" request; nothing is downloaded unless it did.
+// ---------------------------------------------------------------------------
+const SITE_UPDATE_CHECK_MS = 5 * 60 * 1000;
+let lastSiteUpdateCheck = Date.now();
+let siteUpdateShown = false;
+
+async function checkForSiteUpdate(force = false) {
+  const known = window.TNBBI_VERSIONS || {};
+  if (siteUpdateShown || !Object.keys(known).length) return;
+  if (!force && Date.now() - lastSiteUpdateCheck < SITE_UPDATE_CHECK_MS) return;
+  lastSiteUpdateCheck = Date.now();
+  try {
+    const changed = await Promise.all(Object.keys(known).map(async (url) => {
+      if (!known[url]) return false;
+      const r = await fetch(url, { method: "HEAD", cache: "no-cache" });
+      const v = r.headers.get("etag") || r.headers.get("last-modified") || "";
+      return r.ok && v && v !== known[url];
+    }));
+    if (changed.some(Boolean)) showSiteUpdateBar();
+  } catch (e) { /* offline for a moment — try again later */ }
+}
+
+function showSiteUpdateBar() {
+  if (siteUpdateShown) return;
+  siteUpdateShown = true;
+  const bar = document.createElement("div");
+  bar.className = "site-update-bar";
+  bar.setAttribute("role", "status");
+  bar.innerHTML = `<span>The Institute site has been updated.</span><button class="btn btn-gold btn-sm" id="siteUpdateBtn">Refresh Now</button><button class="site-update-later" id="siteUpdateLater" aria-label="Remind me later">Later</button>`;
+  document.body.appendChild(bar);
+  document.getElementById("siteUpdateBtn").addEventListener("click", () => location.reload());
+  document.getElementById("siteUpdateLater").addEventListener("click", () => {
+    bar.remove();
+    // Ask again in half an hour.
+    setTimeout(() => { siteUpdateShown = false; checkForSiteUpdate(true); }, 30 * 60 * 1000);
+  });
+}
+
+setInterval(() => { if (document.visibilityState === "visible") checkForSiteUpdate(); }, 60 * 1000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && Date.now() - lastSiteUpdateCheck > 60 * 1000) checkForSiteUpdate(true);
+});
+
+// ---------------------------------------------------------------------------
 // Start-up: wait for Supabase to tell us whether someone is signed in
 // (including returning from Google, an email confirmation link, or a
 // password-reset link), then show the right screen.

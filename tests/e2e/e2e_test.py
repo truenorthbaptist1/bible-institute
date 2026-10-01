@@ -412,6 +412,19 @@ with sync_playwright() as p:
     check(overflow <= 1, f"My Profile fits a phone (overflow {overflow}px)")
     phone.screenshot(path=f"{SHOTS}/12-phone-profile.png", full_page=True)
 
+    print("15b. Updates reach people without a hard refresh")
+    check(len(admin.evaluate("Object.keys(window.TNBBI_VERSIONS || {})")) == 6, "every site file was version-checked on load")
+    check(admin.locator(".site-update-bar").count() == 0, "no update notice when nothing changed")
+    admin.evaluate("checkForSiteUpdate(true)"); admin.wait_for_timeout(500)
+    check(admin.locator(".site-update-bar").count() == 0, "…still none after a check")
+    t = time.time() + 120
+    os.utime(os.path.join(HERE, "..", "..", "docs", "js", "app.js"), (t, t))
+    admin.evaluate("checkForSiteUpdate(true)"); admin.wait_for_selector(".site-update-bar", timeout=5000)
+    check("has been updated" in admin.inner_text(".site-update-bar"), "an open tab is told when a new version is published")
+    admin.screenshot(path=f"{SHOTS}/13-update-bar.png")
+    admin.click("#siteUpdateBtn"); admin.wait_for_selector("#main .page-header", timeout=15000); settle(admin)
+    check(admin.locator(".site-update-bar").count() == 0 and "Welcome Professor" in body(admin), "Refresh Now reloads into the new version, still signed in")
+
     print("16. Sign out")
     admin.click("#logoutBtn"); admin.wait_for_selector("#signinForm")
     check(admin.locator("#signinForm").count() == 1, "Log Out returns to the sign-in screen")

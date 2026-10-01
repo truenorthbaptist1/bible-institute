@@ -548,3 +548,8 @@ input[type="tel"] { width: 100%; padding: 11px 16px; border: 1px solid var(--bor
   .profile-nudge { flex-wrap: wrap; }
   .account-me .account-name { display: none; }
 }
+
+/* "The site has been updated" bar (shown to people who already had it open) */
+.site-update-bar { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 12px; background: var(--primary); color: #fff; padding: 10px 12px 10px 20px; border-radius: 999px; box-shadow: var(--shadow-lg); font-size: 0.9rem; max-width: calc(100vw - 32px); flex-wrap: wrap; justify-content: center; }
+.site-update-later { background: none; border: none; color: #c9d4e3; font: inherit; font-size: 0.85rem; cursor: pointer; padding: 6px 8px; }
+.site-update-later:hover { color: #fff; }
