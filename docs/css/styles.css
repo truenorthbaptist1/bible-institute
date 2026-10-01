@@ -479,3 +479,72 @@ body.is-busy::after { content: ""; position: fixed; top: 0; left: 0; height: 3px
 /* Header account area: keep the bell a proper round icon, and names in normal case */
 .role-pills .icon-btn { padding: 0; width: 34px; height: 34px; border-radius: 999px; flex-shrink: 0; }
 .role-pills .account-name { text-transform: none; letter-spacing: 0; font-size: 0.88rem; color: #fff; }
+
+/* ==========================================================================
+   Profiles — photos, My Profile page, person cards (Oct 2026)
+   ========================================================================== */
+.avatar { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 999px; overflow: hidden; background: var(--muted); box-shadow: 0 0 0 2px var(--card), 0 0 0 3px var(--border); vertical-align: middle; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar-initials { background: var(--primary); color: #f4e9cf; font-family: "Source Serif 4", Georgia, serif; font-weight: 700; letter-spacing: 0.02em; line-height: 1; }
+.avatar-xl { box-shadow: 0 0 0 4px var(--card), 0 0 0 6px var(--gold); }
+
+/* Top nav: your photo + name opens your profile */
+.account-me { display: inline-flex; align-items: center; gap: 8px; background: transparent; border: none; padding: 2px 10px 2px 2px; border-radius: 999px; cursor: pointer; font-family: inherit; color: #fff; }
+.role-pills .account-me { border: none; padding: 2px 10px 2px 2px; }
+.account-me:hover { background: rgba(255,255,255,0.10); }
+.account-me:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.account-me .avatar { box-shadow: 0 0 0 2px rgba(255,255,255,0.35); }
+.account-me .avatar-initials { background: var(--gold); color: #1a1206; }
+.role-pills .account-me span.avatar { color: #1a1206; text-transform: none; letter-spacing: 0; font-size: inherit; }
+
+/* My Profile page */
+.profile-hero { display: flex; gap: 28px; align-items: center; padding: 28px; background:
+  linear-gradient(135deg, color-mix(in srgb, var(--gold) 9%, var(--card)) 0%, var(--card) 55%); }
+.profile-photo-col { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.profile-photo-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.profile-id-col { min-width: 0; flex: 1; }
+.profile-name { font-family: "Source Serif 4", Georgia, serif; font-size: 1.6rem; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.profile-pills { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 12px; }
+.profile-email { display: flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 0.9rem; overflow-wrap: anywhere; }
+.profile-email svg { width: 16px; height: 16px; flex-shrink: 0; }
+.profile-verse { margin: 16px 0 0; padding-left: 14px; border-left: 3px solid var(--gold); font-family: "Source Serif 4", Georgia, serif; font-style: italic; color: var(--muted-foreground); font-size: 0.92rem; }
+.profile-verse span { font-style: normal; font-family: "Figtree", sans-serif; font-size: 0.8rem; white-space: nowrap; }
+.char-count { text-align: right; font-size: 0.75rem; color: var(--muted-foreground); margin-top: 4px; }
+.privacy-note { display: flex; gap: 10px; align-items: flex-start; background: var(--muted); border-radius: var(--radius); padding: 12px 14px; font-size: 0.84rem; color: var(--muted-foreground); margin-bottom: 6px; }
+.privacy-note svg { width: 18px; height: 18px; flex-shrink: 0; color: var(--gold); margin-top: 1px; }
+.form-row-3 { grid-template-columns: 2fr 1fr 1fr; }
+input[type="tel"] { width: 100%; padding: 11px 16px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.95rem; font-family: inherit; background: var(--surface); color: var(--foreground); }
+
+/* Dashboard invitation to fill in a profile */
+.profile-nudge { display: flex; align-items: center; gap: 14px; background: var(--card); border: 1px solid var(--gold-light); border-left: 4px solid var(--gold); border-radius: var(--radius-lg); padding: 14px 18px; margin-bottom: 22px; box-shadow: var(--shadow); font-size: 0.9rem; }
+.profile-nudge > div { flex: 1; }
+
+/* Photo cropper */
+.crop-frame { position: relative; margin: 0 auto; overflow: hidden; border-radius: var(--radius); background: #0c1420; cursor: grab; touch-action: none; user-select: none; }
+.crop-frame.dragging { cursor: grabbing; }
+.crop-frame img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; }
+.crop-ring { position: absolute; inset: 0; border-radius: 999px; box-shadow: 0 0 0 999px rgba(12,20,32,0.55); outline: 2px solid rgba(255,255,255,0.85); outline-offset: -2px; pointer-events: none; }
+.crop-zoom { width: 100%; accent-color: var(--gold); }
+
+/* People: clickable names and photos */
+.person-chip, .avatar-btn, .name-link { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+.person-chip { display: inline-flex; align-items: center; gap: 10px; border-radius: 999px; }
+.person-chip:hover strong, .name-link:hover { text-decoration: underline; text-decoration-color: var(--gold); text-underline-offset: 3px; }
+.person-chip:focus-visible, .avatar-btn:focus-visible, .name-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 999px; }
+.name-link { font-weight: 600; }
+.post-author { display: flex; align-items: center; flex-wrap: wrap; }
+.user-info-avatar { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.person-card-head { display: flex; align-items: center; gap: 18px; margin-bottom: 8px; }
+.person-line { padding: 12px 0; border-top: 1px solid var(--border); font-size: 0.92rem; overflow-wrap: anywhere; }
+.person-line:first-of-type { margin-top: 10px; }
+.person-label { display: block; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); margin-bottom: 3px; }
+
+@media (max-width: 640px) {
+  .profile-hero { flex-direction: column; text-align: center; padding: 24px 18px; }
+  .profile-pills, .profile-email { justify-content: center; }
+  .profile-verse { text-align: left; }
+  .form-row-3 { grid-template-columns: 1fr 1fr; column-gap: 12px; }
+  .form-row-3 > div:first-child { grid-column: 1 / -1; }
+  .profile-nudge { flex-wrap: wrap; }
+  .account-me .account-name { display: none; }
+}

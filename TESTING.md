@@ -2,6 +2,8 @@
 
 ## Already verified (before hand-off)
 
+_Oct 2026 update: with My Profile added, the database check is now 109/109 and the browser run covers profiles, photos, and who can see what._
+
 **Database privacy rules — 88 automated checks, all passing** (`tests/db/`).
 The schema was loaded into a real PostgreSQL database and each rule was tested
 by acting as specific people. Highlights:
@@ -45,6 +47,11 @@ these need real people on the real test site:
    the local test couldn't fully reproduce).
 5. **Phones and tablets** — iPhone Safari, Android Chrome, an older iPad.
 6. **Slow internet** — try it on a weak connection.
+7. **Profile photos** (added Oct 2026) — on an iPhone, tap *Add a Photo* and
+   choose from the photo library *and* take a new picture; repeat on Android.
+   Drag/zoom in the round frame, save, and confirm the photo shows in the top
+   bar and beside discussion replies on another person's screen. Then delete
+   a test account that has a photo and confirm no error.
 
 The printable **Pre-Launch Test Checklist** (shared in our conversation)
 walks through these with pass/fail boxes.

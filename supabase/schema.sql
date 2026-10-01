@@ -34,6 +34,25 @@ create table if not exists public.profiles (
   created_at  timestamptz not null default now()
 );
 
+-- Profile details each person fills in on their own My Profile page.
+-- (Added Oct 2026. "add column if not exists" makes this safe to re-run.)
+--   Seen by: the person themself and faculty — everything.
+--            classmates and other students — only name, photo, home church,
+--            and "about me" (through visible_people() below). Never phone,
+--            address, or email.
+alter table public.profiles
+  add column if not exists phone        text not null default '' check (length(phone) <= 40),
+  add column if not exists address_line text not null default '' check (length(address_line) <= 200),
+  add column if not exists city         text not null default '' check (length(city) <= 80),
+  add column if not exists state        text not null default '' check (length(state) <= 40),
+  add column if not exists postal_code  text not null default '' check (length(postal_code) <= 20),
+  add column if not exists home_church  text not null default '' check (length(home_church) <= 120),
+  add column if not exists bio          text not null default '' check (length(bio) <= 1000),
+  -- The photo's path inside the private "avatars" storage bucket. It must
+  -- sit in the person's own folder (<their id>/...), so nobody can point
+  -- their profile at someone else's picture.
+  add column if not exists avatar_path  text check (avatar_path is null or avatar_path like (id::text || '/%'));
+
 create table if not exists public.courses (
   id          text primary key default ('c_' || replace(gen_random_uuid()::text, '-', '')),
   title       text not null check (length(trim(title)) > 0),
@@ -209,24 +228,34 @@ language sql stable security definer set search_path = public as $$
   select exists (select 1 from messages where course_id = p_course and student_id = auth.uid())
 $$;
 
--- Names (never emails) of the people a student can legitimately see:
--- every faculty member, plus classmates in a shared course (so discussion
--- replies show who wrote them). Faculty see everyone.
-create or replace function public.visible_people()
-returns table (id uuid, name text, role text, super_admin boolean)
+-- Can the signed-in person see this other person at all? Faculty see
+-- everyone; everyone sees themself and every faculty member; students also
+-- see classmates who share a course with them (so discussion replies show
+-- who wrote them). Used for names, profile photos, and "about me".
+create or replace function public.can_see_person(p_id uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select p.id, p.name, p.role, p.super_admin
-  from profiles p
-  where public.is_active_user() and (
+  select public.is_active_user() and (
     public.is_faculty()
-    or p.id = auth.uid()
-    or p.role = 'faculty'
+    or p_id = auth.uid()
+    or exists (select 1 from profiles where id = p_id and role = 'faculty')
     or exists (
       select 1 from enrollments e1
       join enrollments e2 on e1.course_id = e2.course_id
-      where e1.student_id = auth.uid() and e2.student_id = p.id
+      where e1.student_id = auth.uid() and e2.student_id = p_id
     )
   )
+$$;
+
+-- The public-facing part of everyone a person can see: name, role, photo,
+-- home church, and "about me". Never email, phone, or address.
+drop function if exists public.visible_people();
+create or replace function public.visible_people()
+returns table (id uuid, name text, role text, super_admin boolean,
+               avatar_path text, home_church text, bio text)
+language sql stable security definer set search_path = public as $$
+  select p.id, p.name, p.role, p.super_admin, p.avatar_path, p.home_church, p.bio
+  from profiles p
+  where public.can_see_person(p.id)
 $$;
 
 -- ---------------------------------------------------------------------------
@@ -643,9 +672,10 @@ create policy hl_insert on public.bible_highlights for insert to authenticated w
 create policy hl_delete on public.bible_highlights for delete to authenticated using (user_id = auth.uid());
 
 -- ---------------------------------------------------------------------------
--- File storage: two private buckets with size and type limits.
+-- File storage: three private buckets with size and type limits.
 --   materials/<course_id>/<file>                         (faculty upload)
 --   submissions/<course_id>/<assignment_id>/<student_id>/<file>
+--   avatars/<user_id>/<file>                             (profile photos)
 -- ---------------------------------------------------------------------------
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
@@ -664,7 +694,10 @@ values
      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
      'application/vnd.oasis.opendocument.text','application/rtf','text/plain',
      'image/jpeg','image/png','image/webp','image/gif','image/heic','image/heif',
-     'audio/mpeg','audio/mp4','audio/x-m4a'])
+     'audio/mpeg','audio/mp4','audio/x-m4a']),
+  -- Profile photos. The site shrinks every photo to a small square JPEG
+  -- before uploading, so 2 MB is generous.
+  ('avatars', 'avatars', false, 2097152, array['image/jpeg','image/png','image/webp'])
 on conflict (id) do update
   set public = excluded.public,
       file_size_limit = excluded.file_size_limit,
@@ -677,6 +710,10 @@ drop policy if exists tnbbi_subs_read        on storage.objects;
 drop policy if exists tnbbi_subs_insert      on storage.objects;
 drop policy if exists tnbbi_subs_update      on storage.objects;
 drop policy if exists tnbbi_subs_delete      on storage.objects;
+drop policy if exists tnbbi_avatars_read     on storage.objects;
+drop policy if exists tnbbi_avatars_insert   on storage.objects;
+drop policy if exists tnbbi_avatars_update   on storage.objects;
+drop policy if exists tnbbi_avatars_delete   on storage.objects;
 
 create policy tnbbi_materials_read on storage.objects for select to authenticated
   using (bucket_id = 'materials' and (public.is_faculty() or public.is_enrolled((storage.foldername(name))[1])));
@@ -697,6 +734,26 @@ create policy tnbbi_subs_update on storage.objects for update to authenticated
 create policy tnbbi_subs_delete on storage.objects for delete to authenticated
   using (bucket_id = 'submissions' and (public.is_faculty() or (storage.foldername(name))[3] = auth.uid()::text));
 
+-- Profile photos: you can see the photo of anyone you can see by name.
+-- You manage your own; faculty can also add or remove anyone's (e.g. to
+-- help someone who isn't comfortable with uploads, or take one down).
+create or replace function public.avatar_owner(p_name text) returns uuid
+language sql stable as $$
+  select case when (storage.foldername(p_name))[1] ~ '^[0-9a-f-]{36}$'
+              then ((storage.foldername(p_name))[1])::uuid end
+$$;
+create policy tnbbi_avatars_read on storage.objects for select to authenticated
+  using (bucket_id = 'avatars' and public.can_see_person(public.avatar_owner(name)));
+create policy tnbbi_avatars_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'avatars' and public.is_active_user()
+    and (public.avatar_owner(name) = auth.uid() or public.is_faculty()));
+create policy tnbbi_avatars_update on storage.objects for update to authenticated
+  using (bucket_id = 'avatars' and public.is_active_user()
+    and (public.avatar_owner(name) = auth.uid() or public.is_faculty()));
+create policy tnbbi_avatars_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'avatars' and public.is_active_user()
+    and (public.avatar_owner(name) = auth.uid() or public.is_faculty()));
+
 -- ---------------------------------------------------------------------------
 -- Function permissions: signed-in users only.
 -- ---------------------------------------------------------------------------
@@ -706,12 +763,14 @@ revoke execute on function public.approve_enrollment(text, uuid) from public, an
 revoke execute on function public.deny_enrollment(text, uuid, text) from public, anon;
 revoke execute on function public.mark_thread_read(text, uuid) from public, anon;
 revoke execute on function public.visible_people() from public, anon;
+revoke execute on function public.can_see_person(uuid) from public, anon;
 grant execute on function public.claim_bootstrap_super_admin() to authenticated;
 grant execute on function public.delete_user(uuid) to authenticated;
 grant execute on function public.approve_enrollment(text, uuid) to authenticated;
 grant execute on function public.deny_enrollment(text, uuid, text) to authenticated;
 grant execute on function public.mark_thread_read(text, uuid) to authenticated;
 grant execute on function public.visible_people() to authenticated;
+grant execute on function public.can_see_person(uuid) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Table access for signed-in users. This only opens the door; the Row Level

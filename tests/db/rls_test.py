@@ -237,6 +237,50 @@ check("Students cannot upload course materials", False,
 check("Faculty can open every submission file", True,
       "select count(*) from storage.objects where bucket_id = 'submissions'", phil, expect_out=2)
 
+# --- profiles & profile photos ---------------------------------------------------------------
+check("A student can fill in their own profile details", True,
+      f"update public.profiles set phone = '907-555-0101', city = 'Moose Creek', home_church = 'True North Baptist', bio = 'Saved 2019.' where id = '{stu1}'", stu1)
+check("A student's edit to a classmate's profile changes nothing", True,
+      f"update public.profiles set bio = 'hacked' where id = '{stu2}'; select 1", stu1, expect_out=1)
+check("…the classmate's profile is unchanged", True, f"select bio from public.profiles where id = '{stu2}'", phil, expect_out="")
+check("A profile can't point at someone else's photo", False,
+      f"update public.profiles set avatar_path = '{stu2}/me.jpg' where id = '{stu1}'", stu1)
+check("A profile can point at a photo in its own folder", True,
+      f"update public.profiles set avatar_path = '{stu1}/me.jpg' where id = '{stu1}'", stu1)
+check("Overlong 'about me' is refused", False,
+      f"update public.profiles set bio = repeat('x', 1001) where id = '{stu1}'", stu1)
+check("Faculty can update a student's profile details (helping someone)", True,
+      f"update public.profiles set phone = '907-555-0199' where id = '{stu2}'", phil)
+check("Classmates see name, photo, church and about-me…", True,
+      f"select home_church || '|' || bio || '|' || avatar_path from public.visible_people() where id = '{stu1}'", stu2,
+      expect_out=f"True North Baptist|Saved 2019.|{stu1}/me.jpg")
+check("…but never phone or address (still no access to the profile row)", True,
+      f"select count(*) from public.profiles where id = '{stu1}'", stu2, expect_out=0)
+check("A student outside the class can't see the classmate at all", True,
+      f"select count(*) from public.visible_people() where id = '{stu1}'", stu3, expect_out=0)
+check("Faculty see a student's phone", True,
+      f"select phone from public.profiles where id = '{stu1}'", phil, expect_out="907-555-0101")
+check("Student uploads a photo into their own avatar folder", True,
+      f"insert into storage.objects (bucket_id, name) values ('avatars', '{stu1}/me.jpg')", stu1)
+check("Student cannot upload a photo into someone else's folder", False,
+      f"insert into storage.objects (bucket_id, name) values ('avatars', '{stu2}/fake.jpg')", stu1)
+check("Student cannot upload a photo with a malformed path", False,
+      "insert into storage.objects (bucket_id, name) values ('avatars', 'nope/fake.jpg')", stu1)
+admin(f"insert into storage.objects (bucket_id, name) values ('avatars', '{stu3}/d.jpg'), ('avatars', '{phil}/p.jpg')")
+check("Classmate sees the photo; outsider's and own-folder rules hold", True,
+      "select count(*) from storage.objects where bucket_id = 'avatars'", stu2, expect_out=2)
+check("Outsider sees only faculty photos and their own", True,
+      "select count(*) from storage.objects where bucket_id = 'avatars'", stu3, expect_out=2)
+check("Student cannot delete a classmate's photo", True,
+      f"delete from storage.objects where bucket_id = 'avatars' and name = '{stu1}/me.jpg'; select 1", stu2, expect_out=1)
+check("…it's still there", True, f"select count(*) from storage.objects where name = '{stu1}/me.jpg'", phil, expect_out=1)
+check("Faculty can remove anyone's photo", True,
+      f"delete from storage.objects where bucket_id = 'avatars' and name = '{stu3}/d.jpg'; select count(*) from storage.objects where name = '{stu3}/d.jpg'", phil, expect_out=0)
+check("Inactive accounts can't upload photos", False,
+      f"insert into storage.objects (bucket_id, name) values ('avatars', '{stu4}/x.jpg')", stu4)
+check("Signed-out visitors can't list profile photos", True,
+      "select count(*) from storage.objects where bucket_id = 'avatars'", None, expect_out=0, role="anon")
+
 # --- archive & delete ----------------------------------------------------------------------
 admin("update public.courses set archived = true where id = 'c1'")
 check("Archived course: its assignments disappear for students", True,

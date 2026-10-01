@@ -24,6 +24,7 @@ function icon(name) {
     calendar: '<rect x="3" y="4.5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/>',
     bell: '<path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 7H4c0-1 2-2 2-7Z"/><path d="M10 19a2 2 0 0 0 4 0"/>',
     lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+    user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
     bible: '<path d="M12 4.5c-2.2-1.2-5-1.6-8-1v15c3 0 5.8.4 8 1.6M12 4.5c2.2-1.2 5-1.6 8-1v15c-3 0-5.8.4-8 1.6M12 4.5v16"/>',
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${icons[name] || icons.note}</svg>`;
@@ -691,12 +692,16 @@ function renderAccountPill() {
   if (!currentUser) { el.innerHTML = ""; return; }
   el.innerHTML = `
     <div class="notif-wrap" id="notifBellWrap"></div>
-    <span class="account-name">${esc(currentUser.name)}</span>
+    <button class="account-me" id="myProfileBtn" title="My Profile" aria-label="My Profile — ${esc(currentUser.name)}">
+      ${avatarHtml(users.find((u) => u.id === currentUser.id) || currentUser, 32)}
+      <span class="account-name">${esc(currentUser.name)}</span>
+    </button>
     <span class="pill ${currentUser.role === "faculty" ? "pill-gold" : "pill-navy"}" style="background:transparent;border:1px solid rgba(255,255,255,0.35);color:#dbe2ee;">${currentUser.role === "faculty" ? "Faculty/Admin" : "Student"}</span>
     ${currentUser.superAdmin ? `<span class="pill pill-gold" title="Super Admin">★ Super Admin</span>` : ""}
     <button id="logoutBtn">Log Out</button>
   `;
   document.getElementById("logoutBtn").addEventListener("click", () => signOut());
+  document.getElementById("myProfileBtn").addEventListener("click", () => openProfile());
   renderNotifBell();
 }
 
@@ -710,15 +715,15 @@ function renderNav() {
   const items = [{ key: "home", label: "Dashboard" }, { key: "calendar", label: "Calendar" }, { key: "studyBible", label: "Study Bible" }, { key: "resourceLibrary", label: "Resource Library" }];
   const homeViews =
     role === "student"
-      ? ["home", "courses", "course", "grades", "messages", "messageThread", "submit", "discussion", "discussionBoard"]
-      : ["home", "catalogue", "manage", "grading", "gradeSheet", "discussion", "discussionBoard", "messages", "messageThread", "settings"];
+      ? ["home", "courses", "course", "grades", "messages", "messageThread", "submit", "discussion", "discussionBoard", "profile"]
+      : ["home", "catalogue", "manage", "grading", "gradeSheet", "discussion", "discussionBoard", "messages", "messageThread", "settings", "profile"];
   nav.innerHTML = items
     .map((i) => {
       const active = i.key === "home" ? homeViews.includes(view) : view === i.key;
       return `<button data-view="${i.key}" class="${active ? "active" : ""}">${i.label}</button>`;
     })
     .join("");
-  nav.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { view = "home"; activeCourseId = null; if (b.dataset.view !== "home") view = b.dataset.view; renderNav(); renderMain(); }));
+  nav.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { view = "home"; activeCourseId = null; profileUserId = null; if (b.dataset.view !== "home") view = b.dataset.view; renderNav(); renderMain(); }));
 }
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
@@ -781,6 +786,7 @@ function renderView() {
   if (view === "catalogue") return renderCatalogue(main);
   if (view === "grading") return renderGrading(main);
   if (view === "gradeSheet") return renderGradeSheet(main);
+  if (view === "profile") return renderProfile(main);
   if (view === "settings") return Date.now() - dataLoadedAt < 1500 ? renderSettings(main) : withFreshData(() => renderSettings(main));
 }
 
@@ -794,6 +800,7 @@ function renderDashboard(main) {
     { key: "submit", i: "upload", label: "Submit Work", desc: "Turn in worksheets and papers" },
     { key: "discussion", i: "chat", label: "Discussion Board", desc: "Talk with your classmates" },
     { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
+    { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and About me" },
   ];
   const unread = unreadMessageCount();
   main.innerHTML = `
@@ -801,6 +808,7 @@ function renderDashboard(main) {
       <div class="eyebrow">Student Dashboard</div>
       <h1>Welcome to the Institute</h1>
     </div>
+    ${profileNudge()}
     <div class="grid">
       ${tiles
         .map(
@@ -816,10 +824,11 @@ function renderDashboard(main) {
     </div>
   `;
   main.querySelectorAll("[data-goto]").forEach((el) => {
-    const open = () => { view = el.dataset.goto; renderNav(); renderMain(); };
+    const open = () => { if (el.dataset.goto === "profile") return openProfile(); view = el.dataset.goto; renderNav(); renderMain(); };
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   });
+  wireProfileNudge();
 }
 
 function renderPlaceholder(main, title, iconName, message) {
@@ -973,7 +982,8 @@ function renderFacultyHome(main) {
     { key: "discussion", i: "chat", label: "Discussion Board", desc: "Moderate class discussions" },
     { key: "messages", i: "mail", label: "Message Inbox", desc: "Messages from students" },
     { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
-    { key: "settings", i: "gear", label: "Settings", desc: "Account and preferences" },
+    { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and About me" },
+    { key: "settings", i: "gear", label: "Settings", desc: "Users, roles, and Super Admins" },
   ];
   const unread = unreadMessageCount();
   const pendingEnroll = pendingEnrollmentCount();
@@ -982,6 +992,7 @@ function renderFacultyHome(main) {
       <div class="eyebrow">Faculty &amp; Admin</div>
       <h1>Welcome Professor</h1>
     </div>
+    ${profileNudge()}
     <div class="grid">
       ${tiles
         .map(
@@ -998,10 +1009,11 @@ function renderFacultyHome(main) {
     </div>
   `;
   main.querySelectorAll("[data-goto]").forEach((el) => {
-    const open = () => { view = el.dataset.goto; renderNav(); renderMain(); };
+    const open = () => { if (el.dataset.goto === "profile") return openProfile(); view = el.dataset.goto; renderNav(); renderMain(); };
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   });
+  wireProfileNudge();
 }
 
 // Course Builder now lives inside the Catalogue as a modal — "+ Add
@@ -2302,7 +2314,7 @@ function renderDiscussionPosts(c) {
       (p) => `
     <div class="card discussion-post">
       <div class="discussion-post-head">
-        <div><strong>${esc(userName(p.authorId))}</strong>${roleTag(p.authorId)}</div>
+        <div class="post-author">${personChip(p.authorId, 34)}${roleTag(p.authorId)}</div>
         <div>
           <span style="font-size:.78rem;color:var(--muted-foreground);">${parseDay(p.postedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>
           ${role === "faculty" ? `<button class="btn btn-ghost btn-sm" data-delete-post="${p.id}" style="margin-left:8px;">Delete</button>` : ""}
@@ -2316,7 +2328,7 @@ function renderDiscussionPosts(c) {
             (r) => `
           <div class="discussion-reply">
             <div class="discussion-post-head">
-              <div><strong>${esc(userName(r.authorId))}</strong>${roleTag(r.authorId)}</div>
+              <div class="post-author">${personChip(r.authorId, 28)}${roleTag(r.authorId)}</div>
               <div>
                 <span style="font-size:.76rem;color:var(--muted-foreground);">${parseDay(r.postedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>
                 ${role === "faculty" || r.authorId === currentStudentId ? `<button class="btn btn-ghost btn-sm" data-delete-reply="${p.id}|${r.id}" style="margin-left:8px;">Delete</button>` : ""}
@@ -2335,6 +2347,7 @@ function renderDiscussionPosts(c) {
     )
     .join("");
 
+  wirePersonLinks(wrap);
   wrap.querySelectorAll("[data-reply-btn]").forEach((btn) => {
     const pid = btn.dataset.replyBtn;
     const input = wrap.querySelector(`[data-reply-input="${pid}"]`);
@@ -3776,9 +3789,12 @@ function renderUserList() {
     .map(
       (u) => `
     <div class="user-row" data-user="${u.id}">
-      <div class="user-info">
-        <div class="u-name">${esc(u.name)}${u.superAdmin ? ` <span class="pill pill-gold" title="Super Admin">★ Super Admin</span>` : ""}</div>
+      <div class="user-info user-info-avatar">
+        <button class="avatar-btn" data-person="${u.id}" aria-label="View ${esc(u.name)}'s profile">${avatarHtml(u, 40)}</button>
+        <div>
+        <div class="u-name"><button class="name-link" data-person="${u.id}">${esc(u.name)}</button>${u.superAdmin ? ` <span class="pill pill-gold" title="Super Admin">★ Super Admin</span>` : ""}</div>
         <div class="u-email">${esc(u.email)}</div>
+        </div>
       </div>
       <div class="user-actions">
         ${
@@ -3847,6 +3863,7 @@ function renderUserList() {
   wrap.querySelectorAll("[data-delete]").forEach((btn) => {
     btn.addEventListener("click", () => openDeleteUserModal(btn.dataset.delete));
   });
+  wirePersonLinks(wrap);
 }
 
 function openDeleteUserModal(userId) {
@@ -3875,6 +3892,349 @@ function openDeleteUserModal(userId) {
       if (deletingSelf) { signOut("Your account was deleted."); return; }
       renderUserList();
     }, { success: deletingSelf ? undefined : `${u.name}'s account was deleted.` });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Profiles: every person's own details and photo.
+//
+// Who sees what (enforced by the database, not just this page):
+//   - You, and Institute faculty: everything on your profile.
+//   - Classmates and other students: your name, photo, home church, and
+//     "About me" — never your phone, address, or email.
+// Faculty can also open anyone's profile from Settings → Users & Roles and
+// fill it in for them (handy for someone who'd rather not do it online).
+// ---------------------------------------------------------------------------
+let profileUserId = null; // null = my own profile
+
+// Photo + bold name, clickable to open the person's card.
+function personChip(userId, size = 32) {
+  const u = users.find((x) => x.id === userId);
+  const name = userName(userId);
+  if (!u) return `${avatarHtml({ name }, size)}<strong>${esc(name)}</strong>`;
+  return `<button class="person-chip" data-person="${u.id}" aria-label="View ${esc(name)}'s profile">${avatarHtml(u, size)}<strong>${esc(name)}</strong></button>`;
+}
+
+// A gentle one-line invitation on the dashboard until someone has added
+// anything to their profile.
+function profileNudge() {
+  const me = users.find((u) => u.id === currentUser.id);
+  if (!profileIsSparse(me)) return "";
+  return `
+    <div class="profile-nudge">
+      ${avatarHtml(me, 40)}
+      <div><strong>Finish setting up your profile.</strong> Add a photo and a few details so your instructors and classmates know who you are.</div>
+      <button class="btn btn-gold btn-sm" id="profileNudgeBtn">Set Up Profile</button>
+    </div>`;
+}
+function wireProfileNudge() {
+  const b = document.getElementById("profileNudgeBtn");
+  if (b) b.addEventListener("click", () => openProfile());
+}
+
+function initials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "?";
+  const first = parts[0][0];
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : "";
+  return (first + last).toUpperCase();
+}
+
+// A round photo, or the person's initials on navy when there's no photo.
+function avatarHtml(u, size = 36, extraClass = "") {
+  const name = (u && u.name) || "";
+  const style = `width:${size}px;height:${size}px;font-size:${Math.max(11, Math.round(size * 0.38))}px;`;
+  if (u && u.avatarUrl) {
+    return `<span class="avatar ${extraClass}" style="${style}"><img src="${esc(u.avatarUrl)}" alt="" loading="lazy" decoding="async"></span>`;
+  }
+  return `<span class="avatar avatar-initials ${extraClass}" style="${style}" aria-hidden="true">${esc(initials(name))}</span>`;
+}
+
+function profileIsSparse(u) {
+  return !!u && !u.avatarPath && !u.phone && !u.homeChurch && !u.bio;
+}
+
+function openProfile(userId = null) {
+  closeModal();
+  profileUserId = userId && userId !== currentUser.id ? userId : null;
+  view = "profile";
+  activeCourseId = null;
+  renderNav();
+  renderMain();
+}
+
+function renderProfile(main) {
+  const editingOther = !!profileUserId && role === "faculty";
+  const u = users.find((x) => x.id === (editingOther ? profileUserId : currentUser.id));
+  if (!u) { profileUserId = null; view = "home"; renderNav(); renderMain(); return; }
+  const isSelf = u.id === currentUser.id;
+  const backLabel = editingOther ? "Back to Settings" : "Back to Dashboard";
+
+  main.innerHTML = `
+    <button class="back-link" id="backLink">&larr; ${backLabel}</button>
+    <div class="page-header">
+      <div class="eyebrow">${editingOther ? "Faculty &amp; Admin · Editing a profile" : "My Profile"}</div>
+      <h1>${editingOther ? esc(u.name) : "Your Profile"}</h1>
+    </div>
+
+    <div class="card profile-hero">
+      <div class="profile-photo-col">
+        ${avatarHtml(u, 132, "avatar-xl")}
+        <input type="file" id="avatarInput" accept="image/jpeg,image/png,image/webp,image/heic,image/heif,image/*" hidden>
+        <div class="profile-photo-actions">
+          <button class="btn btn-gold btn-sm" id="choosePhotoBtn">${u.avatarPath ? "Change Photo" : "Add a Photo"}</button>
+          ${u.avatarPath ? `<button class="btn btn-ghost btn-sm" id="removePhotoBtn">Remove</button>` : ""}
+        </div>
+      </div>
+      <div class="profile-id-col">
+        <div class="profile-name">${esc(u.name)}</div>
+        <div class="profile-pills">
+          <span class="pill ${u.role === "faculty" ? "pill-gold" : "pill-navy"}">${u.role === "faculty" ? "Faculty" : "Student"}</span>
+          ${u.superAdmin ? `<span class="pill pill-gold">★ Super Admin</span>` : ""}
+        </div>
+        <div class="profile-email">${icon("mail")}<span>${esc(u.email)}</span></div>
+        <p class="field-hint" style="margin:6px 0 0;">${isSelf ? "Your email is how you sign in, so it can't be changed here." : "Their email is how they sign in, so it can't be changed here."}</p>
+        ${u.homeChurch || u.bio ? "" : `<p class="profile-verse">“Study to shew thyself approved unto God, a workman that needeth not to be ashamed, rightly dividing the word of truth.” <span>— 2 Timothy 2:15</span></p>`}
+      </div>
+    </div>
+
+    <form id="profileForm" novalidate>
+      <div class="section-title"><h2>About ${isSelf ? "You" : esc(u.name.split(" ")[0] || "Them")}</h2></div>
+      <div class="card">
+        <label for="pfName">Full name</label>
+        <input type="text" id="pfName" maxlength="120" autocomplete="name" value="${esc(u.name)}" required>
+        <label for="pfChurch">Home church</label>
+        <input type="text" id="pfChurch" maxlength="120" placeholder="e.g. True North Baptist Church, Moose Creek" value="${esc(u.homeChurch)}">
+        <label for="pfBio">About me</label>
+        <p class="field-hint">A few words for your classmates and instructors — your testimony, your family, how you serve in your church, or what you hope to learn.</p>
+        <textarea id="pfBio" maxlength="1000" rows="5">${esc(u.bio)}</textarea>
+        <div class="char-count"><span id="pfBioCount">${u.bio.length}</span>/1000</div>
+      </div>
+
+      <div class="section-title"><h2>Contact Information</h2></div>
+      <div class="card">
+        <div class="privacy-note">${icon("lock")}<span>Only ${isSelf ? "you" : "this person"} and Institute faculty can see the phone number and address. Classmates see the name, photo, home church, and About me.</span></div>
+        <label for="pfPhone">Phone</label>
+        <input type="tel" id="pfPhone" maxlength="40" autocomplete="tel" placeholder="(907) 555-0123" value="${esc(u.phone)}">
+        <label for="pfAddress">Mailing address</label>
+        <input type="text" id="pfAddress" maxlength="200" autocomplete="street-address" placeholder="Street or PO Box" value="${esc(u.addressLine)}">
+        <div class="form-row form-row-3">
+          <div><label for="pfCity">City</label><input type="text" id="pfCity" maxlength="80" autocomplete="address-level2" value="${esc(u.city)}"></div>
+          <div><label for="pfState">State</label><input type="text" id="pfState" maxlength="40" autocomplete="address-level1" placeholder="AK" value="${esc(u.state)}"></div>
+          <div><label for="pfZip">ZIP</label><input type="text" id="pfZip" maxlength="20" autocomplete="postal-code" inputmode="numeric" value="${esc(u.postalCode)}"></div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="saveProfileBtn">Save Profile</button>
+        </div>
+      </div>
+    </form>
+  `;
+
+  document.getElementById("backLink").addEventListener("click", () => {
+    const back = editingOther ? "settings" : "home";
+    profileUserId = null;
+    view = back;
+    renderNav();
+    renderMain();
+  });
+
+  const bio = document.getElementById("pfBio");
+  bio.addEventListener("input", () => { document.getElementById("pfBioCount").textContent = bio.value.length; });
+
+  document.getElementById("profileForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const val = (id) => document.getElementById(id).value.trim();
+    const fields = {
+      name: val("pfName"), homeChurch: val("pfChurch"), bio: document.getElementById("pfBio").value.trim(),
+      phone: val("pfPhone"), addressLine: val("pfAddress"), city: val("pfCity"), state: val("pfState"), postalCode: val("pfZip"),
+    };
+    if (!fields.name) { toast("Please enter a name."); document.getElementById("pfName").focus(); return; }
+    run(() => DB.saveProfile(u.id, fields), () => { renderAccountPill(); renderMain(); }, { success: "Profile saved." });
+  });
+
+  const input = document.getElementById("avatarInput");
+  document.getElementById("choosePhotoBtn").addEventListener("click", () => input.click());
+  input.addEventListener("change", () => {
+    const file = input.files && input.files[0];
+    input.value = "";
+    if (file) openPhotoCropper(u, file);
+  });
+  const removeBtn = document.getElementById("removePhotoBtn");
+  if (removeBtn) {
+    removeBtn.addEventListener("click", () => {
+      if (!confirm(isSelf ? "Remove your profile photo?" : `Remove ${u.name}'s profile photo?`)) return;
+      run(() => DB.removeAvatar(u.id, u.avatarPath), () => { renderAccountPill(); renderMain(); }, { success: "Photo removed." });
+    });
+  }
+}
+
+// Phone photos are rarely square, so before saving, the person drags and
+// zooms the photo inside a round frame. What's inside the frame is saved as
+// a small 480×480 JPEG — sharp on any screen, and quick on slow internet.
+const AVATAR_OUTPUT_PX = 480;
+const CROP_FRAME_PX = 260;
+
+function loadImageFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => resolve({ img, url });
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("unreadable")); };
+    img.src = url;
+  });
+}
+
+async function openPhotoCropper(u, file) {
+  if (!/^image\//.test(file.type || "") && !/\.(jpe?g|png|webp|heic|heif|gif)$/i.test(file.name)) {
+    toast("Please choose a photo (JPEG or PNG).");
+    return;
+  }
+  if (file.size > 30 * 1024 * 1024) { toast("That photo is over 30 MB. Please choose a smaller one."); return; }
+  let loaded;
+  try {
+    loaded = await loadImageFile(file);
+  } catch (e) {
+    toast("This browser can't open that photo format. Please choose a JPEG or PNG photo instead.");
+    return;
+  }
+  const { img, url } = loaded;
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const minScale = CROP_FRAME_PX / Math.min(W, H); // the photo always fills the frame
+  let scale = minScale, zoom = 1;
+  let x = (CROP_FRAME_PX - W * scale) / 2, y = (CROP_FRAME_PX - H * scale) / 2;
+
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cropTitle" style="max-width:420px;">
+        <h2 id="cropTitle" style="font-size:1.15rem;">Position Your Photo</h2>
+        <p class="field-hint" style="margin:0 0 14px;">Drag to move it, and use the slider to zoom in.</p>
+        <div class="crop-frame" id="cropFrame" style="width:${CROP_FRAME_PX}px;height:${CROP_FRAME_PX}px;">
+          <img id="cropImg" src="${url}" alt="Your photo" draggable="false">
+          <div class="crop-ring" aria-hidden="true"></div>
+        </div>
+        <label for="cropZoom" style="margin-top:16px;">Zoom</label>
+        <input type="range" id="cropZoom" min="1" max="4" step="0.01" value="1" class="crop-zoom">
+        <div class="form-actions">
+          <button class="btn btn-gold" id="cropSave">Save Photo</button>
+          <button class="btn btn-ghost" id="cropCancel">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+
+  const frame = document.getElementById("cropFrame");
+  const el = document.getElementById("cropImg");
+  const clamp = () => {
+    const w = W * scale, h = H * scale;
+    x = Math.min(0, Math.max(CROP_FRAME_PX - w, x));
+    y = Math.min(0, Math.max(CROP_FRAME_PX - h, y));
+  };
+  const paint = () => {
+    clamp();
+    el.style.width = `${W * scale}px`;
+    el.style.height = `${H * scale}px`;
+    el.style.transform = `translate(${x}px, ${y}px)`;
+  };
+  paint();
+
+  let drag = null;
+  frame.addEventListener("pointerdown", (e) => {
+    drag = { px: e.clientX, py: e.clientY, x, y };
+    frame.setPointerCapture(e.pointerId);
+    frame.classList.add("dragging");
+  });
+  frame.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    x = drag.x + (e.clientX - drag.px);
+    y = drag.y + (e.clientY - drag.py);
+    paint();
+  });
+  const endDrag = () => { drag = null; frame.classList.remove("dragging"); };
+  frame.addEventListener("pointerup", endDrag);
+  frame.addEventListener("pointercancel", endDrag);
+
+  // Zoom around the centre of the frame, so what you're looking at stays put.
+  const setZoom = (z) => {
+    const c = CROP_FRAME_PX / 2;
+    const imgCx = (c - x) / scale, imgCy = (c - y) / scale;
+    zoom = z;
+    scale = minScale * zoom;
+    x = c - imgCx * scale;
+    y = c - imgCy * scale;
+    paint();
+  };
+  const slider = document.getElementById("cropZoom");
+  slider.addEventListener("input", () => setZoom(parseFloat(slider.value)));
+  frame.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const z = Math.min(4, Math.max(1, zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08)));
+    slider.value = z;
+    setZoom(z);
+  }, { passive: false });
+
+  const cleanup = () => URL.revokeObjectURL(url);
+  document.getElementById("cropCancel").addEventListener("click", () => { cleanup(); closeModal(); });
+  document.getElementById("cropSave").addEventListener("click", () => {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = AVATAR_OUTPUT_PX;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff"; // transparent PNGs get a white background, not black
+    ctx.fillRect(0, 0, AVATAR_OUTPUT_PX, AVATAR_OUTPUT_PX);
+    ctx.imageSmoothingQuality = "high";
+    const sx = -x / scale, sy = -y / scale, side = CROP_FRAME_PX / scale;
+    ctx.drawImage(img, sx, sy, side, side, 0, 0, AVATAR_OUTPUT_PX, AVATAR_OUTPUT_PX);
+    canvas.toBlob((blob) => {
+      if (!blob) { toast("Couldn't prepare that photo. Please try a different one."); return; }
+      run(async () => { await DB.setAvatar(u.id, blob, u.avatarPath); cleanup(); closeModal(); },
+        () => { renderAccountPill(); renderMain(); },
+        { success: "Photo saved." });
+    }, "image/jpeg", 0.86);
+  });
+}
+
+// A small read-only card about someone — opened by clicking a name or
+// photo. Students see only the public part; faculty also see contact
+// details and can jump to edit the profile.
+function openPersonCard(userId) {
+  const u = users.find((x) => x.id === userId);
+  if (!u) return;
+  if (u.id === currentUser.id) { openProfile(); return; }
+  const fac = role === "faculty";
+  const addr = [u.addressLine, [u.city, u.state].filter(Boolean).join(", "), u.postalCode].filter(Boolean).join(" · ");
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal person-card" role="dialog" aria-modal="true" aria-labelledby="personName" style="max-width:440px;">
+        <div class="person-card-head">
+          ${avatarHtml(u, 88)}
+          <div>
+            <h2 id="personName" style="font-size:1.25rem;margin:0 0 6px;">${esc(u.name)}</h2>
+            <span class="pill ${u.role === "faculty" ? "pill-gold" : "pill-navy"}">${u.role === "faculty" ? "Faculty" : "Student"}</span>
+          </div>
+        </div>
+        ${u.homeChurch ? `<div class="person-line"><span class="person-label">Home church</span>${esc(u.homeChurch)}</div>` : ""}
+        ${u.bio ? `<div class="person-line"><span class="person-label">About</span><p style="margin:0;white-space:pre-wrap;">${esc(u.bio)}</p></div>` : ""}
+        ${fac ? `
+          <div class="person-line"><span class="person-label">Email</span><a href="mailto:${esc(u.email)}">${esc(u.email)}</a></div>
+          ${u.phone ? `<div class="person-line"><span class="person-label">Phone</span><a href="tel:${esc(u.phone.replace(/[^\d+]/g, ""))}">${esc(u.phone)}</a></div>` : ""}
+          ${addr ? `<div class="person-line"><span class="person-label">Address</span>${esc(addr)}</div>` : ""}
+        ` : ""}
+        ${!u.homeChurch && !u.bio && !(fac && (u.phone || addr)) ? `<p class="field-hint" style="margin:16px 0 0;">${esc(u.name.split(" ")[0] || "They")} hasn't filled in a profile yet.</p>` : ""}
+        <div class="form-actions">
+          ${fac ? `<button class="btn btn-primary" id="editPersonBtn">Edit Profile</button>` : ""}
+          <button class="btn btn-ghost" id="closePersonBtn">Close</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("closePersonBtn").addEventListener("click", closeModal);
+  const edit = document.getElementById("editPersonBtn");
+  if (edit) edit.addEventListener("click", () => openProfile(u.id));
+}
+
+// Any element with data-person="<id>" opens that person's card.
+function wirePersonLinks(scope) {
+  (scope || document).querySelectorAll("[data-person]").forEach((el) => {
+    el.addEventListener("click", (e) => { e.preventDefault(); openPersonCard(el.dataset.person); });
   });
 }
 

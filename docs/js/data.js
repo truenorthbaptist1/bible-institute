@@ -86,7 +86,42 @@ function profileToUser(p) {
     status: p.status || "active",
     superAdmin: !!p.super_admin,
     createdAt: (p.created_at || "").slice(0, 10),
+    // Profile details. Students only ever receive the public part of a
+    // classmate (photo, home church, about me) — phone and address arrive
+    // only for their own profile, or for faculty.
+    phone: p.phone || "",
+    addressLine: p.address_line || "",
+    city: p.city || "",
+    state: p.state || "",
+    postalCode: p.postal_code || "",
+    homeChurch: p.home_church || "",
+    bio: p.bio || "",
+    avatarPath: p.avatar_path || null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Profile photos live in a private bucket, so each one is shown through a
+// short-lived signed link. Links are fetched in one batch and reused until
+// they're close to expiring.
+// ---------------------------------------------------------------------------
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_LINK_SECONDS = 6 * 60 * 60;
+const avatarUrlCache = {}; // path → { url, expires }
+
+async function refreshAvatarUrls(list) {
+  const now = Date.now();
+  const need = [...new Set(list.map((u) => u.avatarPath).filter(Boolean))]
+    .filter((path) => !avatarUrlCache[path] || avatarUrlCache[path].expires - now < 30 * 60 * 1000);
+  if (need.length) {
+    const { data, error } = await sb.storage.from("avatars").createSignedUrls(need, AVATAR_LINK_SECONDS);
+    if (!error && data) {
+      data.forEach((d) => {
+        if (d && d.signedUrl && !d.error) avatarUrlCache[d.path] = { url: d.signedUrl, expires: now + AVATAR_LINK_SECONDS * 1000 };
+      });
+    }
+  }
+  list.forEach((u) => { u.avatarUrl = u.avatarPath && avatarUrlCache[u.avatarPath] ? avatarUrlCache[u.avatarPath].url : null; });
 }
 
 async function fetchOwnProfile(uid) {
@@ -106,7 +141,7 @@ async function fetchOwnProfile(uid) {
 // ---------------------------------------------------------------------------
 async function loadAll() {
   const fac = currentUser.role === "faculty";
-  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people] = await Promise.all([
+  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine] = await Promise.all([
     selectAll("courses", "*", "title"),
     selectAll("enrollments", "course_id,student_id"),
     selectAll("enrollment_requests", "*", "requested_at"),
@@ -118,6 +153,8 @@ async function loadAll() {
     sb.from("notifications").select("*").order("created_at", { ascending: false }).limit(60).then(must),
     selectAll("bible_highlights", "*", "created_at"),
     fac ? selectAll("profiles", "*") : sb.rpc("visible_people").then(must),
+    // A student's own full profile (phone, address) comes from their own row.
+    fac ? null : sb.from("profiles").select("*").eq("id", currentUser.id).maybeSingle().then(must),
   ]);
 
   users = people.map((p) => profileToUser(p));
@@ -126,9 +163,17 @@ async function loadAll() {
     const me = users.find((u) => u.id === currentUser.id);
     if (me) Object.assign(me, { email: currentUser.email, status: currentUser.status, createdAt: currentUser.createdAt });
   }
+  if (mine) {
+    const me = users.find((u) => u.id === currentUser.id);
+    if (me) Object.assign(me, profileToUser(mine));
+  }
+  try { await refreshAvatarUrls(users); } catch (e) { console.warn("Profile photos:", e); }
   const meFresh = users.find((u) => u.id === currentUser.id);
   if (meFresh) {
-    Object.assign(currentUser, { name: meFresh.name, role: meFresh.role, superAdmin: meFresh.superAdmin });
+    Object.assign(currentUser, {
+      name: meFresh.name, role: meFresh.role, superAdmin: meFresh.superAdmin,
+      avatarPath: meFresh.avatarPath, avatarUrl: meFresh.avatarUrl,
+    });
     role = meFresh.role;
   }
 
@@ -346,7 +391,33 @@ const DB = {
   async updateProfile(id, patch) {
     must(await sb.from("profiles").update(patch).eq("id", id));
   },
+  async saveProfile(id, f) {
+    must(await sb.from("profiles").update({
+      name: f.name, phone: f.phone, address_line: f.addressLine, city: f.city, state: f.state,
+      postal_code: f.postalCode, home_church: f.homeChurch, bio: f.bio,
+    }).eq("id", id));
+  },
+  // `blob` is the already-cropped, already-shrunk square JPEG.
+  async setAvatar(userId, blob, oldPath) {
+    if (blob.size > AVATAR_MAX_BYTES) throw new Error("That photo is still too large after shrinking it. Try a different photo.");
+    const path = `${userId}/${newId()}.jpg`;
+    must(await sb.storage.from("avatars").upload(path, blob, { contentType: "image/jpeg", upsert: false }));
+    try {
+      must(await sb.from("profiles").update({ avatar_path: path }).eq("id", userId));
+    } catch (e) {
+      sb.storage.from("avatars").remove([path]).catch(() => {});
+      throw e;
+    }
+    if (oldPath) sb.storage.from("avatars").remove([oldPath]).catch(() => {});
+  },
+  async removeAvatar(userId, oldPath) {
+    must(await sb.from("profiles").update({ avatar_path: null }).eq("id", userId));
+    if (oldPath) sb.storage.from("avatars").remove([oldPath]).catch(() => {});
+  },
   async deleteUser(id) {
+    // Their profile photos first (best effort) — the database can't reach
+    // into file storage on its own.
+    try { await removeFolder("avatars", id); } catch (e) { console.warn("Storage cleanup:", e); }
     must(await sb.rpc("delete_user", { p_user: id }));
   },
 

@@ -8,7 +8,7 @@
 - /api/auth/*: a tiny stand-in for Supabase Auth (sign up / sign in /
   Google), creating rows in auth.users so the real triggers run.
 """
-import json, os, subprocess, sys, uuid
+import base64, json, os, subprocess, sys, uuid
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 PSQL = ["psql", "-h", "/var/tmp/pgtest", "-p", "5499", "-U", "postgres", "-d", "t", "-At", "-v", "ON_ERROR_STOP=1", "-q"]
@@ -115,11 +115,13 @@ def rpc(req):
     return {"data": {"t": True, "true": True, "f": False, "false": False}.get(out, None), "error": None}
 
 
+GOLD_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGPY0GuPFTEMLQkAOzNfAVOXhvQAAAAASUVORK5CYII="
+
 def storage(kind, req):
     b, uid = req["bucket"], req.get("uid")
     if kind == "upload":
         path = req["path"]
-        limit = {"materials": 52428800, "submissions": 26214400}[b]
+        limit = {"materials": 52428800, "submissions": 26214400, "avatars": 2097152}[b]
         if req.get("size", 0) > limit:
             return {"data": None, "error": {"message": "The object exceeded the maximum allowed size"}}
         out, err = run_sql(f"insert into storage.objects (bucket_id, name, owner) values ({lit(b)}, {lit(path)}, {lit(uid)})", uid)
@@ -142,6 +144,14 @@ def storage(kind, req):
             seen.add(head)
             items.append({"name": head, "id": None if "/" in rest else str(uuid.uuid4())})
         return {"data": items, "error": None}
+    if kind == "signmany":
+        out = []
+        for path in req["paths"]:
+            n, err = run_sql(f"select count(*) from storage.objects where bucket_id = {lit(b)} and name = {lit(path)}", uid)
+            ok = not err and n == "1"
+            out.append({"path": path, "signedUrl": f"http://localhost:{PORT}/api/file?bucket={b}&path={path}" if ok else None,
+                        "error": None if ok else "Object not found"})
+        return {"data": out, "error": None}
     if kind == "sign":
         out, err = run_sql(f"select count(*) from storage.objects where bucket_id = {lit(b)} and name = {lit(req['path'])}", uid)
         if err:
@@ -186,6 +196,15 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path.startswith("/api/file?bucket=avatars"):
+            # A tiny gold square, so profile photos render as real images.
+            body = base64.b64decode(GOLD_PNG)
+            self.send_response(200)
+            self.send_header("content-type", "image/png")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path.startswith("/api/file"):
             # Plain text so headless Chromium displays it instead of downloading.
             body = b"Test file contents\n"
