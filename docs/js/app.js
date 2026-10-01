@@ -355,6 +355,7 @@ function renderAuthScreen() {
           : authMode === "loading" ? `<p style="text-align:center;color:var(--muted-foreground);">Signing you in…</p>`
           : renderForgotSentForm()}
       </div>
+      <p class="auth-foot" style="text-align:center;margin-top:14px;"><a href="privacy.html">Privacy Policy</a></p>
     </div>`;
   wrap.querySelectorAll("[data-mode]").forEach((b) => {
     b.addEventListener("click", () => { authMode = b.dataset.mode; authError = ""; authInfo = ""; renderAuthScreen(); });

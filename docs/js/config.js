@@ -14,7 +14,7 @@ window.TNBBI_CONFIG = {
 
   // Shows a slim "Test site" banner across the top while you're testing.
   // Set to false when you go live.
-  testMode: true,
+  testMode: false,
 
   // The church's Google account — the founding Super Admin the first time it
   // signs in with Google. (The database enforces this too; this copy only
