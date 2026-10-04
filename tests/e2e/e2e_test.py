@@ -3,7 +3,7 @@
 different people at once, against the real database schema and privacy
 rules (via tests/e2e/server.py). Walks a compressed semester:
 
-  church Google account → founding Super Admin
+  church Google account → founding Admin
   students sign up → faculty enroll them, add materials + assignments
   student requests a future course → faculty approve / deny with a note
   student turns in work (editor + file) → faculty grade → student sees it
@@ -22,17 +22,8 @@ SHOTS = os.environ.get("SHOTS", os.path.join(HERE, "screenshots"))
 os.makedirs(SHOTS, exist_ok=True)
 FAKE_SB = open(os.path.join(HERE, "fake-supabase.js")).read()
 
-FAKE_PURIFY = """
-window.DOMPurify = { sanitize(html, cfg) {
-  const allowed = new Set((cfg && cfg.ALLOWED_TAGS) || []);
-  const doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
-  const walk = (node) => { [...node.childNodes].forEach((ch) => {
-    if (ch.nodeType === 1) {
-      if (!allowed.has(ch.tagName.toLowerCase())) { if (['SCRIPT','STYLE','IFRAME'].includes(ch.tagName)) ch.remove(); else { walk(ch); ch.replaceWith(...ch.childNodes); } return; }
-      [...ch.attributes].forEach((a) => ch.removeAttribute(a.name)); walk(ch);
-    } }); };
-  const root = doc.body.firstChild; walk(root); return root.innerHTML; } };
-"""
+# The real DOMPurify (the CDN isn't reachable from the test machine).
+FAKE_PURIFY = open(os.path.join(HERE, "vendor", "purify.min.js")).read()
 FAKE_JSPDF = """
 window.jspdf = { jsPDF: function () { return {
   internal: { pageSize: { getWidth: () => 612, getHeight: () => 792 } },
@@ -42,10 +33,6 @@ window.jspdf = { jsPDF: function () { return {
 """
 CONFIG = """window.TNBBI_CONFIG = { supabaseUrl: "http://localhost/fake", supabaseAnonKey: "test-key", testMode: true, bootstrapAdminEmail: "truenorthbaptist1@gmail.com" };"""
 
-JOHN3 = {"verses": [{"verse": n, "text": f"Verse {n} of the chapter.\n"} for n in range(1, 16)] + [
-    {"verse": 16, "text": "For God so loved the world, that he gave his only begotten Son, that whosoever believeth in him should not perish, but have everlasting life.\n"},
-    {"verse": 17, "text": "For God sent not his Son into the world to condemn the world; but that the world through him might be saved.\n"},
-]}
 
 failures, errors = [], []
 TODAY = datetime.date.today()
@@ -66,7 +53,6 @@ def new_page(browser, name, google_email=None, mobile=False):
     ctx.route(re.compile(r".*jspdf.*"), lambda r: r.fulfill(body=FAKE_JSPDF, content_type="application/javascript"))
     ctx.route(re.compile(r".*fonts\.(googleapis|gstatic)\.com.*"), lambda r: r.abort())
     ctx.route(re.compile(r".*/js/config\.js$"), lambda r: r.fulfill(body=CONFIG, content_type="application/javascript"))
-    ctx.route(re.compile(r"https://bible-api\.com/.*"), lambda r: r.fulfill(body=json.dumps(JOHN3), content_type="application/json"))
     page = ctx.new_page()
     page.on("pageerror", lambda e: errors.append(f"[{name}] {e}"))
     page.on("console", lambda m: m.type == "error" and "Failed to load resource" not in m.text and "ERR_FAILED" not in m.text and errors.append(f"[{name}] console: {m.text}"))
@@ -96,7 +82,7 @@ def signup(page, name, email, pw="faithful123", approve=True):
     if approve:
         approve_signup(page, name)
 
-# A Super Admin approves a waiting sign-up; the person then gets in.
+# A Admin approves a waiting sign-up; the person then gets in.
 def approve_signup(page, name):
     admin.wait_for_timeout(3200)  # let the admin's page notice the new sign-up
     nav(admin, "Dashboard"); tile(admin, "Settings")
@@ -113,7 +99,7 @@ def body(page):
 with sync_playwright() as p:
     browser = p.chromium.launch(executable_path=None)
 
-    print("1. Church Google account becomes the founding Super Admin")
+    print("1. Church Google account becomes the founding Admin")
     admin = new_page(browser, "admin", google_email="truenorthbaptist1@gmail.com")
     admin.wait_for_selector("#googleSignInBtn")
     admin.screenshot(path=f"{SHOTS}/01-sign-in.png")
@@ -124,7 +110,8 @@ with sync_playwright() as p:
         print("DEBUG body:", body(admin)[:800]); print("DEBUG errors:", errors); raise
     settle(admin)
     check("Welcome Professor" in body(admin), "lands on the Faculty dashboard")
-    check("★ super admin" in admin.inner_text("#accountPills").lower(), "shows the ★ Super Admin badge")
+    pills = admin.inner_text("#accountPills").lower()
+    check("★ admin" in pills and "faculty" not in pills and "super" not in pills, "shows a single ★ Admin badge (its highest level only)")
     admin.screenshot(path=f"{SHOTS}/02-faculty-dashboard.png")
 
     print("2. Students sign up (always as students)")
@@ -204,8 +191,43 @@ with sync_playwright() as p:
     blake.locator("li", has_text="Reading Reflection").locator("button").click()
     blake.wait_for_selector("input[name=submitMethod][value=editor]")
     blake.check("input[name=submitMethod][value=editor]")
-    blake.click("#submitEditor"); blake.keyboard.type("Ezra read distinctly and gave the sense.")
-    blake.evaluate("document.getElementById('submitEditor').innerHTML += '<img src=x onerror=\"window.__xss=1\"><script>window.__xss=2</script>'")
+    blake.wait_for_selector(".rte-page")
+    check(blake.locator(".rte-toolbar .rte-btn").count() >= 25, "the word processor has a full toolbar")
+    blake.click(".rte-page"); blake.keyboard.type("Ezra read distinctly and gave the sense.")
+    blake.keyboard.press("Enter")
+    blake.select_option(".rte-style", "h2"); blake.keyboard.type("Scripture")
+    blake.keyboard.press("Enter")
+    # Insert Scripture: by reference, as a block quotation.
+    blake.click(".rte-scripture-btn"); blake.wait_for_selector(".rte-scr-form")
+    blake.fill(".rte-scr-form input", "Neh 8:8"); blake.keyboard.press("Enter")
+    blake.wait_for_selector(".rte-scr-passage")
+    check("distinctly" in blake.inner_text(".rte-scr-passage"), "Scripture lookup shows Nehemiah 8:8 from the KJV")
+    blake.locator(".rte-scr-opts .btn", has_text="Insert").click(); blake.wait_for_timeout(200)
+    check(blake.locator(".rte-page blockquote.scripture").count() == 1 and "Nehemiah 8:8 (KJV)" in blake.inner_text(".rte-page"), "it's inserted as a block quotation with its reference")
+    # …and by words, inline.
+    blake.click(".rte-scripture-btn"); blake.wait_for_selector(".rte-scr-form")
+    blake.fill(".rte-scr-form input", "study to shew thyself approved"); blake.keyboard.press("Enter")
+    blake.wait_for_selector(".rte-scr-hit"); blake.locator(".rte-scr-hit").first.click()
+    blake.wait_for_selector(".rte-scr-passage")
+    blake.locator(".rte-seg label", has_text="In my sentence").click()
+    blake.locator(".rte-scr-opts .btn", has_text="Insert").click(); blake.wait_for_timeout(200)
+    check("(2 Timothy 2:15, KJV)" in blake.inner_text(".rte-page"), "a word search finds 2 Timothy 2:15 and inserts it inline")
+    # Footnote + table
+    blake.locator('.rte-btn[data-cmd="footnote"]').click(); blake.keyboard.type("Strong's H995."); blake.wait_for_timeout(500)
+    check(blake.locator(".rte-page ol.footnotes li").count() == 1 and blake.locator(".rte-page sup.fn-ref").inner_text() == "1", "footnotes are numbered and listed at the end")
+    blake.click(".rte-page h2"); blake.keyboard.press("End"); blake.keyboard.press("Enter")
+    blake.locator('.rte-btn[data-cmd="pop:table"]').click(); blake.locator(".rte-grid span[data-r='2'][data-c='3']").click(); blake.wait_for_timeout(200)
+    check(blake.locator(".rte-page table th").count() == 3 and blake.locator(".rte-page table td").count() == 3, "a 2×3 table with a header row is inserted")
+    blake.locator(".rte-page table td").first.click()
+    check(not blake.locator(".rte-tablebar").is_hidden(), "table tools appear when the cursor is in a table")
+    blake.locator(".rte-tablebar button", has_text="+ Row below").click()
+    check(blake.locator(".rte-page table td").count() == 6, "…and add a row")
+    blake.wait_for_timeout(1500)
+    check(blake.evaluate("Object.keys(localStorage).some(k => k.startsWith('tnbbi-draft:'))"), "the draft is kept on this device while writing")
+    words = blake.inner_text(".rte-count")
+    check("words" in words, f"word count shows ({words})")
+    blake.screenshot(path=f"{SHOTS}/05c-word-processor.png", full_page=False)
+    blake.evaluate("document.querySelector('.rte-page').innerHTML += '<img src=x onerror=\"window.__xss=1\"><script>window.__xss=2</script><a href=\"javascript:alert(1)\">x</a><p style=\"color:red;position:fixed\" onclick=\"x()\">styled</p>'")
     blake.click("#submitTurnIn"); settle(blake)
     check("submitted" in blake.inner_text("#main").lower(), "written work turned in → Submitted")
     # locked quiz
@@ -268,6 +290,12 @@ with sync_playwright() as p:
     modal = admin.inner_text(".modal")
     check("Ezra read distinctly" in modal, "faculty read the written work in the grade window")
     check(admin.evaluate("window.__xss") is None, "script hidden in student writing never runs")
+    wv = admin.locator(".modal .written-view")
+    check(wv.locator("blockquote.scripture").count() == 1 and wv.locator("table").count() == 1 and wv.locator("ol.footnotes").count() == 1 and wv.locator("h2").count() == 1,
+          "faculty see the formatting: heading, Scripture quotation, table, footnotes")
+    check(wv.locator("a[href^='javascript']").count() == 0 and wv.locator("[onclick]").count() == 0 and "position" not in (wv.locator("p", has_text="styled").get_attribute("style") or "") and "color" in (wv.locator("p", has_text="styled").get_attribute("style") or ""),
+          "unsafe links, handlers and styles are stripped; plain colors are kept")
+    admin.screenshot(path=f"{SHOTS}/08a-grading-written-work.png", full_page=False)
     admin.fill("#gradeScore", "18"); admin.fill("#gradeFeedback", "Well said — tie it back to v.8."); admin.click("#gradeSave"); settle(admin)
     admin.locator("li", has_text="Amber Amis").locator("[data-grade]").click(); admin.wait_for_selector("#gradeScore")
     check(admin.locator("#gradeOpenFile").count() == 1, "faculty can open Amber's uploaded file")
@@ -359,7 +387,7 @@ with sync_playwright() as p:
     check("editing a profile" in body(admin).lower(), "faculty can open a student's profile to edit it")
     admin.fill("#pfCity", "Moose Creek"); admin.click("#saveProfileBtn"); settle(admin)
     admin.click("#backLink"); settle(admin)
-    check("Users & Roles" in body(admin), "Back returns to Settings")
+    check("Users & Levels" in body(admin), "Back returns to Settings")
     blake.reload(); blake.wait_for_selector("#main .page-header"); settle(blake)
     blake.click("#myProfileBtn"); settle(blake)
     check(blake.input_value("#pfCity") == "Moose Creek", "Blake sees the change faculty made")
@@ -368,13 +396,36 @@ with sync_playwright() as p:
     nav(admin, "Dashboard"); tile(admin, "My Profile")
     check("Your Profile" in body(admin), "faculty have a My Profile tile too")
 
-    print("11. Study Bible: read, Strong's, highlight")
+    print("11. Study Bible: read, Strong's concordance, search, cross references, highlight")
     nav(blake, "Study Bible")
-    blake.wait_for_selector(".verse-row")
+    blake.wait_for_selector("#verse-16 .sw")
     check("John 3" in blake.inner_text("#sbReading"), "opens John 3 by default")
-    blake.locator("#verse-16 .sw").first.click(); blake.wait_for_selector(".strongs-code")
-    check("G" in blake.inner_text(".strongs-code"), "Strong's entry opens from a tagged word")
-    blake.click("#strongsClose")
+    check("everlasting life" in blake.inner_text("#verse-16"), "the full KJV text is served by the site itself")
+    blake.locator("#verse-16 .sw", has_text="loved").first.click(); blake.wait_for_selector("#sbPanel .strongs-word")
+    panel = blake.inner_text("#sbPanel")
+    check("G25" in panel and "love" in panel.lower() and "every occurrence" in panel.lower(), "tapping a word opens its Strong's entry (G25) with KJV usage")
+    blake.screenshot(path=f"{SHOTS}/07a-word-study.png", full_page=False)
+    blake.locator("#sbPanel .sn-link").first.click()
+    try: blake.wait_for_selector("#sbPanelBack", timeout=8000); ok = True
+    except Exception: ok = False
+    check(ok, "related Strong's numbers are linked, with Back")
+    if ok: blake.click("#sbPanelBack")
+    blake.wait_for_selector("#sbSeeAll")
+    blake.click("#sbSeeAll"); blake.wait_for_selector(".sb-result")
+    check(blake.locator(".sb-result").count() >= 40 and blake.locator(".sw-mark").count() >= 40, "See every occurrence lists verses with the word in bold")
+    blake.click("#sbPanelClose")
+    blake.fill("#sbQuery", "Rom 8:28"); blake.keyboard.press("Enter"); blake.wait_for_selector("#verse-28")
+    check("Romans 8" in blake.inner_text("#sbReading"), "typing a reference jumps straight to it")
+    blake.fill("#sbQuery", "\"born again\""); blake.keyboard.press("Enter"); blake.wait_for_selector(".sb-result")
+    res = blake.inner_text("#sbReading")
+    check("John 3:3" in res and "1 Peter 1:23" in res, f"phrase search finds every verse ({blake.locator('.sb-result').count()} results)")
+    blake.screenshot(path=f"{SHOTS}/07b-search.png", full_page=False)
+    blake.locator(".sb-result-ref", has_text="John 3:3").click(); blake.wait_for_selector("#verse-3")
+    blake.click("#verse-16 .verse-num")
+    blake.locator("#verse-16 [data-xref]").click(); blake.wait_for_selector(".sb-xref")
+    check(blake.locator(".sb-xref").count() >= 5, "cross references open for a verse")
+    blake.click("#sbPanelClose")
+    check(blake.locator("#verse-16 .verse-actions").is_visible(), "the verse's buttons stay open after closing cross references")
     blake.locator("#verse-16 [data-hl]").click(); settle(blake)
     blake.wait_for_selector("#verse-16.verse-highlighted")
     blake.click("#sbToggleHighlights"); blake.wait_for_timeout(300)
@@ -382,8 +433,15 @@ with sync_playwright() as p:
     blake.screenshot(path=f"{SHOTS}/07-study-bible.png", full_page=True)
     amber_hl = amber.evaluate("bibleHighlightRows.length")
     check(amber_hl == 0, "highlights are private to each person")
-    blake.select_option("#sbBook", "GEN"); blake.wait_for_selector(".verse-row")
-    check("Genesis 1" in blake.inner_text("#sbReading"), "switching books loads another chapter")
+    blake.click("#sbToggleHighlights")
+    blake.select_option("#sbBook", "PSA"); blake.wait_for_selector(".verse-row")
+    check("Psalm 1" in blake.inner_text("#sbReading"), "switching books loads another chapter")
+    blake.select_option("#sbChapter", "23"); blake.wait_for_selector(".sb-psalm-title")
+    check("A Psalm of David" in blake.inner_text(".sb-psalm-title"), "Psalm titles are shown above the psalm")
+    blake.check("#sbNumbers"); blake.wait_for_selector("sup.sn")
+    check("H7462" in blake.inner_text("#sbReading"), "Strong's numbers can be shown inline")
+    blake.uncheck("#sbNumbers")
+    blake.screenshot(path=f"{SHOTS}/07c-psalm-23.png", full_page=False)
 
     print("12. Calendar, grade sheet, resource library")
     nav(blake, "Calendar")
@@ -454,28 +512,33 @@ with sync_playwright() as p:
     check(admin.locator("#reminderCard").count() == 1, "teachers have a Class Reminders card on My Profile")
     nav(admin, "Dashboard")
 
-    print("13. Settings: promote, deactivate, Super Admins")
+    print("13. Settings: levels (Student / Faculty / Admin), deactivate")
     nav(admin, "Dashboard"); tile(admin, "Settings")
-    check("Super Admins" in body(admin), "Super Admin card visible to the Super Admin")
+    check(admin.locator(".user-row", has_text="Blake Amis").locator("button[data-level=admin]").count() == 1, "an Admin sets each person's level: Student / Faculty / Admin")
     admin.locator(".user-row", has_text="Amber Amis").locator("[data-inactive]").click(); settle(admin)
     amber.reload(); amber.wait_for_selector(".auth-error", timeout=15000)
     check("inactive" in amber.inner_text(".auth-error"), "deactivated student is signed out with an explanation")
     admin.click("#userTabs button[data-tab=inactive]")
     admin.locator(".user-row", has_text="Amber Amis").locator("[data-reactivate]").click(); settle(admin)
     admin.click("#userTabs button[data-tab=active]")
-    admin.locator(".user-row", has_text="Blake Amis").locator("button[data-role=faculty]").click(); settle(admin)
+    admin.locator(".user-row", has_text="Blake Amis").locator("button[data-level=faculty]").click(); settle(admin)
     blake.reload(); blake.wait_for_selector("#main .page-header"); settle(blake)
     check("Welcome Professor" in body(blake), "promoted user gets the Faculty dashboard")
+    bp = blake.inner_text("#accountPills").lower()
+    check("faculty" in bp and "admin" not in bp, "Faculty see a single Faculty badge")
     tile(blake, "Settings")
-    check(blake.locator("#superAdminWrap").count() == 0, "a plain faculty member does not see the Super Admin card")
-    admin.locator(".user-row", has_text="Blake Amis").locator("button[data-role=student]").click(); settle(admin)
+    check(blake.locator("[data-role-toggle]").count() == 0 and blake.locator("[data-inactive]").count() == 0 and blake.locator("[data-delete]").count() == 0,
+          "Faculty can't change levels, deactivate, or delete accounts")
+    check(blake.locator(".user-row", has_text="Amber Amis").locator(".pill", has_text="Student").count() == 1, "…they see each person's level instead")
+    blake.screenshot(path=f"{SHOTS}/13a-faculty-settings.png", full_page=False)
+    admin.locator(".user-row", has_text="Blake Amis").locator("button[data-level=student]").click(); settle(admin)
 
     print("13b. Course teachers: who sees what, hand-offs, and reassignment")
     ruth = new_page(browser, "ruth")
     ruth.wait_for_selector("#signinForm")
     signup(ruth, "Ruth Faculty", "ruth@example.com")
     nav(admin, "Dashboard"); tile(admin, "Settings")
-    admin.locator(".user-row", has_text="Ruth Faculty").locator("button[data-role=faculty]").click(); settle(admin)
+    admin.locator(".user-row", has_text="Ruth Faculty").locator("button[data-level=faculty]").click(); settle(admin)
     ruth.reload(); ruth.wait_for_selector("#main .page-header"); settle(ruth)
     check("Welcome Professor" in body(ruth), "Ruth is now faculty")
     tile(ruth, "Grading")
@@ -486,7 +549,7 @@ with sync_playwright() as p:
     check("Hermeneutics I" not in body(ruth), "…or its discussion board")
     nav(ruth, "Dashboard"); tile(ruth, "Courses")
     ruth.locator(".tile h3", has_text="Hermeneutics I").click(); ruth.wait_for_selector("#ciTitle")
-    check("Only this course's teacher or a Super Admin can change it" in ruth.inner_text(".modal"), "opening someone else's course shows a read-only summary")
+    check("Only this course's teacher or an Admin can change it" in ruth.inner_text(".modal"), "opening someone else's course shows a read-only summary")
     check(ruth.locator(".tile", has_text="Hermeneutics I").locator("[data-archive-toggle]").count() == 0, "…with no Archive button")
     ruth.keyboard.press("Escape")
     ruth.click("#catAddCourse"); ruth.wait_for_selector("#cbName")
@@ -495,20 +558,34 @@ with sync_playwright() as p:
     check(ruth.locator(".tile", has_text="Pastoral Epistles").locator(".pill", has_text="You teach this").count() == 1, "the new course is assigned to its creator")
     ruth.locator(".tile h3", has_text="Pastoral Epistles").click(); settle(ruth)
     check(ruth.locator("#mgTeacher").count() == 1, "before it starts, the teacher can hand the course to someone else")
+    check(ruth.locator("#mgDeleteCourse").count() == 0, "faculty never get a Delete Course button (Admins only)")
     ruth.screenshot(path=f"{SHOTS}/13b-teacher-card-handoff.png", full_page=False)
-    # The Super Admin reassigns a course that's already under way.
+    # The Admin reassigns a course that's already under way.
     nav(admin, "Dashboard"); tile(admin, "Courses")
     admin.locator(".tile h3", has_text="Hermeneutics I").click(); settle(admin)
-    check("No teacher yet" in admin.inner_text("#mgTeacherCard"), "an unassigned course says the Super Admins are covering it")
+    check("No teacher yet" in admin.inner_text("#mgTeacherCard"), "an unassigned course says the Admins are covering it")
     admin.select_option("#mgTeacher", label="Ruth Faculty"); admin.click("#mgSaveTeacher"); settle(admin)
-    check("Ruth Faculty" in admin.inner_text("#mgTeacherCard"), "a Super Admin reassigns a course that has already started")
+    check("Ruth Faculty" in admin.inner_text("#mgTeacherCard"), "an Admin reassigns a course that has already started")
     check("visible only to its teacher" in admin.inner_text("#mgAssignmentsList") and admin.locator("[data-view-roster]").count() == 0,
-          "the Super Admin can still manage it, but no longer sees its turned-in work")
+          "the Admin can still manage it, but no longer sees its turned-in work")
     admin.screenshot(path=f"{SHOTS}/13c-super-admin-reassigned.png", full_page=False)
     nav(admin, "Dashboard"); tile(admin, "Grading")
     check("Hermeneutics I" not in admin.inner_text("#main"), "…or its grades")
     ruth.reload(); ruth.wait_for_selector("#main .page-header"); settle(ruth)
     check(ruth.locator(".notif-badge").count() == 1, "the new teacher gets a notification")
+    make_class_now = """(() => { const c = courses.find(x => x.title === 'Hermeneutics I'); const d = new Date(); c.att.on = true;
+      c.schedule.days = [DAY_NAMES[d.getDay()]]; c.schedule.startDate = todayStr(); c.schedule.weeks = 2;
+      c.schedule.time = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0'); view = 'home'; renderMain(); })()"""
+    check(ruth.locator(".tile h3", has_text="Attendance").count() == 0, "there's no separate Attendance tile")
+    ruth.evaluate(make_class_now)
+    att_btn = ruth.locator(".tile", has_text="Courses").locator("[data-take-att]")
+    check(att_btn.count() == 1 and "Take Attendance" in att_btn.inner_text(), "on class day the teacher's Courses tile shows Take Attendance")
+    ruth.screenshot(path=f"{SHOTS}/13e-take-attendance-on-courses.png", full_page=False)
+    admin.evaluate(make_class_now)
+    check(admin.locator("[data-take-att]").count() == 0, "…but only for the course's assigned teacher")
+    att_btn.click(); settle(ruth)
+    check(ruth.evaluate("view") == "attendance", "…and it opens today's attendance")
+    nav(ruth, "Dashboard"); nav(admin, "Dashboard")
     tile(ruth, "Grading")
     ruth.locator("[data-sheet]", has_text="Hermeneutics I").first.click(); settle(ruth)
     check("Blake Amis" in body(ruth) and "18/20" in body(ruth), "the substitute sees the full grade book")
@@ -516,7 +593,7 @@ with sync_playwright() as p:
     check("Blake Amis" in body(ruth), "…and the students' message history")
     nav(ruth, "Dashboard"); tile(ruth, "Courses")
     ruth.locator(".tile h3", has_text="Hermeneutics I").click(); settle(ruth)
-    check(ruth.locator("#mgTeacher").count() == 0 and "only a Super Admin can change its teacher" in ruth.inner_text("#mgTeacherCard"),
+    check(ruth.locator("#mgTeacher").count() == 0 and "only an Admin can change its teacher" in ruth.inner_text("#mgTeacherCard"),
           "once a course has started, its teacher can't hand it off")
     ruth.screenshot(path=f"{SHOTS}/13d-teacher-card-locked.png", full_page=False)
     nav(blake, "Dashboard"); tile(blake, "Send Message")
@@ -546,6 +623,22 @@ with sync_playwright() as p:
     overflow = phone.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
     check(overflow <= 1, f"no sideways scrolling on a phone (overflow {overflow}px)")
     phone.screenshot(path=f"{SHOTS}/10-phone-dashboard.png", full_page=True)
+    phone.click("#notifBell"); phone.wait_for_selector("#notifPanel")
+    box = phone.locator("#notifPanel").bounding_box()
+    check(box["x"] >= 0 and box["x"] + box["width"] <= 390, f"the notification panel stays on a phone screen (x={box['x']:.0f}, w={box['width']:.0f})")
+    phone.screenshot(path=f"{SHOTS}/10b-phone-notifications.png")
+    had = phone.locator(".notif-item").count()
+    if had:
+        phone.locator(".notif-dismiss").first.click(); phone.wait_for_timeout(300)
+        check(phone.locator(".notif-item").count() == had - 1, "one notification can be cleared")
+        if had > 1:
+            phone.click("#notifClearAll"); phone.wait_for_timeout(300)
+            check(phone.locator(".notif-item").count() == 0 and "caught up" in phone.inner_text("#notifPanel"), "Clear all empties the list")
+        phone.reload(); phone.wait_for_selector("#main .page-header"); settle(phone)
+        check(phone.locator(".notif-badge").count() == 0 and phone.evaluate("myNotifications().length") == 0, "cleared notifications stay cleared")
+    else:
+        check(False, "the phone account has notifications to clear")
+    phone.click("body", position={"x": 5, "y": 600})
     nav(phone, "Study Bible"); phone.wait_for_selector(".verse-row")
     overflow = phone.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
     check(overflow <= 1, f"Study Bible fits a phone (overflow {overflow}px)")
@@ -559,7 +652,7 @@ with sync_playwright() as p:
     phone.screenshot(path=f"{SHOTS}/12-phone-profile.png", full_page=True)
 
     print("15b. Updates reach people without a hard refresh")
-    check(len(admin.evaluate("Object.keys(window.TNBBI_VERSIONS || {})")) == 6, "every site file was version-checked on load")
+    check(len(admin.evaluate("Object.keys(window.TNBBI_VERSIONS || {})")) == 8, "every site file was version-checked on load")
     check(admin.locator(".site-update-bar").count() == 0, "no update notice when nothing changed")
     admin.evaluate("checkForSiteUpdate(true)"); admin.wait_for_timeout(500)
     check(admin.locator(".site-update-bar").count() == 0, "…still none after a check")
@@ -570,6 +663,16 @@ with sync_playwright() as p:
     admin.screenshot(path=f"{SHOTS}/13-update-bar.png")
     admin.click("#siteUpdateBtn"); admin.wait_for_selector("#main .page-header", timeout=15000); settle(admin)
     check(admin.locator(".site-update-bar").count() == 0 and "Welcome Professor" in body(admin), "Refresh Now reloads into the new version, still signed in")
+
+    print("15c. Privacy: signed out after 30 minutes without activity")
+    blake.evaluate("localStorage.setItem('tnbbi-last-active', String(Date.now() - 29 * 60 * 1000)); idleLastMark = 0; checkIdle()")
+    blake.wait_for_selector("#idleWarning")
+    check("signed out" in blake.inner_text("#idleWarning"), "a 'Still there?' notice appears 2 minutes before")
+    blake.click("#idleStay")
+    check(blake.locator("#idleWarning").count() == 0 and blake.locator("#main .page-header").is_visible(), "Stay signed in keeps them in")
+    blake.evaluate("localStorage.setItem('tnbbi-last-active', String(Date.now() - 31 * 60 * 1000)); idleLastMark = 0; checkIdle()")
+    blake.wait_for_selector("#signinForm")
+    check("30 minutes" in blake.inner_text(".auth-error"), "after 30 minutes idle they're signed out, with a reason")
 
     print("16. Sign out")
     admin.click("#logoutBtn"); admin.wait_for_selector("#signinForm")

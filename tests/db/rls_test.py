@@ -72,9 +72,8 @@ check("A student not in any class sees only faculty + self", True,
       "select string_agg(name, ',' order by name) from public.visible_people()", stu3,
       expect_out="Daniel Dotson,Pastor Phil McBroom")
 check("Faculty see every account", True, "select count(*) from public.profiles", phil, expect_out=5)
-check("Faculty can promote a student to faculty", True,
+check("Faculty can't change anyone's level (Admins only)", False,
       f"update public.profiles set role = 'faculty' where id = '{stu3}'", phil)
-admin(f"update public.profiles set role = 'student' where id = '{stu3}'")
 check("Faculty who aren't Super Admins cannot grant Super Admin", False,
       f"update public.profiles set super_admin = true where id = '{stu2}'", phil)
 check("Signed-out visitors are refused outright", False, "select count(*) from public.courses", None, role="anon")
@@ -103,6 +102,20 @@ check("Plain faculty cannot delete a Super Admin", False,
 admin(f"update public.profiles set super_admin = false where id = '{church}'")
 check("Self-healing: with zero Super Admins, church Google sign-in restores it", True,
       "select public.claim_bootstrap_super_admin()", church, expect_out="t")
+check("An Admin can promote a student to faculty", True,
+      f"update public.profiles set role = 'faculty' where id = '{stu3}'; select role from public.profiles where id = '{stu3}'", church, expect_out="faculty")
+check("…and back to student", True,
+      f"update public.profiles set role = 'student' where id = '{stu3}'; select role from public.profiles where id = '{stu3}'", church, expect_out="student")
+check("Faculty can't demote themselves or others either", False,
+      f"update public.profiles set role = 'student' where id = '{phil}'", phil)
+check("Faculty can't turn an active account off", False,
+      f"update public.profiles set status = 'inactive' where id = '{stu3}'", phil)
+check("An Admin can turn an account off…", True,
+      f"update public.profiles set status = 'inactive' where id = '{stu3}'; select status from public.profiles where id = '{stu3}'", church, expect_out="inactive")
+check("…and faculty can't turn it back on", False,
+      f"update public.profiles set status = 'active' where id = '{stu3}'", phil)
+check("…but an Admin can", True,
+      f"update public.profiles set status = 'active' where id = '{stu3}'; select status from public.profiles where id = '{stu3}'", church, expect_out="active")
 
 # --- courses & enrollment ------------------------------------------------------
 check("Students can browse the catalogue", True, "select count(*) from public.courses", stu3, expect_out=8)
@@ -454,6 +467,12 @@ check("…and can now fill in their profile", True, f"update public.profiles set
 check("Faculty decline a sign-up (delete it)", True,
       f"select public.delete_user('{unv}'); select count(*) from public.profiles where id = '{unv}'", phil, expect_out=0)
 
+# --- notifications: clearing ---------------------------------------------------------------
+check("Nobody can clear someone else's notifications", True,
+      f"with d as (delete from public.notifications where user_id = '{church}' returning 1) select count(*) from d", phil, expect_out=0)
+check("People can clear their own notifications", True,
+      f"with d as (delete from public.notifications where user_id = '{church}' returning 1) select count(*) > 0 from d", church, expect_out="t")
+
 # --- archive & delete ----------------------------------------------------------------------
 admin("update public.courses set archived = true where id = 'c1'")
 check("Archived course: its assignments disappear for students", True,
@@ -462,8 +481,16 @@ check("Archived course: students can't submit", False,
       f"insert into public.submissions (assignment_id, student_id, status) values ('{locked}', '{stu1}', 'in_progress')", stu1)
 admin("update public.courses set archived = false where id = 'c1'")
 check("Students cannot delete accounts", False, f"select public.delete_user('{stu2}')", stu1)
-check("Faculty delete an account → all their data goes with it", True,
-      f"select public.delete_user('{stu1}'); select (select count(*) from public.submissions where student_id = '{stu1}') + (select count(*) from public.messages where student_id = '{stu1}') + (select count(*) from public.enrollments where student_id = '{stu1}') + (select count(*) from public.profiles where id = '{stu1}')", phil, expect_out=0)
+check("Faculty can't delete an active account (Admins only)", False, f"select public.delete_user('{stu2}')", phil)
+check("An Admin deletes an account → all their data goes with it", True,
+      f"select public.delete_user('{stu1}'); select (select count(*) from public.submissions where student_id = '{stu1}') + (select count(*) from public.messages where student_id = '{stu1}') + (select count(*) from public.enrollments where student_id = '{stu1}') + (select count(*) from public.profiles where id = '{stu1}')", church, expect_out=0)
+admin(f"insert into public.courses (id, title, faculty_id, archived) values ('rmc', 'Old Course', '{phil}', true)")
+check("A course's own teacher (faculty) can't delete it — Admins only", True,
+      "with d as (delete from public.courses where id = 'rmc' returning 1) select count(*) from d", phil, expect_out=0)
+check("…faculty can still archive and reactivate it", True,
+      "update public.courses set archived = false where id = 'rmc'; select archived from public.courses where id = 'rmc'", phil, expect_out="f")
+check("An Admin can delete a course", True,
+      "with d as (delete from public.courses where id = 'rmc' returning 1) select count(*) from d", church, expect_out=1)
 
 # --- report -----------------------------------------------------------------------------------
 fails = [r for r in results if not r[0]]

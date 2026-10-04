@@ -315,7 +315,7 @@ const DB = {
   },
   async setArchived(id, archived) {
     // Archiving ends the enrollment relationship the private threads belong
-    // to; the database clears them itself (so it works for a Super Admin
+    // to; the database clears them itself (so it works for an Admin
     // who can't read them).
     must(await sb.from("courses").update({ archived }).eq("id", id));
   },
@@ -416,6 +416,12 @@ const DB = {
   },
   async markThreadRead(courseId, studentId) {
     must(await sb.rpc("mark_thread_read", { p_course: courseId, p_student: studentId }));
+  },
+  // Clearing removes notifications for good (each person can only ever
+  // remove their own — the database checks).
+  async deleteNotifications(ids) {
+    if (!ids.length) return;
+    must(await sb.from("notifications").delete().in("id", ids));
   },
   async markNotificationsRead(ids) {
     if (!ids.length) return;

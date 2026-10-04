@@ -29,7 +29,7 @@
   <script>try { var t = localStorage.getItem("tnbbi-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
   <script>
     document.documentElement.classList.add("site-loading");
-    window.TNBBI_ASSETS = { css: ["css/styles.css"], js: ["js/config.js", "js/library-data.js", "js/bible-data.js", "js/data.js", "js/app.js"] };
+    window.TNBBI_ASSETS = { css: ["css/styles.css"], js: ["js/config.js", "js/library-data.js", "js/bible-data.js", "js/data.js", "js/bible.js", "js/editor.js", "js/app.js"] };
     window.TNBBI_VERSIONS = {};
     window.TNBBI_READY = Promise.all(
       TNBBI_ASSETS.css.concat(TNBBI_ASSETS.js).map(function (url) {

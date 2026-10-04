@@ -70,6 +70,26 @@ these need real people on the real test site:
 The printable **Pre-Launch Test Checklist** (shared in our conversation)
 walks through these with pass/fail boxes.
 
+12. **Study Bible on a phone** (added Oct 3) — tap a word in John 3:16 (the
+    word study slides up from the bottom), tap *See every occurrence*, search
+    "born again", open a verse's cross references. The first search downloads
+    the whole Bible once (about 1.2 MB) — try it on cellular too.
+13. **Word processor on a phone and a computer** — write a short paper with a
+    heading, a Scripture block quote (📖 Scripture → "Rom 8:28"), a footnote,
+    and a small table; Turn In; then open it as the teacher in Grading. Also
+    try pasting from Word or Google Docs, and *Print / Save as PDF*.
+14. **Levels** — sign in as a Faculty (not Admin) account: Settings shows each
+    person's level but no Student/Faculty/Admin buttons, no Make Inactive or
+    Delete, and an archived course has no Delete Course button.
+15. **Take Attendance on the Courses tile** — on a class day, an hour before
+    class time, the assigned teacher's Courses tile shows *Take Attendance*
+    (on a phone too); nobody else sees it.
+16. **30-minute sign-out** — leave the site open and untouched: at 28 minutes
+    a "Still there?" notice appears; at 30 you're signed out. On iPhone, leave
+    the home-screen app for over 30 minutes and reopen it: sign-in screen.
+17. **Notifications on a phone** — the bell's list fits the screen; clear one,
+    then *Clear all*.
+
 ## Recommended pilot
 
 Pick one course and 4–6 willing students (a mix of comfortable and

@@ -148,12 +148,12 @@ function currentFacultyId() {
 // Course teachers. Mirrors the database's rules exactly (the database is
 // what actually enforces them — these only decide what the page shows):
 //   - a course's teacher is its assigned instructor while they're active
-//     faculty; with no teacher, the Super Admins cover it
+//     faculty; with no teacher, the Admins cover it
 //   - teaching a course = seeing its grades, private messages, discussion
 //   - managing a course (schedule, roster, requests, assignments,
-//     materials) = its teacher, or any Super Admin
+//     materials) = its teacher, or any Admin
 //   - before the start date the teacher can hand the course to another
-//     faculty member; after it, only a Super Admin can change the teacher
+//     faculty member; after it, only an Admin can change the teacher
 // ---------------------------------------------------------------------------
 function courseTeacher(c) {
   return users.find((u) => u.id === c.facultyId && u.role === "faculty" && u.status !== "inactive") || null;
@@ -210,22 +210,32 @@ function assignmentLock(a) {
 let submitPickCourseId = "";
 let submitPickAssignmentId = "";
 
-// --- Study Bible ---------------------------------------------------------
-let sbBookId = "JHN";
-let sbChapter = 3;
-let studyBibleShowHighlightsOnly = false;
-
-// --- Super Admins ------------------------------------------------------
+// --- Admins ------------------------------------------------------
 // A small, separate tier on top of the student/faculty role (max 4). The
 // church's own Google account is the bootstrap: the first time it signs in
-// WITH GOOGLE while no active Super Admin exists, it becomes one (and
-// Faculty). After that, only Super Admins can add or remove others. If
-// every Super Admin is ever removed, the church account's next Google
+// WITH GOOGLE while no active Admin exists, it becomes one (and
+// Faculty). After that, only Admins can add or remove others. If
+// every Admin is ever removed, the church account's next Google
 // sign-in restores the role — the Institute can never lock itself out.
 // The database enforces all of this (see supabase/schema.sql).
 const BOOTSTRAP_ADMIN_EMAIL = (TNBBI_CONFIG.bootstrapAdminEmail || "").toLowerCase();
 const MAX_SUPER_ADMINS = 4;
 function countSuperAdmins() { return users.filter((u) => u.superAdmin).length; }
+
+// Three levels, shown as one badge: Student, Faculty, Admin. (In the
+// database an Admin is a Faculty account with the super_admin flag.)
+//   Faculty — create and edit courses, schedules, rosters, assignments,
+//             materials; approve sign-ups and enrollment requests; archive.
+//   Admin   — everything Faculty can do, plus change anyone's level,
+//             deactivate/reactivate or delete accounts, and delete courses.
+function userLevel(u) { return !u ? "student" : u.superAdmin ? "admin" : u.role === "faculty" ? "faculty" : "student"; }
+const LEVEL_LABEL = { student: "Student", faculty: "Faculty", admin: "Admin" };
+function isAdmin() { return !!(currentUser && currentUser.superAdmin); }
+function levelPill(u) {
+  const l = userLevel(u);
+  return `<span class="pill ${l === "admin" ? "pill-gold" : l === "faculty" ? "pill-navy" : "pill-gray"}">${l === "admin" ? "★ " : ""}${LEVEL_LABEL[l]}</span>`;
+}
+function staffEyebrow() { return isAdmin() ? "Admin" : "Faculty"; }
 
 // --- Sign in / Sign up -----------------------------------------------------
 // Real accounts (Supabase Auth). Every new account starts as a student —
@@ -337,15 +347,16 @@ async function run(work, after, opts = {}) {
 
 function closeModal() {
   document.getElementById("modalRoot").innerHTML = "";
+  document.body.classList.remove("rte-full-open");
 }
 
 // Every modal closes on Escape or a click on the dimmed backdrop — unless
 // it's mid-save.
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && busyCount === 0 && !document.querySelector(".doc-viewer") && document.querySelector("#modalRoot .modal-backdrop")) closeModal();
+  if (e.key === "Escape" && busyCount === 0 && !document.querySelector(".doc-viewer") && document.querySelector("#modalRoot .modal-backdrop") && !document.querySelector("#modalRoot .no-dismiss")) closeModal();
 });
 document.addEventListener("mousedown", (e) => {
-  if (busyCount === 0 && e.target.classList && e.target.classList.contains("modal-backdrop")) closeModal();
+  if (busyCount === 0 && e.target.classList && e.target.classList.contains("modal-backdrop") && !e.target.classList.contains("no-dismiss")) closeModal();
 });
 
 // --- Notifications (the bell) ------------------------------------------
@@ -366,19 +377,39 @@ function renderNotifBell() {
   el.innerHTML = `
     <button id="notifBell" class="icon-btn" aria-label="Notifications${unread ? ` (${unread} unread)` : ""}" aria-expanded="${notifPanelOpen}">${icon("bell")}${unread ? `<span class="notif-badge">${unread > 9 ? "9+" : unread}</span>` : ""}</button>
     ${notifPanelOpen ? `
-    <div class="notif-panel" id="notifPanel">
-      <div class="notif-panel-head">Notifications</div>
-      ${mine.length === 0 ? `<div class="notif-empty">No notifications yet.</div>` : mine
+    <div class="notif-panel" id="notifPanel" role="dialog" aria-label="Notifications">
+      <div class="notif-panel-head"><span>Notifications</span>${mine.length ? `<button type="button" class="notif-clear-all" id="notifClearAll">Clear all</button>` : ""}</div>
+      ${mine.length === 0 ? `<div class="notif-empty">You're all caught up.</div>` : mine
         .map(
           (n) => `
         <div class="notif-item ${n.read ? "" : "notif-item-unread"}">
-          <div class="notif-item-subject">${esc(n.subject)}</div>
-          <div class="notif-item-time">${new Date(n.sentAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>
+          <div class="notif-item-body">
+            <div class="notif-item-subject">${esc(n.subject)}</div>
+            <div class="notif-item-time">${new Date(n.sentAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>
+          </div>
+          <button type="button" class="notif-dismiss" data-dismiss="${n.id}" aria-label="Clear this notification" title="Clear">×</button>
         </div>`
         )
         .join("")}
     </div>` : ""}
   `;
+  const panel = document.getElementById("notifPanel");
+  if (panel) {
+    // On phones the panel spans the screen just under the bell, so it can
+    // never hang off either edge.
+    if (window.matchMedia("(max-width: 780px)").matches) {
+      const b = el.getBoundingClientRect();
+      panel.style.top = Math.round(b.bottom + 8) + "px";
+    }
+    const clear = (ids) => {
+      notifications = notifications.filter((n) => !ids.includes(n.id));
+      renderNotifBell();
+      DB.deleteNotifications(ids).catch((err) => { toast(friendlyError(err)); });
+    };
+    panel.querySelectorAll("[data-dismiss]").forEach((btn) => btn.addEventListener("click", (e) => { e.stopPropagation(); clear([btn.dataset.dismiss]); }));
+    const all = document.getElementById("notifClearAll");
+    if (all) all.addEventListener("click", (e) => { e.stopPropagation(); clear(mine.map((n) => n.id)); });
+  }
   document.getElementById("notifBell").addEventListener("click", (e) => {
     e.stopPropagation();
     notifPanelOpen = !notifPanelOpen;
@@ -422,7 +453,8 @@ function renderAuthScreen() {
           </div>
         </div>
         ${tabs ? `
-        <button class="btn btn-google" id="googleSignInBtn" type="button">${googleLogoSvg()} Continue with Google</button>
+        <button class="btn btn-google" id="googleSignInBtn" type="button">${googleLogoSvg()} <span>Continue with Google</span></button>
+        ${isHomeScreenApp() ? `<p class="field-hint auth-standalone-hint">On the home-screen app, Google may ask you to sign in once here, even if you're signed in to Google elsewhere on this phone. After that, this app keeps you signed in.</p>` : ""}
         <div class="auth-divider"><span>or</span></div>
         <div class="auth-tabs">
           <button data-mode="signin" class="${authMode === "signin" ? "active" : ""}">Sign In</button>
@@ -591,9 +623,16 @@ function wireAuthFormHandlers() {
   const gBtn = wrap.querySelector("#googleSignInBtn");
   if (gBtn) gBtn.addEventListener("click", async () => {
     authError = "";
-    gBtn.disabled = true;
+    // Show it's working without greying the button out: on phones (and the
+    // home-screen app) Google opens over the page, and if the person comes
+    // back without finishing, the button must still be ready to tap again.
+    markActive(true);
+    gBtn.classList.add("is-busy");
+    gBtn.querySelector("span").textContent = "Opening Google…";
+    const reset = () => { gBtn.classList.remove("is-busy"); const t = gBtn.querySelector("span"); if (t) t.textContent = "Continue with Google"; };
+    setTimeout(reset, 6000);
     const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: siteUrl() } });
-    if (error) { gBtn.disabled = false; authError = friendlyError(error); renderAuthScreen(); }
+    if (error) { reset(); authError = friendlyError(error); renderAuthScreen(); }
   });
 
   const signin = wrap.querySelector("#signinForm");
@@ -604,6 +643,7 @@ function wireAuthFormHandlers() {
     pendingEmail = email;
     if (!email || !password) { authError = "Enter your email and password."; renderAuthScreen(); return; }
     authBusy(signin, true);
+    markActive(true);
     const { error } = await sb.auth.signInWithPassword({ email, password });
     if (error) {
       authError = /invalid login credentials/i.test(error.message)
@@ -685,6 +725,17 @@ function wireAuthFormHandlers() {
   });
 }
 
+// True when the site was opened from its home-screen icon (installed app).
+function isHomeScreenApp() {
+  try { return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true; } catch (e) { return false; }
+}
+// Coming back to the page (e.g. closing Google's sign-in sheet) restores it
+// from memory — make sure the Google button isn't left in its busy state.
+window.addEventListener("pageshow", () => {
+  const b = document.getElementById("googleSignInBtn");
+  if (b) { b.classList.remove("is-busy"); b.disabled = false; const t = b.querySelector("span"); if (t) t.textContent = "Continue with Google"; }
+});
+
 function googleLogoSvg() {
   return `<svg viewBox="0 0 48 48" width="20" height="20" aria-hidden="true"><path fill="#4285F4" d="M45.12 24.5c0-1.56-.14-3.06-.4-4.5H24v8.51h11.84c-.51 2.75-2.06 5.08-4.39 6.64v5.52h7.11c4.16-3.83 6.56-9.47 6.56-16.17z"/><path fill="#34A853" d="M24 46c5.94 0 10.92-1.97 14.56-5.33l-7.11-5.52c-1.97 1.32-4.49 2.1-7.45 2.1-5.73 0-10.58-3.87-12.31-9.07H4.34v5.7C7.96 41.07 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.69 28.18A11.94 11.94 0 0 1 11.03 24c0-1.45.25-2.86.66-4.18v-5.7H4.34A21.98 21.98 0 0 0 2 24c0 3.55.85 6.91 2.34 9.88l7.35-5.7z"/><path fill="#EA4335" d="M24 10.75c3.23 0 6.13 1.11 8.41 3.29l6.31-6.31C34.91 4.18 29.93 2 24 2 15.4 2 7.96 6.93 4.34 14.12l7.35 5.7c1.73-5.2 6.58-9.07 12.31-9.07z"/></svg>`;
 }
@@ -698,8 +749,18 @@ function cleanAuthParamsFromUrl() {
 }
 
 let sessionStarting = null;
-async function startSession(session, { force = false } = {}) {
+async function startSession(session, { force = false, restored = false } = {}) {
   if (!session || !session.user) return;
+  // Reopening the site (or the home-screen app) after 30 minutes or more
+  // without activity starts at the sign-in screen, not the dashboard.
+  if (restored && idleTooLong()) {
+    try { await sb.auth.signOut(); } catch (e) { /* already out */ }
+    authMode = "signin";
+    authError = IDLE_MESSAGE;
+    renderAuthScreen();
+    return;
+  }
+  markActive(true);
   if (!force && sessionUserId === session.user.id && (currentUser || sessionStarting === session.user.id)) return;
   sessionUserId = session.user.id;
   sessionStarting = session.user.id;
@@ -798,7 +859,69 @@ function startPolling() {
   }, 60000);
 }
 
+// --- Privacy: sign out after 30 minutes without activity ------------------
+// Any tap, click, key, or scroll counts as activity, in any open tab (the
+// time is shared through this browser's storage). Two minutes before the
+// limit a notice offers "Stay signed in". Reopening the site after the
+// limit has passed lands on the sign-in screen.
+const IDLE_LIMIT_MS = 30 * 60 * 1000;
+const IDLE_WARN_MS = 2 * 60 * 1000;
+const IDLE_KEY = "tnbbi-last-active";
+const IDLE_MESSAGE = "For your privacy, you were signed out after 30 minutes without activity. Sign in again to continue.";
+let idleLastMark = 0;
+function markActive(force) {
+  const now = Date.now();
+  if (!force && now - idleLastMark < 10000) return;
+  idleLastMark = now;
+  try { localStorage.setItem(IDLE_KEY, String(now)); } catch (e) { /* private mode — in-memory only */ }
+  hideIdleWarning();
+}
+function lastActiveAt() {
+  let v = 0;
+  try { v = parseInt(localStorage.getItem(IDLE_KEY), 10) || 0; } catch (e) { /* fine */ }
+  return Math.max(v, idleLastMark);
+}
+function idleTooLong() {
+  const t = lastActiveAt();
+  return t > 0 && Date.now() - t >= IDLE_LIMIT_MS;
+}
+function signedInForIdle() { return !!currentUser || authMode === "pending"; }
+function checkIdle() {
+  if (!signedInForIdle()) return;
+  const idle = Date.now() - lastActiveAt();
+  if (idle >= IDLE_LIMIT_MS) { hideIdleWarning(); signOut(IDLE_MESSAGE); return; }
+  if (idle >= IDLE_LIMIT_MS - IDLE_WARN_MS) showIdleWarning(IDLE_LIMIT_MS - idle);
+}
+function showIdleWarning(msLeft) {
+  let el = document.getElementById("idleWarning");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "idleWarning";
+    el.className = "idle-warning";
+    el.setAttribute("role", "alertdialog");
+    el.setAttribute("aria-live", "assertive");
+    document.body.appendChild(el);
+  }
+  const mins = Math.max(1, Math.ceil(msLeft / 60000));
+  el.innerHTML = `<p><strong>Still there?</strong> For your privacy you'll be signed out in about ${mins} minute${mins === 1 ? "" : "s"}.</p><button type="button" class="btn btn-gold btn-sm" id="idleStay">Stay signed in</button>`;
+  document.getElementById("idleStay").addEventListener("click", () => markActive(true));
+}
+function hideIdleWarning() {
+  const el = document.getElementById("idleWarning");
+  if (el) el.remove();
+}
+["pointerdown", "keydown", "wheel", "touchstart", "scroll", "input"].forEach((ev) =>
+  window.addEventListener(ev, (e) => {
+    if (e.target && e.target.closest && e.target.closest("#idleWarning")) return; // its own button handles it
+    if (signedInForIdle()) markActive(false);
+  }, { passive: true, capture: true }));
+setInterval(checkIdle, 15000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkIdle(); });
+window.addEventListener("pageshow", checkIdle);
+window.addEventListener("storage", (e) => { if (e.key === IDLE_KEY) hideIdleWarning(); });
+
 async function signOut(message) {
+  hideIdleWarning();
   clearInterval(pollTimer);
   clearInterval(pendingTimer);
   pendingProfile = null;
@@ -829,8 +952,7 @@ function renderAccountPill() {
       ${avatarHtml(users.find((u) => u.id === currentUser.id) || currentUser, 32)}
       <span class="account-name">${esc(currentUser.name)}</span>
     </button>
-    <span class="pill ${currentUser.role === "faculty" ? "pill-gold" : "pill-navy"}" style="background:transparent;border:1px solid rgba(255,255,255,0.35);color:#dbe2ee;">${currentUser.role === "faculty" ? "Faculty/Admin" : "Student"}</span>
-    ${currentUser.superAdmin ? `<span class="pill pill-gold" title="Super Admin">★ Super Admin</span>` : ""}
+    <span class="pill level-badge level-${userLevel(currentUser)}">${userLevel(currentUser) === "admin" ? "★ " : ""}${LEVEL_LABEL[userLevel(currentUser)]}</span>
     <button id="logoutBtn">Log Out</button>
   `;
   document.getElementById("logoutBtn").addEventListener("click", () => signOut());
@@ -867,12 +989,58 @@ function esc(s) { const d = document.createElement("div"); d.textContent = s ?? 
 
 // Student-written work (from the in-tool editor) is stored as HTML. Before
 // it's ever shown — to the student or to faculty — it's cleaned down to
-// simple formatting, so nothing harmful can ride along inside it.
-const SAFE_TAGS = ["b", "strong", "i", "em", "u", "ul", "ol", "li", "p", "br", "div", "span", "h1", "h2", "h3", "blockquote"];
+// ordinary document formatting (headings, lists, tables, links, colors,
+// footnotes…), so nothing harmful can ride along inside it.
+const SAFE_TAGS = ["b", "strong", "i", "em", "u", "s", "strike", "del", "sup", "sub", "ul", "ol", "li", "p", "br", "div", "span",
+  "h1", "h2", "h3", "h4", "blockquote", "a", "hr", "table", "thead", "tbody", "tr", "th", "td"];
+const SAFE_ATTRS = ["style", "href", "class", "data-fn", "colspan", "rowspan", "title"];
+const SAFE_CLASSES = new Set(["scripture", "scripture-ref", "fn-ref", "footnotes", "fn-sep", "title-block", "rte-table", "kjv-it"]);
+const SAFE_STYLES = new Set(["color", "background-color", "font-family", "font-size", "font-weight", "font-style", "text-decoration",
+  "text-decoration-line", "text-align", "margin-left", "padding-left", "line-height", "text-indent", "vertical-align"]);
+let sanitizingWritten = false;
+function cleanStyle(css) {
+  const out = [];
+  String(css || "").split(";").forEach((decl) => {
+    const i = decl.indexOf(":");
+    if (i < 0) return;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim();
+    if (!SAFE_STYLES.has(prop) || !val || /url\(|expression|javascript:|[<>\\]|@import/i.test(val) || val.length > 120) return;
+    out.push(`${prop}: ${val}`);
+  });
+  return out.join("; ");
+}
+let sanitizerHooked = false;
+function hookSanitizer() {
+  if (sanitizerHooked || !window.DOMPurify || !DOMPurify.addHook) return;
+  sanitizerHooked = true;
+  DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+    if (!sanitizingWritten) return;
+    if (data.attrName === "style") {
+      data.attrValue = cleanStyle(data.attrValue);
+      if (!data.attrValue) data.keepAttr = false;
+    } else if (data.attrName === "class") {
+      data.attrValue = data.attrValue.split(/\s+/).filter((c) => SAFE_CLASSES.has(c)).join(" ");
+      if (!data.attrValue) data.keepAttr = false;
+    } else if (data.attrName === "href") {
+      if (!/^(https?:|mailto:|#)/i.test(data.attrValue.trim())) data.keepAttr = false;
+    }
+  });
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (sanitizingWritten && node.tagName === "A" && node.getAttribute("href")) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer");
+    }
+  });
+}
 function safeHtml(html) {
   if (!html) return "";
-  if (window.DOMPurify) return DOMPurify.sanitize(html, { ALLOWED_TAGS: SAFE_TAGS, ALLOWED_ATTR: [] });
-  return esc(html);
+  if (!window.DOMPurify) return esc(html);
+  hookSanitizer();
+  sanitizingWritten = true;
+  try {
+    return DOMPurify.sanitize(html, { ALLOWED_TAGS: SAFE_TAGS, ALLOWED_ATTR: SAFE_ATTRS.concat(["target", "rel"]), ALLOW_DATA_ATTR: false });
+  } finally { sanitizingWritten = false; }
 }
 
 // Moving to another page re-checks the database (unless it was just
@@ -975,9 +1143,27 @@ function renderDashboard(main) {
   main.querySelectorAll("[data-goto]").forEach((el) => {
     const open = () => { if (el.dataset.goto === "profile") return openProfile(); view = el.dataset.goto; renderNav(); renderMain(); };
     el.addEventListener("click", open);
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } });
   });
   wireProfileNudge();
+}
+
+// Classes I'm the assigned teacher of that meet today and record attendance,
+// from an hour before class time through the end of the day (all day if the
+// course has no class time set). Shown as Take Attendance on the Courses tile.
+function attendanceDueNow() {
+  if (!currentUser) return [];
+  const today = todayStr();
+  const now = new Date();
+  return courses.filter((c) => {
+    if (c.archived || !c.att.on || !classDates(c).includes(today)) return false;
+    const t = courseTeacher(c);
+    if (!t || t.id !== currentUser.id) return false;
+    const m = /^(\d{1,2}):(\d{2})/.exec(c.schedule.time || "");
+    if (!m) return true;
+    const start = new Date(); start.setHours(+m[1], +m[2], 0, 0);
+    return now.getTime() >= start.getTime() - 60 * 60000;
+  });
 }
 
 // Dashboard tile colors: one reverent jewel tone per kind of tile.
@@ -1010,7 +1196,7 @@ function renderPlaceholder(main, title, iconName, message) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">${role === "student" ? "Student Dashboard" : "Faculty & Admin"}</div>
+      <div class="eyebrow">${role === "student" ? "Student Dashboard" : staffEyebrow()}</div>
       <h1>${esc(title)}</h1>
     </div>
     <div class="card empty-state">
@@ -1153,19 +1339,19 @@ function renderFacultyHome(main) {
     { key: "catalogue", i: "book", label: "Courses", desc: "Browse everything offered, or add a new course" },
     { key: "calendar", i: "calendar", label: "Calendar", desc: "Every due date in the courses you teach" },
     { key: "studyBible", i: "bible", label: "Study Bible", desc: "Read the KJV with Strong's Concordance" },
-    { key: "attendanceHome", i: "check", label: "Attendance", desc: "Take attendance for today's classes" },
     { key: "grading", i: "cap", label: "Grading", desc: "Review and grade work in your courses" },
     { key: "discussion", i: "chat", label: "Discussion Board", desc: "Lead your classes' discussions" },
     { key: "messages", i: "mail", label: "Message Inbox", desc: "Messages from your students" },
     { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
     { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and About me" },
-    { key: "settings", i: "gear", label: "Settings", desc: "Users, roles, and Super Admins" },
+    { key: "settings", i: "gear", label: "Settings", desc: isAdmin() ? "Users and levels" : "Users and new sign-ups" },
   ];
   const unread = unreadMessageCount();
   const pendingEnroll = pendingEnrollmentCount();
+  const attNow = attendanceDueNow();
   main.innerHTML = `
     <div class="page-header">
-      <div class="eyebrow">Faculty &amp; Admin</div>
+      <div class="eyebrow">${staffEyebrow()}</div>
       <h1>Welcome Professor</h1>
     </div>
     ${profileNudge()}
@@ -1177,10 +1363,13 @@ function renderFacultyHome(main) {
           ${t.key === "messages" && unread ? `<span class="tile-badge">${unread}</span>` : ""}
           ${t.key === "catalogue" && pendingEnroll ? `<span class="tile-badge" title="${pendingEnroll} enrollment request${pendingEnroll === 1 ? "" : "s"}">${pendingEnroll}</span>` : ""}
           ${t.key === "settings" && pendingSignups().filter((u) => u.emailVerified).length ? `<span class="tile-badge" title="Sign-ups waiting for approval">${pendingSignups().filter((u) => u.emailVerified).length}</span>` : ""}
-          ${t.key === "attendanceHome" && attendanceTodayCount() ? `<span class="tile-badge" title="Class today — attendance not taken">${attendanceTodayCount()}</span>` : ""}
           <div class="icon-badge hue-${TILE_HUE[t.key] || "blue"}">${icon(t.i)}</div>
           <h3>${esc(t.label)}</h3>
           <p>${esc(t.desc)}</p>
+          ${t.key === "catalogue" && attNow.length ? `<div class="tile-att">${attNow.map((c) => {
+            const taken = !!c.attDays[todayStr()];
+            return `<button type="button" class="tile-att-btn ${taken ? "taken" : ""}" data-take-att="${c.id}">${icon("check")}<span>${taken ? "Attendance taken" : "Take Attendance"} · ${esc(c.title)}${c.schedule.time ? ` · ${esc(fmtTime(c.schedule.time))}` : ""}</span></button>`;
+          }).join("")}</div>` : ""}
         </div>`
         )
         .join("")}
@@ -1189,8 +1378,17 @@ function renderFacultyHome(main) {
   main.querySelectorAll("[data-goto]").forEach((el) => {
     const open = () => { if (el.dataset.goto === "profile") return openProfile(); view = el.dataset.goto; renderNav(); renderMain(); };
     el.addEventListener("click", open);
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } });
   });
+  main.querySelectorAll("[data-take-att]").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openAttendance(b.dataset.takeAtt, todayStr(), "home");
+  }));
+  // The Take Attendance button appears on its own as class time nears.
+  const sig = attNow.map((c) => c.id).join(",");
+  viewTimers.push(setInterval(() => {
+    if (view === "home" && !document.querySelector("#modalRoot .modal-backdrop") && attendanceDueNow().map((c) => c.id).join(",") !== sig) renderMain();
+  }, 60000));
   wireProfileNudge();
 }
 
@@ -1304,12 +1502,12 @@ function renderCatalogue(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">Faculty &amp; Admin</div>
+      <div class="eyebrow">${staffEyebrow()}</div>
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
         <h1 style="margin:0;">Courses</h1>
         <button class="btn btn-primary btn-sm" id="catAddCourse">+ Add Course</button>
       </div>
-      <p>Everything the Institute offers. Open a course you teach to set its schedule, roster, and materials.${currentUser && currentUser.superAdmin ? " As a Super Admin you can open any course and change its teacher." : ""}</p>
+      <p>Everything the Institute offers. Open a course you teach to set its schedule, roster, and materials.${currentUser && currentUser.superAdmin ? " As an Admin you can open any course and change its teacher." : ""}</p>
     </div>
     ${msg ? `<div class="flash-banner">${esc(msg)}</div>` : ""}
     <div class="subtabs" id="catalogueTabs" style="margin-bottom:16px;">
@@ -1442,8 +1640,8 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
   const graded = sub.status === "graded";
   const lock = assignmentLock(assignment);
   root.innerHTML = `
-    <div class="modal-backdrop">
-      <div class="modal" style="max-width:600px;">
+    <div class="modal-backdrop ${graded || lock.locked ? "" : "no-dismiss"}">
+      <div class="modal submit-modal" id="submitModal" style="max-width:600px;">
         <h2 style="font-size:1.15rem;">${esc(assignment.title)}</h2>
         <p style="color:var(--muted-foreground);font-size:.85rem;margin-top:4px;">Due ${parseDay(assignment.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${assignment.points} points</p>
         ${assignment.instructions ? `<p style="margin-top:10px;">${esc(assignment.instructions)}</p>` : ""}
@@ -1477,14 +1675,7 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
           </div>
           <div id="submitEditorWrap" style="display:none;">
             <label>Write Your Assignment</label>
-            <div class="editor-toolbar">
-              <button type="button" data-cmd="bold"><strong>B</strong></button>
-              <button type="button" data-cmd="italic"><em>I</em></button>
-              <button type="button" data-cmd="underline"><u>U</u></button>
-              <button type="button" data-cmd="insertUnorderedList">• List</button>
-              <button type="button" data-cmd="insertOrderedList">1. List</button>
-            </div>
-            <div id="submitEditor" class="editor-box" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Your assignment">${safeHtml(sub.writtenContent || "")}</div>
+            <div id="submitEditorMount"></div>
           </div>
 
           <div class="form-actions">
@@ -1506,23 +1697,32 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
     if (b) b.addEventListener("click", () => openFileViewer({ bucket: "submissions", path: sub.storagePath, title: sub.fileName, subtitle: `${course.title} · ${assignment.title}`, mimeType: sub.mimeType, returnFocus: b }));
   }
   function method() { return document.querySelector('input[name="submitMethod"]:checked').value; }
+  const teacher = courseTeacher(course);
+  const editor = mountRichEditor(document.getElementById("submitEditorMount"), {
+    html: sub.writtenContent || "",
+    draftKey: `tnbbi-draft:${studentId}:${assignment.id}`,
+    savedAt: sub.submittedAt || null,
+    context: { student: currentUser ? currentUser.name : "", teacher: teacher ? teacher.name : "", course: course.title, assignment: assignment.title },
+  });
   function syncMethodUI() {
     const editorMode = method() === "editor";
     document.getElementById("submitFileWrap").style.display = editorMode ? "none" : "";
     document.getElementById("submitEditorWrap").style.display = editorMode ? "" : "none";
+    document.getElementById("submitModal").classList.toggle("modal-writer", editorMode);
+    document.getElementById("submitModal").style.maxWidth = editorMode ? "" : "600px";
   }
   syncMethodUI();
   document.querySelectorAll('input[name="submitMethod"]').forEach((r) => r.addEventListener("change", syncMethodUI));
-  document.querySelectorAll("#submitEditorWrap [data-cmd]").forEach((btn) => {
-    btn.addEventListener("click", () => { document.execCommand(btn.dataset.cmd, false, null); document.getElementById("submitEditor").focus(); });
+  document.getElementById("submitCancel").addEventListener("click", () => {
+    if (method() === "editor" && editor.isDirty() && !confirm("Close without saving?\n\nYour writing is kept as a draft on this device, and you'll be offered it the next time you open this assignment here.")) return;
+    closeModal();
   });
-  document.getElementById("submitCancel").addEventListener("click", closeModal);
   const afterSave = onSaved || (() => renderMain());
   document.getElementById("submitProgress").addEventListener("click", () => {
-    const editor = document.getElementById("submitEditor");
-    const html = method() === "editor" && editor.textContent.trim() ? safeHtml(editor.innerHTML.trim()) : undefined;
+    const html = method() === "editor" && !editor.isEmpty() ? editor.getHtml() : undefined;
     run(async () => {
       await DB.saveSubmission({ courseId: course.id, assignment, studentId, status: "in_progress", writtenContent: html, previous: sub });
+      if (html !== undefined) editor.clearDraft();
       closeModal();
     }, afterSave, { success: "Progress saved." });
   });
@@ -1530,9 +1730,9 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
     let file = null;
     let html;
     if (method() === "editor") {
-      const editor = document.getElementById("submitEditor");
-      if (!editor.textContent.trim()) { editor.focus(); return; }
-      html = safeHtml(editor.innerHTML.trim());
+      if (editor.isEmpty()) { editor.focus(); toast("Write your assignment first."); return; }
+      html = editor.getHtml();
+      editor.exitFull();
     } else {
       const fileInput = document.getElementById("submitFile");
       file = fileInput.files[0];
@@ -1541,6 +1741,7 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
     }
     run(async () => {
       await DB.saveSubmission({ courseId: course.id, assignment, studentId, status: "submitted", file, writtenContent: html, previous: sub });
+      if (html) editor.clearDraft();
       closeModal();
     }, afterSave, { success: "Turned in — it's now waiting in your instructor's grading queue." });
   });
@@ -1810,7 +2011,7 @@ function renderCalendar(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">${role === "student" ? "Student Dashboard" : "Faculty & Admin"}</div>
+      <div class="eyebrow">${role === "student" ? "Student Dashboard" : staffEyebrow()}</div>
       <h1>Calendar</h1>
       <p>${role === "student" ? "Every assignment due date across your classes. Tap a day to see what's due and start it." : "Your class days and every assignment due date in the courses you teach. Tap a day for details."}</p>
     </div>
@@ -1910,308 +2111,6 @@ function renderCalendar(main) {
   });
 }
 
-// Study Bible — the full King James Version (all 66 books), read live from
-// bible-api.com (public-domain KJV text, free, no key). Chapters are cached
-// in this browser after the first read. Words with a dotted gold underline
-// open their Strong's Concordance entry — tagged for now in the Featured
-// Passages (hand-checked); full-Bible Strong's tagging is a later, one-time
-// import of the STEPBible dataset. Highlights are saved to each person's
-// account, so they follow them to any device.
-const BIBLE_BOOKS = [
-  ["GEN", "Genesis", 50], ["EXO", "Exodus", 40], ["LEV", "Leviticus", 27], ["NUM", "Numbers", 36], ["DEU", "Deuteronomy", 34],
-  ["JOS", "Joshua", 24], ["JDG", "Judges", 21], ["RUT", "Ruth", 4], ["1SA", "1 Samuel", 31], ["2SA", "2 Samuel", 24],
-  ["1KI", "1 Kings", 22], ["2KI", "2 Kings", 25], ["1CH", "1 Chronicles", 29], ["2CH", "2 Chronicles", 36], ["EZR", "Ezra", 10],
-  ["NEH", "Nehemiah", 13], ["EST", "Esther", 10], ["JOB", "Job", 42], ["PSA", "Psalms", 150], ["PRO", "Proverbs", 31],
-  ["ECC", "Ecclesiastes", 12], ["SNG", "Song of Solomon", 8], ["ISA", "Isaiah", 66], ["JER", "Jeremiah", 52], ["LAM", "Lamentations", 5],
-  ["EZK", "Ezekiel", 48], ["DAN", "Daniel", 12], ["HOS", "Hosea", 14], ["JOL", "Joel", 3], ["AMO", "Amos", 9],
-  ["OBA", "Obadiah", 1], ["JON", "Jonah", 4], ["MIC", "Micah", 7], ["NAM", "Nahum", 3], ["HAB", "Habakkuk", 3],
-  ["ZEP", "Zephaniah", 3], ["HAG", "Haggai", 2], ["ZEC", "Zechariah", 14], ["MAL", "Malachi", 4],
-  ["MAT", "Matthew", 28], ["MRK", "Mark", 16], ["LUK", "Luke", 24], ["JHN", "John", 21], ["ACT", "Acts", 28],
-  ["ROM", "Romans", 16], ["1CO", "1 Corinthians", 16], ["2CO", "2 Corinthians", 13], ["GAL", "Galatians", 6], ["EPH", "Ephesians", 6],
-  ["PHP", "Philippians", 4], ["COL", "Colossians", 4], ["1TH", "1 Thessalonians", 5], ["2TH", "2 Thessalonians", 3], ["1TI", "1 Timothy", 6],
-  ["2TI", "2 Timothy", 4], ["TIT", "Titus", 3], ["PHM", "Philemon", 1], ["HEB", "Hebrews", 13], ["JAS", "James", 5],
-  ["1PE", "1 Peter", 5], ["2PE", "2 Peter", 3], ["1JN", "1 John", 5], ["2JN", "2 John", 1], ["3JN", "3 John", 1],
-  ["JUD", "Jude", 1], ["REV", "Revelation", 22],
-];
-const BOOK_INDEX = {};
-BIBLE_BOOKS.forEach(([id, name, chapters], i) => { BOOK_INDEX[id] = { id, name, chapters, i }; });
-const BOOK_ID_BY_NAME = {};
-BIBLE_BOOKS.forEach(([id, name]) => { BOOK_ID_BY_NAME[name] = id; });
-
-// Strong's word tags for the featured passages, keyed "JHN.3.16".
-const STRONGS_TAGS = {};
-STUDY_BIBLE_PASSAGES.forEach((p) => {
-  p.bookId = BOOK_ID_BY_NAME[p.book];
-  p.verses.forEach((v) => { if (v.tags && v.tags.length) STRONGS_TAGS[`${p.bookId}.${p.chapter}.${v.n}`] = v.tags; });
-});
-function studyBibleRef(p) {
-  const first = p.verses[0].n, last = p.verses[p.verses.length - 1].n;
-  return `${p.book} ${p.chapter}:${first}${last !== first ? "–" + last : ""}`;
-}
-
-const chapterCache = {};
-async function fetchChapter(bookId, chapter) {
-  const key = `${bookId}.${chapter}`;
-  if (chapterCache[key]) return chapterCache[key];
-  try {
-    const cached = localStorage.getItem("kjv:" + key);
-    if (cached) return (chapterCache[key] = JSON.parse(cached));
-  } catch (e) { /* storage unavailable — just fetch */ }
-  let res;
-  try {
-    res = await fetch(`https://bible-api.com/data/kjv/${bookId}/${chapter}`);
-  } catch (e) {
-    throw new Error("Couldn't reach the Bible text service. Check your internet connection and try again.");
-  }
-  if (res.status === 429) throw new Error("The Bible text service is busy right now — wait a few seconds and try again.");
-  if (!res.ok) throw new Error("Couldn't load that chapter right now. Please try again.");
-  const data = await res.json();
-  const verses = (data.verses || []).map((v) => ({ n: v.verse, text: String(v.text || "").replace(/\s+/g, " ").trim() }));
-  if (!verses.length) throw new Error("That chapter came back empty. Please try again.");
-  chapterCache[key] = verses;
-  try { localStorage.setItem("kjv:" + key, JSON.stringify(verses)); } catch (e) { /* full or private — fine */ }
-  return verses;
-}
-
-function renderVerseHtml(text, tags) {
-  let html = esc(text);
-  (tags || []).forEach((tag) => {
-    const escaped = tag.w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp("\\b(" + escaped + ")\\b");
-    html = html.replace(re, (m) => `<span class="sw" data-strongs="${tag.s}" tabindex="0" role="button" aria-label="${esc(m)} — Strong's ${tag.s}">${m}</span>`);
-  });
-  return html;
-}
-
-function openStrongsModal(code) {
-  const entry = STRONGS_LEXICON[code];
-  if (!entry) return;
-  const root = document.getElementById("modalRoot");
-  root.innerHTML = `
-    <div class="modal-backdrop">
-      <div class="modal" style="max-width:420px;" role="dialog" aria-modal="true" aria-label="Strong's ${code}">
-        <div class="strongs-code">${code}</div>
-        <div class="strongs-word" lang="${entry.lang === "Hebrew" ? "he" : "grc"}">${entry.word}</div>
-        <div class="strongs-translit">${esc(entry.translit)} <span class="pill pill-navy" style="margin-left:6px;">${entry.lang}</span></div>
-        <p style="margin-top:14px;">${esc(entry.def)}</p>
-        <div class="form-actions"><button class="btn btn-ghost" id="strongsClose">Close</button></div>
-      </div>
-    </div>`;
-  document.getElementById("strongsClose").addEventListener("click", closeModal);
-}
-
-function highlightedKeys() {
-  const set = {};
-  bibleHighlightRows.forEach((r) => { set[r.verse_key] = true; });
-  return set;
-}
-
-let sbScrollToVerse = null;
-let sbLoadToken = 0;
-
-function renderStudyBible(main) {
-  const book = BOOK_INDEX[sbBookId] || BOOK_INDEX.JHN;
-  if (sbChapter > book.chapters) sbChapter = book.chapters;
-  const hlCount = bibleHighlightRows.length;
-
-  main.innerHTML = `
-    <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
-    <div class="page-header">
-      <div class="eyebrow">${role === "student" ? "Student Dashboard" : "Faculty & Admin"}</div>
-      <h1>Study Bible</h1>
-      <p>The King James Version, with an inline Strong's Concordance &amp; Lexicon.</p>
-    </div>
-    <div class="study-bible-layout">
-      <div class="sb-sidebar">
-        <div class="sb-picker">
-          <label for="sbBook">Book</label>
-          <select id="sbBook">
-            <optgroup label="Old Testament">${BIBLE_BOOKS.slice(0, 39).map(([id, name]) => `<option value="${id}" ${id === book.id ? "selected" : ""}>${name}</option>`).join("")}</optgroup>
-            <optgroup label="New Testament">${BIBLE_BOOKS.slice(39).map(([id, name]) => `<option value="${id}" ${id === book.id ? "selected" : ""}>${name}</option>`).join("")}</optgroup>
-          </select>
-          <label for="sbChapter">Chapter</label>
-          <select id="sbChapter">${Array.from({ length: book.chapters }, (_, i) => `<option value="${i + 1}" ${i + 1 === sbChapter ? "selected" : ""}>${i + 1}</option>`).join("")}</select>
-        </div>
-        <button class="btn btn-ghost btn-sm" id="sbToggleHighlights" style="width:100%;margin:12px 0 10px;justify-content:center;">${studyBibleShowHighlightsOnly ? "&larr; Back to Reading" : `★ My Highlights (${hlCount})`}</button>
-        <div class="sb-featured-title">Featured passages · Strong's tagged</div>
-        <div class="sb-featured">
-        ${STUDY_BIBLE_PASSAGES.map((p) => `
-          <div class="sb-passage-item ${!studyBibleShowHighlightsOnly && p.bookId === book.id && p.chapter === sbChapter ? "active" : ""}" data-passage="${p.id}" tabindex="0" role="button">
-            <div class="sb-passage-ref">${studyBibleRef(p)}</div>
-            <div class="sb-passage-blurb">${esc(p.blurb)}</div>
-          </div>`).join("")}
-        </div>
-      </div>
-      <div class="sb-reading card" id="sbReading" aria-live="polite"></div>
-    </div>
-  `;
-  document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
-  document.getElementById("sbToggleHighlights").addEventListener("click", () => { studyBibleShowHighlightsOnly = !studyBibleShowHighlightsOnly; renderStudyBible(main); });
-  document.getElementById("sbBook").addEventListener("change", (e) => { sbBookId = e.target.value; sbChapter = 1; studyBibleShowHighlightsOnly = false; renderStudyBible(main); });
-  document.getElementById("sbChapter").addEventListener("change", (e) => { sbChapter = parseInt(e.target.value, 10) || 1; studyBibleShowHighlightsOnly = false; renderStudyBible(main); });
-  main.querySelectorAll("[data-passage]").forEach((el) => {
-    const open = () => {
-      const p = STUDY_BIBLE_PASSAGES.find((x) => x.id === el.dataset.passage);
-      sbBookId = p.bookId;
-      sbChapter = p.chapter;
-      sbScrollToVerse = p.verses[0].n > 1 ? p.verses[0].n : null;
-      studyBibleShowHighlightsOnly = false;
-      renderStudyBible(main);
-    };
-    el.addEventListener("click", open);
-    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
-  });
-
-  const wrap = document.getElementById("sbReading");
-  const hl = highlightedKeys();
-
-  function verseActionsHtml(key) {
-    const on = !!hl[key];
-    return `
-      <div class="verse-actions">
-        <button type="button" class="verse-act-btn ${on ? "active" : ""}" data-hl="${key}" aria-pressed="${on}">${on ? "★ Highlighted" : "☆ Highlight"}</button>
-        <button type="button" class="verse-act-btn" data-copy="${key}">⧉ Copy</button>
-      </div>`;
-  }
-
-  function wireVerseActions(lookup) {
-    wrap.querySelectorAll(".sw").forEach((el) => {
-      el.addEventListener("click", () => openStrongsModal(el.dataset.strongs));
-      el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openStrongsModal(el.dataset.strongs); } });
-    });
-    wrap.querySelectorAll("[data-hl]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const key = btn.dataset.hl;
-        const v = lookup(key);
-        if (!v) return;
-        const turnOn = !hl[key];
-        run(async () => {
-          await DB.setHighlight(key, v.reference, v.text, turnOn);
-          if (turnOn) bibleHighlightRows.push({ verse_key: key, reference: v.reference, verse_text: v.text });
-          else bibleHighlightRows = bibleHighlightRows.filter((r) => r.verse_key !== key);
-        }, () => { const y = window.scrollY; renderStudyBible(main); window.scrollTo(0, y); }, { reload: false });
-      });
-    });
-    wrap.querySelectorAll("[data-copy]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const v = lookup(btn.dataset.copy);
-        if (!v) return;
-        const text = `${v.reference} — ${v.text} (KJV)`;
-        const done = () => { btn.textContent = "✓ Copied"; setTimeout(() => { btn.textContent = "⧉ Copy"; }, 1400); };
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(() => toast("Couldn't copy — select the verse text instead."));
-        else toast("Copying isn't supported in this browser — select the verse text instead.");
-      });
-    });
-  }
-
-  if (studyBibleShowHighlightsOnly) {
-    const rows = [...bibleHighlightRows].sort((a, b) => verseOrder(a.verse_key) - verseOrder(b.verse_key));
-    wrap.innerHTML = rows.length === 0
-      ? `<div class="empty-state"><div class="icon-badge" style="margin:0 auto 14px;">${icon("note")}</div><p>No highlighted verses yet — read a chapter and tap ☆ Highlight on any verse to save it here.</p></div>`
-      : `<div class="section-title" style="margin:0 0 10px;"><h2>My Highlights</h2></div>` + rows.map((r) => `
-          <div class="verse-row verse-highlighted">
-            <div class="verse-ref"><a href="#" data-goto-verse="${r.verse_key}">${esc(r.reference)}</a></div>
-            <div class="verse-text">${renderVerseHtml(r.verse_text, STRONGS_TAGS[r.verse_key])}</div>
-            ${verseActionsHtml(r.verse_key)}
-          </div>`).join("");
-    wireVerseActions((key) => {
-      const r = bibleHighlightRows.find((x) => x.verse_key === key);
-      return r ? { reference: r.reference, text: r.verse_text } : null;
-    });
-    wrap.querySelectorAll("[data-goto-verse]").forEach((a) => {
-      a.addEventListener("click", (e) => {
-        e.preventDefault();
-        const [b, c, v] = a.dataset.gotoVerse.split(".");
-        sbBookId = b; sbChapter = parseInt(c, 10); sbScrollToVerse = parseInt(v, 10);
-        studyBibleShowHighlightsOnly = false;
-        renderStudyBible(main);
-      });
-    });
-    return;
-  }
-
-  const token = ++sbLoadToken;
-  const heading = `${book.name} ${sbChapter}`;
-  const navHtml = () => {
-    const prev = prevChapter(book.id, sbChapter);
-    const next = nextChapter(book.id, sbChapter);
-    return `<div class="sb-chapter-nav">
-      ${prev ? `<button class="btn btn-ghost btn-sm" data-chapter-nav="${prev.join(".")}">&larr; ${esc(BOOK_INDEX[prev[0]].name)} ${prev[1]}</button>` : "<span></span>"}
-      ${next ? `<button class="btn btn-ghost btn-sm" data-chapter-nav="${next.join(".")}">${esc(BOOK_INDEX[next[0]].name)} ${next[1]} &rarr;</button>` : "<span></span>"}
-    </div>`;
-  };
-  const wireChapterNav = () => {
-    wrap.querySelectorAll("[data-chapter-nav]").forEach((b) => {
-      b.addEventListener("click", () => {
-        const [bk, ch] = b.dataset.chapterNav.split(".");
-        sbBookId = bk; sbChapter = parseInt(ch, 10);
-        renderStudyBible(main);
-        document.getElementById("sbReading").scrollIntoView({ block: "start", behavior: "smooth" });
-      });
-    });
-  };
-
-  wrap.innerHTML = `<div class="section-title" style="margin:0 0 10px;"><h2>${esc(heading)}</h2></div><p style="color:var(--muted-foreground);">Loading…</p>`;
-  fetchChapter(book.id, sbChapter)
-    .then((verses) => {
-      if (token !== sbLoadToken || view !== "studyBible") return;
-      const anyTags = verses.some((v) => STRONGS_TAGS[`${book.id}.${sbChapter}.${v.n}`]);
-      wrap.innerHTML = `
-        <div class="section-title" style="margin:0 0 6px;"><h2>${esc(heading)}</h2>${anyTags ? `<span class="pill pill-gold">Strong's tagged</span>` : ""}</div>
-        ${anyTags ? `<p class="field-hint" style="margin:0 0 8px;">Tap a word with a dotted gold underline for its Hebrew or Greek meaning.</p>` : ""}
-        ${verses.map((v) => {
-          const key = `${book.id}.${sbChapter}.${v.n}`;
-          return `
-          <div class="verse-row ${hl[key] ? "verse-highlighted" : ""}" id="verse-${v.n}">
-            <div class="verse-num">${v.n}</div>
-            <div class="verse-text">${renderVerseHtml(v.text, STRONGS_TAGS[key])}</div>
-            ${verseActionsHtml(key)}
-          </div>`;
-        }).join("")}
-        ${navHtml()}
-        <p class="field-hint" style="margin-top:14px;">King James Version (public domain) via bible-api.com.</p>
-      `;
-      wireVerseActions((key) => {
-        const n = parseInt(key.split(".")[2], 10);
-        const v = verses.find((x) => x.n === n);
-        return v ? { reference: `${book.name} ${sbChapter}:${n}`, text: v.text } : null;
-      });
-      wireChapterNav();
-      if (sbScrollToVerse) {
-        const el = document.getElementById("verse-" + sbScrollToVerse);
-        sbScrollToVerse = null;
-        if (el) el.scrollIntoView({ block: "center" });
-      }
-    })
-    .catch((err) => {
-      if (token !== sbLoadToken) return;
-      wrap.innerHTML = `
-        <div class="section-title" style="margin:0 0 10px;"><h2>${esc(heading)}</h2></div>
-        <div class="warning-box">${icon("warning")}<p>${esc(err.message)}</p></div>
-        <button class="btn btn-primary btn-sm" id="sbRetry">Try Again</button>`;
-      document.getElementById("sbRetry").addEventListener("click", () => renderStudyBible(main));
-    });
-}
-
-function verseOrder(key) {
-  const [b, c, v] = key.split(".");
-  const bi = BOOK_INDEX[b] ? BOOK_INDEX[b].i : 99;
-  return bi * 1e6 + (parseInt(c, 10) || 0) * 1e3 + (parseInt(v, 10) || 0);
-}
-function prevChapter(bookId, ch) {
-  if (ch > 1) return [bookId, ch - 1];
-  const i = BOOK_INDEX[bookId].i;
-  if (i === 0) return null;
-  const [pid, , pch] = BIBLE_BOOKS[i - 1];
-  return [pid, pch];
-}
-function nextChapter(bookId, ch) {
-  if (ch < BOOK_INDEX[bookId].chapters) return [bookId, ch + 1];
-  const i = BOOK_INDEX[bookId].i;
-  if (i === BIBLE_BOOKS.length - 1) return null;
-  return [BIBLE_BOOKS[i + 1][0], 1];
-}
-
 // Student: a running, per-course grade — visible only to that student —
 // plus every assignment's status and score as it's given, so the
 // cumulative grade is easy to watch move through the semester.
@@ -2302,7 +2201,7 @@ function renderGrading(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">Faculty &amp; Admin</div>
+      <div class="eyebrow">${staffEyebrow()}</div>
       <h1>Grading</h1>
       <p>Work turned in across the courses you teach, waiting on a grade.</p>
     </div>
@@ -2310,7 +2209,7 @@ function renderGrading(main) {
     ${activeCourses.length === 0 ? `
     <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("cap")}</div>
-      <p>You aren't teaching any active courses. Add one from the Courses page, or ask a Super Admin to assign you as a course's teacher.</p>
+      <p>You aren't teaching any active courses. Add one from the Courses page, or ask an Admin to assign you as a course's teacher.</p>
     </div>` : `
     <div class="grid grid-compact">
       ${activeCourses.map((c) => {
@@ -2513,7 +2412,7 @@ function renderDiscussion(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">${role === "student" ? "Student Dashboard" : "Faculty & Admin"}</div>
+      <div class="eyebrow">${role === "student" ? "Student Dashboard" : staffEyebrow()}</div>
       <h1>Discussion Board</h1>
       <p>Each course has its own board — pick a class to join the conversation.</p>
     </div>
@@ -2665,7 +2564,7 @@ function renderDiscussionPosts(c) {
 // itself, so archiving a course ("the class closes") clears it.
 // ---------------------------------------------------------------------
 function courseInstructor(c) {
-  // With no teacher assigned, the Institute's Super Admins receive the
+  // With no teacher assigned, the Institute's Admins receive the
   // messages until one is.
   return users.find((u) => u.id === c.facultyId && u.role === "faculty") || { id: null, name: "Institute administrators" };
 }
@@ -2750,7 +2649,7 @@ function renderMessages(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">${role === "student" ? "Student Dashboard" : "Faculty & Admin"}</div>
+      <div class="eyebrow">${role === "student" ? "Student Dashboard" : staffEyebrow()}</div>
       <h1>${role === "student" ? "Send Message" : "Message Inbox"}</h1>
       <p>${role === "student" ? "A private conversation with each of your instructors — classmates can't see it, and you can't message other students." : "One private conversation per student, per class you teach."}</p>
     </div>
@@ -2976,7 +2875,7 @@ function renderManage(main) {
         <h1 style="margin-top:10px;">${esc(c.title)}</h1>
         <div style="display:flex;gap:8px;margin-top:10px;flex-shrink:0;">
           <button class="btn btn-outline-gold btn-sm" id="mgEditCourse">Edit Course Details</button>
-          ${c.archived ? `<button class="btn btn-danger btn-sm" id="mgDeleteCourse">Delete Course</button>` : ""}
+          ${c.archived && isAdmin() ? `<button class="btn btn-danger btn-sm" id="mgDeleteCourse">Delete Course</button>` : ""}
         </div>
       </div>
       <p>${esc(c.description)} · ${c.credits} credit${c.credits === 1 ? "" : "s"}</p>
@@ -3815,7 +3714,7 @@ function renderAttendanceHome(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">Faculty &amp; Admin</div>
+      <div class="eyebrow">${staffEyebrow()}</div>
       <h1>Attendance</h1>
       <p>Your courses that record attendance. Tap a course to take or review it.</p>
     </div>
@@ -4000,32 +3899,32 @@ function renderTeacherCard(c) {
   const started = courseStarted(c);
   const startTxt = c.schedule.startDate ? parseDay(c.schedule.startDate).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }) : "";
   const faculty = users.filter((u) => u.role === "faculty" && u.status === "active").sort((a, b) => a.name.localeCompare(b.name));
-  const formerNote = c.facultyId && !t ? `<p class="field-hint" style="margin:8px 0 0;">The previously assigned teacher is no longer active faculty, so the Super Admins are covering this course until a new teacher is chosen.</p>` : "";
+  const formerNote = c.facultyId && !t ? `<p class="field-hint" style="margin:8px 0 0;">The previously assigned teacher is no longer active faculty, so the Admins are covering this course until a new teacher is chosen.</p>` : "";
   const current = `
     <div class="teacher-current">
       ${t ? avatarHtml(t, 44) : `<span class="avatar avatar-initials" style="width:44px;height:44px;font-size:16px;">?</span>`}
       <div>
         <div class="teacher-name">${t ? esc(t.name) : "No teacher yet"}${t && t.id === currentUser.id ? ` <span class="pill pill-gold" style="margin-left:6px;">You</span>` : ""}</div>
-        <div class="field-hint" style="margin:2px 0 0;">${t ? "Sees this course's grades, private messages, and discussion board." : "Until one is assigned, the Super Admins receive this course's messages and enrollment requests."}</div>
+        <div class="field-hint" style="margin:2px 0 0;">${t ? "Sees this course's grades, private messages, and discussion board." : "Until one is assigned, the Admins receive this course's messages and enrollment requests."}</div>
       </div>
     </div>`;
 
   if (!canChangeTeacher(c)) {
     wrap.innerHTML = `${current}${formerNote}
       <div class="privacy-note" style="margin-top:14px;">${icon("lock")}<span>${started
-        ? `This course started ${esc(startTxt)}, so only a Super Admin can change its teacher — for example, if a teacher is unable to finish the course.`
-        : "Only this course's teacher or a Super Admin can change who teaches it."}</span></div>`;
+        ? `This course started ${esc(startTxt)}, so only an Admin can change its teacher — for example, if a teacher is unable to finish the course.`
+        : "Only this course's teacher or an Admin can change who teaches it."}</span></div>`;
     return;
   }
 
   const hint = sa
-    ? `As a Super Admin you can change the teacher at any time — for example, if a teacher is unable to finish the course. The new teacher sees the course's full grade book, messages, and discussion; the previous teacher no longer does.`
-    : started ? "" : `You can hand this course to another faculty member${startTxt ? ` until it starts on ${esc(startTxt)}` : " until it starts"}. After that, only a Super Admin can change its teacher.`;
+    ? `As an Admin you can change the teacher at any time — for example, if a teacher is unable to finish the course. The new teacher sees the course's full grade book, messages, and discussion; the previous teacher no longer does.`
+    : started ? "" : `You can hand this course to another faculty member${startTxt ? ` until it starts on ${esc(startTxt)}` : " until it starts"}. After that, only an Admin can change its teacher.`;
   wrap.innerHTML = `${current}${formerNote}
     <label for="mgTeacher" style="margin-top:16px;">Change teacher</label>
     <div class="teacher-change-row">
       <select id="mgTeacher">
-        ${sa ? `<option value="" ${t ? "" : "selected"}>No teacher (Super Admins cover it)</option>` : ""}
+        ${sa ? `<option value="" ${t ? "" : "selected"}>No teacher (Admins cover it)</option>` : ""}
         ${faculty.map((u) => `<option value="${u.id}" ${t && u.id === t.id ? "selected" : ""}>${esc(u.name)}</option>`).join("")}
       </select>
       <button class="btn btn-primary btn-sm" id="mgSaveTeacher">Assign</button>
@@ -4038,8 +3937,8 @@ function renderTeacherCard(c) {
     const newName = newId ? userName(newId) : "no teacher";
     const handingOff = t && t.id === currentUser.id;
     const msg = handingOff
-      ? `Hand "${c.title}" to ${newName}?\n\nYou'll no longer see this course's grades, private messages, or discussion board.${sa ? "" : " You won't be able to manage the course either, and once it starts only a Super Admin can change its teacher."}`
-      : `Make ${newName === "no teacher" ? "this course unassigned" : newName + " the teacher of \"" + c.title + "\""}?\n\n${newId ? "They'll see the course's full grade book, messages, and discussion board" + (t ? `, and ${t.name} no longer will.` : ".") : "The Super Admins will receive its messages and enrollment requests until a teacher is chosen."}`;
+      ? `Hand "${c.title}" to ${newName}?\n\nYou'll no longer see this course's grades, private messages, or discussion board.${sa ? "" : " You won't be able to manage the course either, and once it starts only an Admin can change its teacher."}`
+      : `Make ${newName === "no teacher" ? "this course unassigned" : newName + " the teacher of \"" + c.title + "\""}?\n\n${newId ? "They'll see the course's full grade book, messages, and discussion board" + (t ? `, and ${t.name} no longer will.` : ".") : "The Admins will receive its messages and enrollment requests until a teacher is chosen."}`;
     if (!confirm(msg)) return;
     run(() => DB.updateCourse(c.id, { faculty_id: newId }), () => {
       // Handing your own course away may mean you can no longer manage it.
@@ -4066,7 +3965,7 @@ function openCourseInfoModal(c) {
           ${t ? `<button class="person-chip" data-person="${t.id}">${avatarHtml(t, 28)}<strong>${esc(t.name)}</strong></button>` : "No teacher yet"}</div>
         <div class="person-line"><span class="person-label">Schedule</span>${esc(scheduleLine(c) || "Not scheduled yet")}</div>
         <div class="person-line"><span class="person-label">Enrollment</span>${c.studentIds.length} student${c.studentIds.length === 1 ? "" : "s"} · ${c.credits} credit${c.credits === 1 ? "" : "s"}</div>
-        <div class="privacy-note" style="margin-top:14px;">${icon("lock")}<span>Only this course's teacher or a Super Admin can change it. Its grades, messages, and discussion board are visible only to its teacher.</span></div>
+        <div class="privacy-note" style="margin-top:14px;">${icon("lock")}<span>Only this course's teacher or an Admin can change it. Its grades, messages, and discussion board are visible only to its teacher.</span></div>
         <div class="form-actions"><button class="btn btn-ghost" id="ciClose">Close</button></div>
       </div>
     </div>`;
@@ -4648,17 +4547,10 @@ function renderSettings(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
-      <div class="eyebrow">Faculty &amp; Admin</div>
+      <div class="eyebrow">${staffEyebrow()}</div>
       <h1>Settings</h1>
     </div>
-    ${currentUser && currentUser.superAdmin ? `
-    <div class="section-title"><h2>Super Admins</h2><span class="pill pill-navy">${countSuperAdmins()}/${MAX_SUPER_ADMINS}</span></div>
-    <div class="card">
-      <div id="superAdminWrap"></div>
-    </div>
-    <p style="color:var(--muted-foreground);font-size:.85rem;">Super Admins can add or remove other Super Admins, up to ${MAX_SUPER_ADMINS} at a time. It's a separate tier from Faculty/Admin below — someone can hold both, either one, or neither.</p>
-    ` : ""}
-    <div class="section-title"><h2>Users &amp; Roles</h2></div>
+    <div class="section-title"><h2>${isAdmin() ? "Users &amp; Levels" : "Users"}</h2>${isAdmin() ? `<span class="pill pill-navy" title="Admins">${countSuperAdmins()}/${MAX_SUPER_ADMINS} Admins</span>` : ""}</div>
     <div class="card">
       <div class="card-row">
         <div class="subtabs" id="userTabs">
@@ -4674,7 +4566,8 @@ function renderSettings(main) {
       </div>
       <div id="userListWrap" style="margin-top:6px;"></div>
     </div>
-    <p style="color:var(--muted-foreground);font-size:.85rem;">New sign-ups wait under <strong>Waiting for Approval</strong> until a faculty member approves them (Super Admins get a bell notification). Approved accounts start as students. Every faculty account has full admin access over courses and grading — there's no separate tier for that. Super Admin (above, visible only to current Super Admins) is the one exception: a small, separately-managed permission for who can grant it to others.</p>
+    <p style="color:var(--muted-foreground);font-size:.85rem;">New sign-ups wait under <strong>Waiting for Approval</strong> until Faculty or an Admin approves them (Admins get a bell notification). Approved accounts start as students.
+      <strong>Faculty</strong> create and run courses — schedules, rosters, assignments, materials, grading. <strong>Admins</strong> can also change anyone's level, turn accounts off or delete them, and permanently delete courses (up to ${MAX_SUPER_ADMINS} Admins).${isAdmin() ? "" : " Ask an Admin to change someone's level."}</p>
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
 
@@ -4684,57 +4577,7 @@ function renderSettings(main) {
   document.getElementById("sortSelect").value = userSort;
   document.getElementById("sortSelect").addEventListener("change", (e) => { userSort = e.target.value; renderUserList(); });
 
-  if (currentUser && currentUser.superAdmin) renderSuperAdminList();
   renderUserList();
-}
-
-function renderSuperAdminList() {
-  const wrap = document.getElementById("superAdminWrap");
-  if (!wrap) return;
-  const admins = users.filter((u) => u.superAdmin && u.status === "active").sort((a, b) => a.name.localeCompare(b.name));
-  const eligible = users.filter((u) => !u.superAdmin && u.status === "active").sort((a, b) => a.name.localeCompare(b.name));
-  const atMax = admins.length >= MAX_SUPER_ADMINS;
-  wrap.innerHTML = `
-    ${admins.length === 0 ? `<div class="empty-state"><p>No Super Admins right now.</p></div>` : admins
-      .map(
-        (u) => `
-      <div class="user-row">
-        <div class="user-info">
-          <div class="u-name">${esc(u.name)} <span class="pill ${u.role === "faculty" ? "pill-gold" : "pill-navy"}" style="margin-left:6px;">${u.role}</span></div>
-          <div class="u-email">${esc(u.email)}</div>
-        </div>
-        <button class="btn btn-danger btn-sm" data-remove-admin="${u.id}">Remove</button>
-      </div>`
-      )
-      .join("")}
-    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
-      ${
-        atMax
-          ? `<p class="field-hint">Maximum of ${MAX_SUPER_ADMINS} Super Admins reached — remove one before adding another.</p>`
-          : eligible.length === 0
-            ? `<p class="field-hint">No other active accounts to promote.</p>`
-            : `<label for="superAdminSelect">Add a Super Admin</label>
-             <select id="superAdminSelect">${eligible.map((u) => `<option value="${u.id}">${esc(u.name)} — ${esc(u.email)}</option>`).join("")}</select>
-             <div class="form-actions"><button class="btn btn-gold btn-sm" id="addSuperAdminBtn">Make Super Admin</button></div>`
-      }
-    </div>
-  `;
-  wrap.querySelectorAll("[data-remove-admin]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const u = users.find((x) => x.id === btn.dataset.removeAdmin);
-      const self = currentUser && u.id === currentUser.id;
-      if (self && !confirm("Remove your own Super Admin access? You won't be able to undo this yourself.")) return;
-      run(() => DB.updateProfile(u.id, { super_admin: false }), () => { renderAccountPill(); renderMain(); });
-    });
-  });
-  const addBtn = wrap.querySelector("#addSuperAdminBtn");
-  if (addBtn) {
-    addBtn.addEventListener("click", () => {
-      const sel = document.getElementById("superAdminSelect");
-      const u = users.find((x) => x.id === sel.value);
-      if (u && countSuperAdmins() < MAX_SUPER_ADMINS) run(() => DB.updateProfile(u.id, { super_admin: true }), null, { success: `${u.name} is now a Super Admin.` });
-    });
-  }
 }
 
 // Sign-ups waiting for approval: verified ones first, newest first.
@@ -4795,22 +4638,25 @@ function renderUserList() {
       <div class="user-info user-info-avatar">
         <button class="avatar-btn" data-person="${u.id}" aria-label="View ${esc(u.name)}'s profile">${avatarHtml(u, 40)}</button>
         <div>
-        <div class="u-name"><button class="name-link" data-person="${u.id}">${esc(u.name)}</button>${u.superAdmin ? ` <span class="pill pill-gold" title="Super Admin">★ Super Admin</span>` : ""}</div>
+        <div class="u-name"><button class="name-link" data-person="${u.id}">${esc(u.name)}</button></div>
         <div class="u-email">${esc(u.email)}</div>
         </div>
       </div>
       <div class="user-actions">
         ${
-          userTab === "active"
-            ? `<div class="role-toggle" data-role-toggle="${u.id}">
-                <button data-role="student" class="${u.role === "student" ? "active" : ""}">Student</button>
-                <button data-role="faculty" class="${u.role === "faculty" ? "active" : ""}">Faculty</button>
+          !isAdmin()
+            ? levelPill(u)
+            : userTab === "active"
+            ? `<div class="role-toggle" data-role-toggle="${u.id}" role="group" aria-label="Level for ${esc(u.name)}">
+                <button data-level="student" class="${userLevel(u) === "student" ? "active" : ""}">Student</button>
+                <button data-level="faculty" class="${userLevel(u) === "faculty" ? "active" : ""}">Faculty</button>
+                <button data-level="admin" class="${userLevel(u) === "admin" ? "active" : ""}" ${userLevel(u) !== "admin" && countSuperAdmins() >= MAX_SUPER_ADMINS ? `disabled title="There are already ${MAX_SUPER_ADMINS} Admins"` : ""}>Admin</button>
               </div>
               <button class="btn btn-ghost btn-sm" data-inactive="${u.id}">Make Inactive</button>`
-            : `<span class="pill ${u.role === "faculty" ? "pill-gold" : "pill-navy"}">${u.role}</span>
+            : `${levelPill(u)}
               <button class="btn btn-ghost btn-sm" data-reactivate="${u.id}">Reactivate</button>`
         }
-        <button class="btn btn-danger btn-sm" data-delete="${u.id}">Delete</button>
+        ${isAdmin() ? `<button class="btn btn-danger btn-sm" data-delete="${u.id}">Delete</button>` : ""}
       </div>
     </div>`
     )
@@ -4820,25 +4666,28 @@ function renderUserList() {
     toggle.querySelectorAll("button").forEach((btn) => {
       btn.addEventListener("click", () => {
         const u = users.find((x) => x.id === toggle.dataset.roleToggle);
-        const newRole = btn.dataset.role;
-        if (u.role === newRole) return;
+        const level = btn.dataset.level;
+        if (userLevel(u) === level) return;
         const self = currentUser && u.id === currentUser.id;
-        if (self && newRole === "student" && !confirm("Change your own account to Student? You'll lose access to faculty pages, including this one.")) return;
-        if (!self && newRole === "faculty" && !confirm(`Make ${u.name} Faculty? Faculty have full admin access to every course, grade, and account.`)) return;
-        run(() => DB.updateProfile(u.id, { role: newRole }), () => {
-          // Changing your own role takes effect right away.
+        if (self && !confirm(`Change your own level to ${LEVEL_LABEL[level]}? You'll lose Admin access${level === "student" ? ", including faculty pages" : ""} and can't undo this yourself.`)) return;
+        if (!self && level === "admin" && !confirm(`Make ${u.name} an Admin? Admins can change anyone's level, turn off or delete accounts, and delete courses.`)) return;
+        if (!self && level === "faculty" && userLevel(u) === "student" && !confirm(`Make ${u.name} Faculty? Faculty can create and run courses, see the student list, and approve new sign-ups.`)) return;
+        const patch = level === "admin" ? { role: "faculty", super_admin: true } : { role: level, super_admin: false };
+        run(() => DB.updateProfile(u.id, patch), () => {
+          // Changing your own level takes effect right away.
           if (self) {
-            currentUser.role = newRole;
-            role = newRole;
+            currentUser.role = patch.role;
+            currentUser.superAdmin = patch.super_admin;
+            role = patch.role;
             currentStudentId = u.id;
-            if (newRole === "student") view = "home";
+            if (patch.role === "student") view = "home";
             renderAccountPill();
             renderNav();
             renderMain();
           } else {
             renderUserList();
           }
-        }, { success: `${u.name} is now ${newRole === "faculty" ? "Faculty" : "a Student"}.` });
+        }, { success: `${u.name} is now ${level === "admin" ? "an Admin" : level === "faculty" ? "Faculty" : "a Student"}.` });
       });
     });
   });
@@ -4847,7 +4696,7 @@ function renderUserList() {
     btn.addEventListener("click", () => {
       const u = users.find((x) => x.id === btn.dataset.inactive);
       const self = currentUser && u.id === currentUser.id;
-      if (self && !confirm("Make your own account inactive? You'll be signed out and won't be able to sign back in until another faculty member reactivates you.")) return;
+      if (self && !confirm("Make your own account inactive? You'll be signed out and won't be able to sign back in until another Admin reactivates you.")) return;
       run(() => DB.updateProfile(u.id, { status: "inactive" }), () => {
         // Deactivating your own account signs you out immediately.
         if (self) { signOut("Your account is now inactive."); return; }
@@ -4976,7 +4825,7 @@ function renderProfile(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; ${backLabel}</button>
     <div class="page-header">
-      <div class="eyebrow">${editingOther ? "Faculty &amp; Admin · Editing a profile" : "My Profile"}</div>
+      <div class="eyebrow">${editingOther ? staffEyebrow() + " · Editing a profile" : "My Profile"}</div>
       <h1>${editingOther ? esc(u.name) : "Your Profile"}</h1>
     </div>
 
@@ -4992,8 +4841,7 @@ function renderProfile(main) {
       <div class="profile-id-col">
         <div class="profile-name">${esc(u.name)}</div>
         <div class="profile-pills">
-          <span class="pill ${u.role === "faculty" ? "pill-gold" : "pill-navy"}">${u.role === "faculty" ? "Faculty" : "Student"}</span>
-          ${u.superAdmin ? `<span class="pill pill-gold">★ Super Admin</span>` : ""}
+          ${levelPill(u)}
         </div>
         <div class="profile-email">${icon("mail")}<span>${esc(u.email)}</span></div>
         <p class="field-hint" style="margin:6px 0 0;">${isSelf ? "Your email is how you sign in, so it can't be changed here." : "Their email is how they sign in, so it can't be changed here."}</p>
@@ -5216,7 +5064,7 @@ function openPersonCard(userId) {
           ${avatarHtml(u, 88)}
           <div>
             <h2 id="personName" style="font-size:1.25rem;margin:0 0 6px;">${esc(u.name)}</h2>
-            <span class="pill ${u.role === "faculty" ? "pill-gold" : "pill-navy"}">${u.role === "faculty" ? "Faculty" : "Student"}</span>
+            ${levelPill(u)}
           </div>
         </div>
         ${u.homeChurch ? `<div class="person-line"><span class="person-label">Home church</span>${esc(u.homeChurch)}</div>` : ""}
@@ -5325,7 +5173,7 @@ function boot() {
       }
       if (session && (event === "INITIAL_SESSION" || event === "SIGNED_IN" || event === "PASSWORD_RECOVERY")) {
         settled = true;
-        startSession(session, { force: event === "PASSWORD_RECOVERY" });
+        startSession(session, { force: event === "PASSWORD_RECOVERY", restored: event === "INITIAL_SESSION" && !/access_token|[?&]code=|type=recovery/.test(location.href) });
         return;
       }
       if (event === "INITIAL_SESSION" && !session) {

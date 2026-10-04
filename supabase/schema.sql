@@ -14,9 +14,14 @@
 -- Roles:
 --   student  — every new account. Sees only their own work, grades, and
 --              messages, plus the courses they're enrolled in.
---   faculty  — teach courses; manage user accounts and roles.
---   super_admin (separate flag, max 4) — can grant/remove Super Admin,
---              and manage (but not read the grades of) every course.
+--   faculty  — create and run courses (schedules, rosters, assignments,
+--              materials, grading); approve new sign-ups and enrollment
+--              requests; archive courses.
+--   super_admin (flag, max 4; shown on the site as "Admin") — everything
+--              faculty can do, plus: change anyone's level (student /
+--              faculty / admin), turn accounts off or back on, delete
+--              accounts, and permanently delete courses. Admins manage (but
+--              don't read the grades of) every course.
 --
 -- Each course has ONE teacher (courses.faculty_id). Only that teacher sees
 -- the course's grades, private messages, and discussion board. Course
@@ -478,7 +483,7 @@ begin
   -- Hard cap of 4 Super Admins, enforced everywhere.
   if new.super_admin and not old.super_admin
      and public.super_admin_count_excluding(new.id) >= 4 then
-    raise exception 'There are already 4 Super Admins. Remove one before adding another.';
+    raise exception 'There are already 4 Admins. Remove one before adding another.';
   end if;
 
   -- Trusted server-side functions (and the SQL Editor) skip the rest.
@@ -498,18 +503,26 @@ begin
     raise exception 'Your account is waiting for approval.';
   end if;
 
-  if (new.role is distinct from old.role or new.status is distinct from old.status)
-     and not public.is_faculty() then
-    raise exception 'Only faculty can change roles or account status.';
+  -- Levels (student / faculty / admin) are changed by Admins only.
+  if new.role is distinct from old.role and not public.is_super_admin() then
+    raise exception 'Only an Admin can change someone''s level.';
+  end if;
+
+  -- Faculty may approve a new sign-up (pending -> active); every other
+  -- change of account status (turning an account off or back on) is for
+  -- Admins.
+  if new.status is distinct from old.status and not public.is_super_admin()
+     and not (public.is_faculty() and old.status = 'pending' and new.status = 'active') then
+    raise exception 'Only an Admin can turn accounts off or back on.';
   end if;
 
   if new.super_admin is distinct from old.super_admin and not public.is_super_admin() then
-    raise exception 'Only a Super Admin can grant or remove Super Admin.';
+    raise exception 'Only an Admin can make someone an Admin or remove it.';
   end if;
 
   if old.super_admin and old.id <> auth.uid() and not public.is_super_admin()
      and (new.role is distinct from old.role or new.status is distinct from old.status) then
-    raise exception 'Only a Super Admin can change another Super Admin''s account.';
+    raise exception 'Only an Admin can change another Admin''s account.';
   end if;
 
   if new.name is distinct from old.name and not (public.is_faculty() or old.id = auth.uid()) then
@@ -551,15 +564,15 @@ end $$;
 
 -- Permanently delete an account and everything tied to it (enrollments,
 -- submissions, messages, requests, highlights all cascade away).
+-- Admins can delete any account. Faculty can only decline (delete) a
+-- sign-up that is still waiting for approval.
 create or replace function public.delete_user(p_user uuid) returns void
 language plpgsql security definer set search_path = public, auth as $$
 begin
-  if not public.is_faculty() then
-    raise exception 'Only faculty can delete accounts.';
-  end if;
-  if (select super_admin from public.profiles where id = p_user) and p_user <> auth.uid()
-     and not public.is_super_admin() then
-    raise exception 'Only a Super Admin can delete another Super Admin.';
+  if not public.is_super_admin() and not (
+       public.is_faculty()
+       and (select status from public.profiles where id = p_user) = 'pending') then
+    raise exception 'Only an Admin can delete accounts.';
   end if;
   delete from auth.users where id = p_user;
 end $$;
@@ -571,7 +584,7 @@ create or replace function public.approve_enrollment(p_course text, p_student uu
 language plpgsql security definer set search_path = public as $$
 declare v_title text;
 begin
-  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or a Super Admin can approve enrollment.'; end if;
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or an Admin can approve enrollment.'; end if;
   select title into v_title from courses where id = p_course;
   insert into enrollments (course_id, student_id) values (p_course, p_student) on conflict do nothing;
   delete from enrollment_requests where course_id = p_course and student_id = p_student;
@@ -582,7 +595,7 @@ create or replace function public.deny_enrollment(p_course text, p_student uuid,
 language plpgsql security definer set search_path = public as $$
 declare v_title text;
 begin
-  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or a Super Admin can deny enrollment.'; end if;
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or an Admin can deny enrollment.'; end if;
   if coalesce(trim(p_note), '') = '' then raise exception 'A note to the student is required.'; end if;
   select title into v_title from courses where id = p_course;
   delete from enrollment_requests where course_id = p_course and student_id = p_student;
@@ -853,10 +866,10 @@ begin
     end if;
     if not public.is_super_admin() then
       if old.faculty_id is distinct from auth.uid() or not public.is_faculty() then
-        raise exception 'Only this course''s teacher or a Super Admin can change who teaches it.';
+        raise exception 'Only this course''s teacher or an Admin can change who teaches it.';
       end if;
       if old.sched_start is not null and old.sched_start <= public.local_today() then
-        raise exception 'This course has already started, so only a Super Admin can change its teacher.';
+        raise exception 'This course has already started, so only an Admin can change its teacher.';
       end if;
     end if;
   end if;
@@ -949,7 +962,8 @@ create policy courses_select on public.courses for select to authenticated using
 create policy courses_insert on public.courses for insert to authenticated with check (public.is_faculty() or public.is_super_admin());
 create policy courses_update on public.courses for update to authenticated
   using (public.manages_course(id)) with check (public.is_faculty() or public.is_super_admin());
-create policy courses_delete on public.courses for delete to authenticated using (public.manages_course(id));
+-- Permanently deleting a course is for Admins only (faculty can archive).
+create policy courses_delete on public.courses for delete to authenticated using (public.is_super_admin());
 
 -- enrollments: students see only their own; faculty can see rosters; the
 -- course's teacher or a Super Admin changes them.
