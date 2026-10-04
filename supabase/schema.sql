@@ -276,6 +276,116 @@ create table if not exists public.calendar_feeds (
   created_at timestamptz not null default now()
 );
 
+-- ---------------------------------------------------------------------------
+-- Added Oct 4, 2026 (second update): locations, notifications by phone and
+-- email, backups, transcripts, class cancellations, announcements, the
+-- first-time tour.
+-- ---------------------------------------------------------------------------
+
+-- Where a class meets: a room or address, and/or an online meeting link.
+alter table public.courses
+  add column if not exists location    text not null default '' check (length(location) <= 200),
+  add column if not exists meeting_url text not null default ''
+    check (meeting_url = '' or (meeting_url ~* '^https://[^\s<>"]+$' and length(meeting_url) <= 500));
+
+-- How each person hears about things when they're not on the site.
+--   notify_email: instant (a short email a minute or two after it happens),
+--                 daily (one summary each morning), or off.
+--   last_digest_on: the day the last morning summary went out (set only by
+--                   the server).
+--   tour_seen_at: when they finished (or skipped) the first-time tour.
+alter table public.profiles
+  add column if not exists notify_email   text not null default 'instant'
+    check (notify_email in ('instant','daily','off')),
+  add column if not exists last_digest_on date,
+  add column if not exists tour_seen_at   timestamptz;
+
+-- Every bell notification can carry a link (where tapping it goes) and is
+-- delivered to the person's phone and/or email once. Notifications that
+-- existed before this update count as already delivered, so nobody gets a
+-- burst of old news.
+alter table public.notifications
+  add column if not exists link       text not null default '/' check (link ~ '^/'),
+  add column if not exists kind       text not null default 'general',
+  add column if not exists pushed_at  timestamptz default now(),
+  add column if not exists emailed_at timestamptz default now();
+alter table public.notifications alter column pushed_at drop default;
+alter table public.notifications alter column emailed_at drop default;
+create index if not exists idx_notifications_undelivered on public.notifications(created_at)
+  where pushed_at is null or emailed_at is null;
+
+-- A teacher cancels a class day (weather, illness…). Students are told,
+-- and the day drops off everyone's calendar.
+create table if not exists public.class_cancellations (
+  course_id   text not null references public.courses(id) on delete cascade,
+  class_date  date not null,
+  reason      text not null default '' check (length(reason) <= 300),
+  canceled_by uuid references public.profiles(id) on delete set null,
+  canceled_at timestamptz not null default now(),
+  primary key (course_id, class_date)
+);
+
+-- A teacher's note to the whole class.
+create table if not exists public.announcements (
+  id         uuid primary key default gen_random_uuid(),
+  course_id  text not null references public.courses(id) on delete cascade,
+  author_id  uuid references public.profiles(id) on delete set null default auth.uid(),
+  body       text not null check (length(trim(body)) between 1 and 4000),
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_announcements_course on public.announcements(course_id, created_at desc);
+
+-- The permanent academic record. One row per student per finished course,
+-- written when the teacher records final grades (or by an Admin for courses
+-- taken before the site existed). It keeps its own copy of the names,
+-- titles, and credits, so it survives the course being archived or deleted
+-- and even the student's account being deleted (student_ref keeps the
+-- original account id for grouping).
+create table if not exists public.transcript_entries (
+  id            uuid primary key default gen_random_uuid(),
+  student_id    uuid references public.profiles(id) on delete set null,
+  student_ref   uuid not null,
+  student_name  text not null,
+  student_email text not null default '',
+  course_id     text references public.courses(id) on delete set null,
+  course_title  text not null check (length(trim(course_title)) > 0),
+  credits       numeric not null default 0 check (credits >= 0 and credits <= 12),
+  level         text not null default '',
+  term          text not null default '' check (length(term) <= 40),
+  start_date    date,
+  end_date      date,
+  percent       numeric check (percent is null or (percent >= 0 and percent <= 100)),
+  grade         text not null check (grade in ('A','B','C','D','F','P','I','W','AU')),
+  attendance_percent numeric check (attendance_percent is null or (attendance_percent >= 0 and attendance_percent <= 100)),
+  teacher_name  text not null default '',
+  note          text not null default '' check (length(note) <= 300),
+  recorded_by   uuid references public.profiles(id) on delete set null,
+  recorded_at   timestamptz not null default now(),
+  unique (student_ref, course_id)
+);
+create index if not exists idx_transcripts_student on public.transcript_entries(student_ref);
+
+-- Backups: a snapshot of every table, taken nightly (and whenever an Admin
+-- downloads one). Postgres compresses these automatically. Not readable
+-- from the website except through the Admin-only functions below.
+create table if not exists public.site_backups (
+  id         bigserial primary key,
+  kind       text not null default 'nightly' check (kind in ('nightly','manual')),
+  taken_at   timestamptz not null default now(),
+  size_bytes int not null default 0,
+  data       jsonb not null,
+  emailed_at timestamptz
+);
+
+-- How the behind-the-scenes services are doing (shown to Admins in
+-- Settings), e.g. whether email sending is set up and working.
+create table if not exists public.service_status (
+  key        text primary key,
+  ok         boolean not null,
+  detail     text not null default '',
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_assignments_course on public.assignments(course_id);
 create index if not exists idx_submissions_student on public.submissions(student_id);
 create index if not exists idx_messages_thread on public.messages(course_id, student_id);
@@ -388,13 +498,20 @@ $$;
 
 -- Every day a course meets, from its schedule: the chosen weekdays, from the
 -- start date for the given number of weeks (a year if no length is set).
-create or replace function public.course_class_dates(p_course text) returns setof date
+create or replace function public.course_scheduled_dates(p_course text) returns setof date
 language sql stable security definer set search_path = public as $$
   select d::date
     from courses c,
          generate_series(c.sched_start, c.sched_start + (coalesce(c.sched_weeks, 52) * 7 - 1), interval '1 day') d
    where c.id = p_course and c.sched_start is not null
      and to_char(d, 'Dy') = any (c.sched_days)
+$$;
+-- The days a course actually meets: its scheduled days, minus any the
+-- teacher canceled.
+create or replace function public.course_class_dates(p_course text) returns setof date
+language sql stable security definer set search_path = public as $$
+  select d from public.course_scheduled_dates(p_course) d
+   where not exists (select 1 from class_cancellations x where x.course_id = p_course and x.class_date = d)
 $$;
 
 -- Can the signed-in person see this other person at all? Faculty see
@@ -460,8 +577,9 @@ declare v_name text; v_email text;
 begin
   select name, email into v_name, v_email from profiles where id = p_user and status = 'pending';
   if v_email is null then return; end if;
-  insert into notifications (user_id, subject)
-  select id, 'New sign-up waiting for approval: ' || coalesce(nullif(v_name, ''), v_email) || ' (' || v_email || ')'
+  insert into notifications (user_id, subject, link, kind)
+  select id, 'New sign-up waiting for approval: ' || coalesce(nullif(v_name, ''), v_email) || ' (' || v_email || ')',
+         '/?settings=approvals', 'signup'
     from profiles where super_admin and status = 'active';
 end $$;
 
@@ -490,8 +608,8 @@ create or replace function public.notify_on_approval() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   if old.status = 'pending' and new.status = 'active' then
-    insert into notifications (user_id, subject)
-    values (new.id, 'Welcome to the Bible Institute! Your account has been approved.');
+    insert into notifications (user_id, subject, link, kind)
+    values (new.id, 'Welcome to the Bible Institute! Your account has been approved.', '/', 'welcome');
   end if;
   return new;
 end $$;
@@ -524,7 +642,8 @@ begin
 
   if new.id is distinct from old.id or new.email is distinct from old.email
      or new.created_at is distinct from old.created_at
-     or new.email_verified_at is distinct from old.email_verified_at then
+     or new.email_verified_at is distinct from old.email_verified_at
+     or new.last_digest_on is distinct from old.last_digest_on then
     raise exception 'That field cannot be changed.';
   end if;
 
@@ -619,7 +738,7 @@ begin
   select title into v_title from courses where id = p_course;
   insert into enrollments (course_id, student_id) values (p_course, p_student) on conflict do nothing;
   delete from enrollment_requests where course_id = p_course and student_id = p_student;
-  insert into notifications (user_id, subject) values (p_student, 'You''re enrolled in ' || v_title);
+  insert into notifications (user_id, subject, link, kind) values (p_student, 'You''re enrolled in ' || v_title, '/?course=' || p_course, 'enrollment');
 end $$;
 
 create or replace function public.deny_enrollment(p_course text, p_student uuid, p_note text) returns void
@@ -635,8 +754,8 @@ begin
   values (p_course, p_student, auth.uid(), 'faculty',
           'Your request to enroll in "' || v_title || '" was not approved. ' || trim(p_note));
   perform set_config('tnbbi.skip_message_notify', 'off', true);
-  insert into notifications (user_id, subject)
-  values (p_student, 'Your enrollment request for ' || v_title || ' was not approved');
+  insert into notifications (user_id, subject, link, kind)
+  values (p_student, 'Your enrollment request for ' || v_title || ' was not approved', '/?thread=' || p_course, 'enrollment');
 end $$;
 
 -- Take (or re-take) attendance for one class day, all at once. Only the
@@ -723,55 +842,6 @@ language sql volatile security definer set search_path = public as $$
     from due join claimed on claimed.course_id = due.id and claimed.class_date = due.d
 $$;
 
--- Used only by the reminder function (never by the website): assignment
--- reminders that are due right now. A student is reminded about an
--- assignment that's open, not yet turned in, in a course they're enrolled
--- in — at 6 PM the evening before and/or 8 AM the day it's due (Alaska
--- time), as they chose. Only people with at least one device turned on are
--- included, and each reminder is claimed exactly once.
--- (p_now is only for testing; the reminder function leaves it as "now".)
-drop function if exists public.claim_assignment_reminders();
-create or replace function public.claim_assignment_reminders(p_now timestamptz default now())
-returns table (student_id uuid, kind text, assignment_id uuid, assignment_title text,
-               course_id text, course_title text, due date)
-language sql volatile security definer set search_path = public as $$
-  with now_ak as (select (p_now at time zone 'America/Anchorage') as t),
-  windows as (
-    -- evening: from 6 PM until midnight, for work due tomorrow
-    select 'evening'::text as kind, (n.t)::date + 1 as due_day
-      from now_ak n where (n.t)::time >= time '18:00'
-    union all
-    -- morning: from 8 AM until noon, for work due today
-    select 'morning', (n.t)::date
-      from now_ak n where (n.t)::time >= time '08:00' and (n.t)::time < time '12:00'
-  ),
-  due as (
-    select e.student_id, w.kind, a.id as assignment_id, a.title as assignment_title,
-           c.id as course_id, c.title as course_title, a.due
-      from windows w
-      join assignments a on a.due = w.due_day
-      join courses c on c.id = a.course_id and not c.archived
-      join enrollments e on e.course_id = c.id
-      join profiles p on p.id = e.student_id and p.status = 'active'
-     where p.due_reminders in (w.kind, 'both')
-       and (a.submit_anytime or a.open_date is null or a.open_date <= (select (t)::date from now_ak))
-       and not exists (select 1 from submissions s where s.assignment_id = a.id
-                         and s.student_id = e.student_id and s.status in ('submitted','graded'))
-       and exists (select 1 from push_subscriptions ps where ps.user_id = e.student_id)
-  ),
-  claimed as (
-    insert into assignment_reminders (assignment_id, student_id, kind)
-    select assignment_id, student_id, kind from due
-    on conflict do nothing
-    returning assignment_reminders.assignment_id, assignment_reminders.student_id, assignment_reminders.kind
-  )
-  select due.student_id, due.kind, due.assignment_id, due.assignment_title,
-         due.course_id, due.course_title, due.due
-    from due join claimed on claimed.assignment_id = due.assignment_id
-                         and claimed.student_id = due.student_id and claimed.kind = due.kind
-   order by due.student_id, due.course_title, due.assignment_title
-$$;
-
 -- Phone calendar: the signed-in person's private calendar link code
 -- (made the first time it's asked for).
 create or replace function public.my_calendar_token() returns text
@@ -805,9 +875,11 @@ end $$;
 -- account that isn't active.
 --   kind 'class' — a class meeting (class_time empty = time not set yet)
 --   kind 'due'   — an assignment due date (done = already turned in)
+drop function if exists public.calendar_feed_events(text);
 create or replace function public.calendar_feed_events(p_token text)
 returns table (kind text, ref text, course_id text, course_title text, title text,
-               day date, class_time text, done boolean, owner_name text)
+               day date, class_time text, done boolean, owner_name text,
+               location text, meeting_url text, note text)
 language sql stable security definer set search_path = public as $$
   with me as (
     select p.id, p.name from calendar_feeds f join profiles p on p.id = f.user_id
@@ -821,17 +893,443 @@ language sql stable security definer set search_path = public as $$
      where public.course_teacher(c.id) = (select id from me) and not c.archived
   )
   select 'class', mc.id || '-' || d::text, mc.id, mc.title, mc.title, d,
-         coalesce(mc.sched_time, ''), false, (select name from me)
+         coalesce(mc.sched_time, ''), false, (select name from me), mc.location, mc.meeting_url, ''
     from my_courses mc, lateral public.course_class_dates(mc.id) d
    where not exists (select 1 from attendance_days ad
                       where ad.course_id = mc.id and ad.class_date = d and not ad.held)
   union all
+  -- canceled days stay on the calendar, clearly marked, so nobody shows up
+  select 'canceled', mc.id || '-' || x.class_date::text, mc.id, mc.title, mc.title, x.class_date,
+         coalesce(mc.sched_time, ''), false, (select name from me), mc.location, mc.meeting_url, x.reason
+    from my_courses mc join class_cancellations x on x.course_id = mc.id
+  union all
   select 'due', a.id::text, mc.id, mc.title, a.title, a.due, '',
          (not mc.teaching and exists (select 1 from submissions s where s.assignment_id = a.id
             and s.student_id = (select id from me) and s.status in ('submitted','graded'))),
-         (select name from me)
+         (select name from me), '', '', ''
     from my_courses mc join assignments a on a.course_id = mc.id
 $$;
+
+-- ===========================================================================
+-- Added Oct 4, 2026 (second update)
+-- ===========================================================================
+
+-- A bell notification, with where tapping it should go. Used only inside
+-- the database's own functions and triggers (never callable from the site).
+create or replace function public.notify(p_user uuid, p_subject text, p_link text default '/', p_kind text default 'general')
+returns void
+language sql security definer set search_path = public as $$
+  insert into notifications (user_id, subject, link, kind)
+  values (p_user, left(p_subject, 300), coalesce(nullif(p_link, ''), '/'), coalesce(p_kind, 'general'))
+$$;
+
+-- "Fall 2026" etc., from a course's start date.
+create or replace function public.term_label(d date) returns text
+language sql immutable as $$
+  select case
+    when d is null then ''
+    when extract(month from d) between 1 and 5 then 'Spring ' || extract(year from d)::int
+    when extract(month from d) between 6 and 7 then 'Summer ' || extract(year from d)::int
+    else 'Fall ' || extract(year from d)::int
+  end
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Phone and email delivery of bell notifications. Used only by the
+-- reminder function, which runs every minute.
+-- ---------------------------------------------------------------------------
+-- Phones: everything not yet sent that's at least a minute old (so a few
+-- things happening together arrive as one note), for people with a phone
+-- turned on. Anything already seen on the site is skipped.
+create or replace function public.claim_push_deliveries(p_now timestamptz default now())
+returns table (user_id uuid, subject text, link text, kind text)
+language sql volatile security definer set search_path = public as $$
+  with due as (
+    select n.id from notifications n
+     where n.pushed_at is null and n.created_at <= p_now - interval '1 minute'
+     for update skip locked
+  ), marked as (
+    update notifications n set pushed_at = p_now from due where n.id = due.id
+    returning n.user_id, n.subject, n.link, n.kind, n.read, n.created_at
+  )
+  select m.user_id, m.subject, m.link, m.kind
+    from marked m join profiles p on p.id = m.user_id and p.status = 'active'
+   where not m.read and exists (select 1 from push_subscriptions s where s.user_id = m.user_id)
+   order by m.user_id, m.created_at
+$$;
+
+-- Email: "instant" people get anything unseen after two minutes; "daily"
+-- people get one summary each morning from 7 AM (Alaska time); "off"
+-- people get nothing. Each notification is emailed at most once.
+create or replace function public.claim_email_deliveries(p_now timestamptz default now())
+returns table (user_id uuid, email text, name text, digest boolean, subject text, link text, kind text, created_at timestamptz)
+language plpgsql volatile security definer set search_path = public as $$
+declare v_local timestamp := p_now at time zone 'America/Anchorage';
+begin
+  -- Nothing to send: already seen on the site, email turned off, or an
+  -- account that isn't active.
+  update notifications n set emailed_at = p_now
+    from profiles p
+   where p.id = n.user_id and n.emailed_at is null
+     and (n.read or p.notify_email = 'off' or p.status <> 'active' or coalesce(p.email, '') = '');
+
+  return query
+  with digest_users as (
+    update profiles p set last_digest_on = v_local::date
+     where p.notify_email = 'daily' and p.status = 'active' and v_local::time >= time '07:00'
+       and coalesce(p.last_digest_on, date '1900-01-01') < v_local::date
+       and exists (select 1 from notifications x where x.user_id = p.id and x.emailed_at is null)
+    returning p.id
+  ), picked as (
+    select n.id, (p.notify_email = 'daily') as is_digest
+      from notifications n join profiles p on p.id = n.user_id
+     where n.emailed_at is null and p.status = 'active'
+       and ((p.notify_email = 'instant' and n.created_at <= p_now - interval '2 minutes')
+         or (p.notify_email = 'daily' and p.id in (select id from digest_users)))
+     for update of n skip locked
+  ), marked as (
+    update notifications n set emailed_at = p_now from picked where n.id = picked.id
+    returning n.user_id, n.subject, n.link, n.kind, n.created_at, picked.is_digest
+  )
+  select m.user_id, p.email, p.name, m.is_digest, m.subject, m.link, m.kind, m.created_at
+    from marked m join profiles p on p.id = m.user_id
+   order by m.user_id, m.created_at;
+end $$;
+
+-- Assignment due-date reminders become ordinary notifications (bell,
+-- phone, and email), at 6 PM the evening before and/or 8 AM the day it's
+-- due, as each student chose. Returns how many were added.
+drop function if exists public.claim_assignment_reminders();
+drop function if exists public.claim_assignment_reminders(timestamptz);
+create or replace function public.queue_assignment_reminders(p_now timestamptz default now())
+returns int
+language sql volatile security definer set search_path = public as $$
+  with now_ak as (select (p_now at time zone 'America/Anchorage') as t),
+  windows as (
+    select 'evening'::text as kind, (n.t)::date + 1 as due_day
+      from now_ak n where (n.t)::time >= time '18:00'
+    union all
+    select 'morning', (n.t)::date
+      from now_ak n where (n.t)::time >= time '08:00' and (n.t)::time < time '12:00'
+  ),
+  due as (
+    select e.student_id, w.kind, a.id as assignment_id, a.title as assignment_title,
+           c.title as course_title
+      from windows w
+      join assignments a on a.due = w.due_day
+      join courses c on c.id = a.course_id and not c.archived
+      join enrollments e on e.course_id = c.id
+      join profiles p on p.id = e.student_id and p.status = 'active'
+     where p.due_reminders in (w.kind, 'both')
+       and (a.submit_anytime or a.open_date is null or a.open_date <= (select (t)::date from now_ak))
+       and not exists (select 1 from submissions s where s.assignment_id = a.id
+                         and s.student_id = e.student_id and s.status in ('submitted','graded'))
+       and (p.notify_email <> 'off' or exists (select 1 from push_subscriptions ps where ps.user_id = e.student_id))
+  ),
+  claimed as (
+    insert into assignment_reminders (assignment_id, student_id, kind)
+    select assignment_id, student_id, kind from due
+    on conflict do nothing
+    returning assignment_reminders.assignment_id, assignment_reminders.student_id, assignment_reminders.kind
+  ),
+  added as (
+    insert into notifications (user_id, subject, link, kind)
+    select due.student_id,
+           (case when due.kind = 'evening' then 'Due tomorrow: ' else 'Due today: ' end)
+             || due.assignment_title || ' (' || due.course_title || ')',
+           '/?assignment=' || due.assignment_id, 'due'
+      from due join claimed on claimed.assignment_id = due.assignment_id
+                           and claimed.student_id = due.student_id and claimed.kind = due.kind
+    returning 1
+  )
+  select count(*)::int from added
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Class cancellations
+-- ---------------------------------------------------------------------------
+create or replace function public.cancel_class(p_course text, p_date date, p_reason text)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare v_title text;
+begin
+  if not public.manages_course(p_course) then
+    raise exception 'Only this course''s teacher or an Admin can cancel a class.';
+  end if;
+  if p_date < public.local_today() then
+    raise exception 'That class day has already passed.';
+  end if;
+  if not exists (select 1 from public.course_scheduled_dates(p_course) d where d = p_date) then
+    raise exception 'That isn''t one of this course''s class days.';
+  end if;
+  select title into v_title from courses where id = p_course;
+  insert into class_cancellations (course_id, class_date, reason, canceled_by)
+  values (p_course, p_date, left(trim(coalesce(p_reason, '')), 300), auth.uid())
+  on conflict (course_id, class_date) do update set reason = excluded.reason, canceled_by = excluded.canceled_by, canceled_at = now();
+  insert into notifications (user_id, subject, link, kind)
+  select e.student_id,
+         'Class canceled: ' || v_title || ' on ' || to_char(p_date, 'FMDay, FMMonth FMDD')
+           || coalesce(nullif(' — ' || left(trim(coalesce(p_reason, '')), 200), ' — '), ''),
+         '/?calendar=' || p_date, 'cancel'
+    from enrollments e join profiles p on p.id = e.student_id and p.status = 'active'
+   where e.course_id = p_course;
+end $$;
+
+create or replace function public.restore_class(p_course text, p_date date)
+returns void
+language plpgsql security definer set search_path = public as $$
+declare v_title text;
+begin
+  if not public.manages_course(p_course) then
+    raise exception 'Only this course''s teacher or an Admin can change this.';
+  end if;
+  delete from class_cancellations where course_id = p_course and class_date = p_date;
+  if not found then return; end if;
+  if p_date >= public.local_today() then
+    select title into v_title from courses where id = p_course;
+    insert into notifications (user_id, subject, link, kind)
+    select e.student_id, 'Class is back on: ' || v_title || ' on ' || to_char(p_date, 'FMDay, FMMonth FMDD'),
+           '/?calendar=' || p_date, 'cancel'
+      from enrollments e join profiles p on p.id = e.student_id and p.status = 'active'
+     where e.course_id = p_course;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Announcements: every enrolled student hears about a new one.
+-- ---------------------------------------------------------------------------
+create or replace function public.notify_on_announcement() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  insert into notifications (user_id, subject, link, kind)
+  select e.student_id,
+         'Announcement — ' || c.title || ': ' || left(regexp_replace(new.body, '\s+', ' ', 'g'), 140),
+         '/?course=' || c.id, 'announcement'
+    from enrollments e
+    join profiles p on p.id = e.student_id and p.status = 'active'
+    join courses c on c.id = new.course_id
+   where e.course_id = new.course_id;
+  return new;
+end $$;
+drop trigger if exists notify_on_announcement on public.announcements;
+create trigger notify_on_announcement after insert on public.announcements
+  for each row execute function public.notify_on_announcement();
+
+-- ---------------------------------------------------------------------------
+-- Copy a course for a new term: same details, schedule pattern, attendance
+-- settings, location, and assignments (due dates moved by the same number
+-- of days the start date moved). Not copied: students, turned-in work,
+-- grades, attendance, messages, discussion, announcements. (The site copies
+-- the course's files separately.) The person copying becomes its teacher.
+-- ---------------------------------------------------------------------------
+create or replace function public.copy_course(p_course text, p_title text, p_start date)
+returns text
+language plpgsql security definer set search_path = public as $$
+declare c courses%rowtype; v_new text; v_shift int;
+begin
+  if not public.manages_course(p_course) or not public.is_faculty() then
+    raise exception 'Only this course''s teacher or an Admin can copy it.';
+  end if;
+  select * into c from courses where id = p_course;
+  v_shift := case when c.sched_start is not null and p_start is not null then p_start - c.sched_start else 0 end;
+  insert into courses (title, description, credits, level, faculty_id, sched_weeks, sched_days, sched_time,
+                       sched_mode, sched_start, attendance_on, attendance_weight, attendance_late_credit,
+                       location, meeting_url)
+  values (coalesce(nullif(trim(p_title), ''), c.title), c.description, c.credits, c.level, auth.uid(),
+          c.sched_weeks, c.sched_days, c.sched_time,
+          case when p_start is null then null else 'scheduled' end, p_start,
+          c.attendance_on, c.attendance_weight, c.attendance_late_credit, c.location, c.meeting_url)
+  returning id into v_new;
+  insert into assignments (course_id, title, instructions, due, points, weight, series_id, series_label, submit_anytime, open_date)
+  select v_new, title, instructions, due + v_shift, points, weight, series_id, series_label, submit_anytime, open_date + v_shift
+    from assignments where course_id = p_course;
+  return v_new;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Transcripts
+-- ---------------------------------------------------------------------------
+-- The teacher (or an Admin) records each student's final grade at the end
+-- of a course. Recording again updates it.
+--   p_entries: [{ "student": uuid, "grade": "A", "percent": 93.5,
+--                 "attendance": 95, "note": "" }, ...]
+create or replace function public.record_final_grades(p_course text, p_entries jsonb)
+returns int
+language plpgsql security definer set search_path = public as $$
+declare c courses%rowtype; e jsonb; s profiles%rowtype; v_n int := 0; v_end date; v_teacher text;
+begin
+  if not public.manages_course(p_course) then
+    raise exception 'Only this course''s teacher or an Admin can record its final grades.';
+  end if;
+  select * into c from courses where id = p_course;
+  select max(d) into v_end from public.course_class_dates(p_course) d where d <= public.local_today();
+  -- The course's teacher (or, with none assigned, whoever records the grades).
+  select name into v_teacher from profiles where id = coalesce(public.course_teacher(p_course), auth.uid());
+  for e in select * from jsonb_array_elements(coalesce(p_entries, '[]'::jsonb)) loop
+    select * into s from profiles where id = (e ->> 'student')::uuid;
+    if s.id is null or not exists (select 1 from enrollments where course_id = p_course and student_id = s.id) then
+      raise exception 'Final grades can only be recorded for students on this course''s roster.';
+    end if;
+    insert into transcript_entries (student_id, student_ref, student_name, student_email, course_id, course_title,
+        credits, level, term, start_date, end_date, percent, grade, attendance_percent, teacher_name, note,
+        recorded_by, recorded_at)
+    values (s.id, s.id, s.name, s.email, c.id, c.title, c.credits, c.level, public.term_label(c.sched_start),
+        c.sched_start, coalesce(v_end, public.local_today()), nullif(e ->> 'percent', '')::numeric, e ->> 'grade',
+        nullif(e ->> 'attendance', '')::numeric, coalesce(v_teacher, ''), left(coalesce(e ->> 'note', ''), 300),
+        auth.uid(), now())
+    on conflict (student_ref, course_id) do update set
+        student_name = excluded.student_name, student_email = excluded.student_email,
+        course_title = excluded.course_title, credits = excluded.credits, level = excluded.level,
+        term = excluded.term, start_date = excluded.start_date, end_date = excluded.end_date,
+        percent = excluded.percent, grade = excluded.grade, attendance_percent = excluded.attendance_percent,
+        teacher_name = excluded.teacher_name, note = excluded.note,
+        recorded_by = excluded.recorded_by, recorded_at = excluded.recorded_at;
+    perform public.notify(s.id, 'Final grade recorded for ' || c.title || ': ' || (e ->> 'grade'), '/?transcript=1', 'transcript');
+    v_n := v_n + 1;
+  end loop;
+  return v_n;
+end $$;
+
+-- Admins: add a course taken before the site existed (p_id null), or
+-- correct any entry (p_id given).
+create or replace function public.save_transcript_entry(
+    p_id uuid, p_student uuid, p_course_title text, p_credits numeric, p_level text, p_term text,
+    p_start date, p_end date, p_percent numeric, p_grade text, p_teacher text, p_note text)
+returns uuid
+language plpgsql security definer set search_path = public as $$
+declare s profiles%rowtype; v_id uuid;
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can edit transcripts.'; end if;
+  if p_id is null then
+    select * into s from profiles where id = p_student;
+    if s.id is null then raise exception 'That student couldn''t be found.'; end if;
+    insert into transcript_entries (student_id, student_ref, student_name, student_email, course_title, credits,
+        level, term, start_date, end_date, percent, grade, teacher_name, note, recorded_by)
+    values (s.id, s.id, s.name, s.email, trim(p_course_title), coalesce(p_credits, 0), coalesce(p_level, ''),
+        coalesce(p_term, ''), p_start, p_end, p_percent, p_grade, coalesce(p_teacher, ''), coalesce(p_note, ''), auth.uid())
+    returning id into v_id;
+  else
+    update transcript_entries set course_title = trim(p_course_title), credits = coalesce(p_credits, 0),
+        level = coalesce(p_level, ''), term = coalesce(p_term, ''), start_date = p_start, end_date = p_end,
+        percent = p_percent, grade = p_grade, teacher_name = coalesce(p_teacher, ''), note = coalesce(p_note, ''),
+        recorded_by = auth.uid(), recorded_at = now()
+     where id = p_id
+    returning id into v_id;
+    if v_id is null then raise exception 'That transcript entry couldn''t be found.'; end if;
+  end if;
+  return v_id;
+end $$;
+
+create or replace function public.delete_transcript_entry(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can edit transcripts.'; end if;
+  delete from transcript_entries where id = p_id;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Backups
+-- ---------------------------------------------------------------------------
+-- Everything worth keeping, as one JSON document. Left out on purpose:
+-- phone-notification keys and devices, private calendar links, and the
+-- backups themselves. (Uploaded files live in storage, not here.)
+create or replace function public.backup_snapshot() returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare v jsonb := '{}'::jsonb; t text; rows jsonb;
+begin
+  foreach t in array array['profiles','courses','enrollments','enrollment_requests','materials','assignments',
+      'submissions','discussion_posts','messages','notifications','bible_highlights','attendance_days',
+      'attendance','class_cancellations','announcements','transcript_entries'] loop
+    execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x', t) into rows;
+    v := v || jsonb_build_object(t, rows);
+  end loop;
+  return jsonb_build_object('format', 'tnbbi-backup-1', 'site', 'tnbbibleinstitute.com',
+                            'taken_at', now(), 'tables', v);
+end $$;
+
+create or replace function public.take_backup(p_kind text) returns bigint
+language plpgsql volatile security definer set search_path = public as $$
+declare v_id bigint; v_data jsonb := public.backup_snapshot();
+begin
+  insert into site_backups (kind, data, size_bytes) values (p_kind, v_data, octet_length(v_data::text))
+  returning id into v_id;
+  delete from site_backups where kind = p_kind and id not in (
+    select id from site_backups where kind = p_kind order by taken_at desc, id desc
+     limit case when p_kind = 'nightly' then 14 else 5 end);
+  return v_id;
+end $$;
+
+-- Used by the every-minute function: one nightly backup, from 2 AM Alaska time.
+create or replace function public.take_nightly_backup_if_due(p_now timestamptz default now()) returns bigint
+language plpgsql volatile security definer set search_path = public as $$
+declare v_local timestamp := p_now at time zone 'America/Anchorage';
+begin
+  if v_local::time < time '02:00' then return null; end if;
+  if exists (select 1 from site_backups where kind = 'nightly'
+              and (taken_at at time zone 'America/Anchorage')::date = v_local::date) then
+    return null;
+  end if;
+  perform pg_advisory_xact_lock(4242001);
+  if exists (select 1 from site_backups where kind = 'nightly'
+              and (taken_at at time zone 'America/Anchorage')::date = v_local::date) then
+    return null;
+  end if;
+  return public.take_backup('nightly');
+end $$;
+
+-- Used by the every-minute function: the newest nightly backup, once a
+-- week (Sunday from 3 AM), to email to the church's Gmail as an off-site copy.
+create or replace function public.backup_to_email(p_now timestamptz default now())
+returns table (id bigint, taken_at timestamptz, data jsonb)
+language sql stable security definer set search_path = public as $$
+  select b.id, b.taken_at, b.data from site_backups b
+   where b.kind = 'nightly'
+     and extract(dow from (p_now at time zone 'America/Anchorage')) = 0
+     and (p_now at time zone 'America/Anchorage')::time >= time '03:00'
+     and not exists (select 1 from site_backups x where x.emailed_at > p_now - interval '6 days')
+   order by b.taken_at desc limit 1
+$$;
+create or replace function public.mark_backup_emailed(p_id bigint, p_at timestamptz default now()) returns void
+language sql security definer set search_path = public as $$
+  update site_backups set emailed_at = p_at where id = p_id
+$$;
+
+-- Admins (Settings → Backups).
+create or replace function public.list_backups()
+returns table (id bigint, kind text, taken_at timestamptz, size_bytes int, emailed_at timestamptz)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can see backups.'; end if;
+  return query select b.id, b.kind, b.taken_at, b.size_bytes, b.emailed_at from site_backups b order by b.taken_at desc;
+end $$;
+-- A backup to download: a given one, or (p_id null) a fresh one made now.
+create or replace function public.download_backup(p_id bigint default null) returns jsonb
+language plpgsql volatile security definer set search_path = public as $$
+declare v jsonb; v_id bigint;
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can download backups.'; end if;
+  if p_id is null then
+    v_id := public.take_backup('manual');
+    select data into v from site_backups where id = v_id;
+  else
+    select data into v from site_backups where id = p_id;
+  end if;
+  return v;
+end $$;
+
+-- Health of the behind-the-scenes services, for Admins.
+create or replace function public.set_service_status(p_key text, p_ok boolean, p_detail text) returns void
+language sql security definer set search_path = public as $$
+  insert into service_status (key, ok, detail, updated_at) values (p_key, p_ok, left(coalesce(p_detail, ''), 500), now())
+  on conflict (key) do update set ok = excluded.ok, detail = excluded.detail, updated_at = now()
+$$;
+create or replace function public.get_service_status()
+returns table (key text, ok boolean, detail text, updated_at timestamptz)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can see this.'; end if;
+  return query select s.key, s.ok, s.detail, s.updated_at from service_status s order by s.key;
+end $$;
 
 -- Mark the other side's messages in one thread as read.
 create or replace function public.mark_thread_read(p_course text, p_student uuid) returns void
@@ -853,8 +1351,8 @@ end $$;
 create or replace function public.notify_on_enrollment_request() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  insert into notifications (user_id, subject)
-  select r.user_id, s.name || ' requested to enroll in ' || c.title
+  insert into notifications (user_id, subject, link, kind)
+  select r.user_id, s.name || ' requested to enroll in ' || c.title, '/?course=' || c.id, 'enrollment'
     from public.course_recipients(new.course_id) r, profiles s, courses c
    where s.id = new.student_id and c.id = new.course_id;
   return new;
@@ -882,12 +1380,14 @@ begin
   select title into v_title from courses where id = new.course_id;
   select name into v_sender from profiles where id = new.sender_id;
   if new.from_role = 'student' then
-    insert into notifications (user_id, subject)
-    select user_id, 'New message from ' || coalesce(v_sender, 'a student') || ' in ' || v_title
+    insert into notifications (user_id, subject, link, kind)
+    select user_id, 'New message from ' || coalesce(v_sender, 'a student') || ' in ' || v_title,
+           '/?thread=' || new.course_id || '&student=' || new.student_id, 'message'
       from public.course_recipients(new.course_id);
   else
-    insert into notifications (user_id, subject)
-    values (new.student_id, 'New message from ' || coalesce(v_sender, 'your instructor') || ' in ' || v_title);
+    insert into notifications (user_id, subject, link, kind)
+    values (new.student_id, 'New message from ' || coalesce(v_sender, 'your instructor') || ' in ' || v_title,
+            '/?thread=' || new.course_id, 'message');
   end if;
   return new;
 end $$;
@@ -901,7 +1401,8 @@ declare v_a text; v_c text;
 begin
   if new.status = 'graded' and (tg_op = 'INSERT' or old.status is distinct from 'graded') then
     select a.title, c.title into v_a, v_c from assignments a join courses c on c.id = a.course_id where a.id = new.assignment_id;
-    insert into notifications (user_id, subject) values (new.student_id, 'Grade posted for ' || v_a || ' in ' || v_c);
+    insert into notifications (user_id, subject, link, kind)
+    values (new.student_id, 'Grade posted for ' || v_a || ' in ' || v_c, '/?assignment=' || new.assignment_id, 'grade');
   end if;
   return new;
 end $$;
@@ -1026,8 +1527,8 @@ language plpgsql security definer set search_path = public as $$
 begin
   if new.faculty_id is not null and new.faculty_id is distinct from old.faculty_id
      and new.faculty_id is distinct from auth.uid() then
-    insert into notifications (user_id, subject)
-    values (new.faculty_id, 'You''re now the teacher for ' || new.title);
+    insert into notifications (user_id, subject, link, kind)
+    values (new.faculty_id, 'You''re now the teacher for ' || new.title, '/?course=' || new.id, 'teacher');
   end if;
   return new;
 end $$;
@@ -1081,6 +1582,11 @@ alter table public.push_keys            enable row level security;
 alter table public.attendance_reminders enable row level security;
 alter table public.assignment_reminders enable row level security;
 alter table public.calendar_feeds       enable row level security;
+alter table public.class_cancellations  enable row level security;
+alter table public.announcements        enable row level security;
+alter table public.transcript_entries   enable row level security;
+alter table public.site_backups         enable row level security;
+alter table public.service_status       enable row level security;
 
 do $$
 declare r record;
@@ -1201,6 +1707,29 @@ create policy push_select on public.push_subscriptions for select to authenticat
 create policy push_delete on public.push_subscriptions for delete to authenticated using (user_id = auth.uid());
 -- push_keys and attendance_reminders: no policies at all = no website access.
 
+-- Added Oct 4, 2026 (second update) ----------------------------------------
+-- Class cancellations: the course's students and whoever manages it.
+create policy cancel_select on public.class_cancellations for select to authenticated
+  using (public.is_enrolled(course_id) or public.manages_course(course_id));
+-- (Changed only through cancel_class() / restore_class().)
+
+-- Announcements: the course's students see them; its teacher (or an Admin)
+-- writes and removes them.
+create policy ann_select on public.announcements for select to authenticated
+  using (public.is_enrolled(course_id) or public.manages_course(course_id));
+create policy ann_insert on public.announcements for insert to authenticated
+  with check (public.manages_course(course_id) and author_id = auth.uid());
+create policy ann_delete on public.announcements for delete to authenticated
+  using (public.manages_course(course_id));
+
+-- Transcripts: your own; every entry for Admins; a teacher sees the entries
+-- for the courses they teach. Written only through the functions above.
+create policy transcript_select on public.transcript_entries for select to authenticated
+  using (public.is_active_user() and (
+    student_id = auth.uid() or public.is_super_admin()
+    or (course_id is not null and public.teaches_course(course_id))));
+-- site_backups and service_status: no policies at all = no website access.
+
 -- Bible highlights: yours only.
 create policy hl_select on public.bible_highlights for select to authenticated using (user_id = auth.uid());
 create policy hl_insert on public.bible_highlights for insert to authenticated with check (user_id = auth.uid() and public.is_active_user());
@@ -1312,7 +1841,26 @@ revoke execute on function public.clear_attendance(text, date) from public, anon
 revoke execute on function public.register_push(text, text, text, text) from public, anon;
 revoke execute on function public.push_public_key() from public, anon;
 revoke execute on function public.claim_attendance_reminders() from public, anon, authenticated;
-revoke execute on function public.claim_assignment_reminders(timestamptz) from public, anon, authenticated;
+revoke execute on function public.notify(uuid, text, text, text) from public, anon, authenticated;
+revoke execute on function public.claim_push_deliveries(timestamptz) from public, anon, authenticated;
+revoke execute on function public.claim_email_deliveries(timestamptz) from public, anon, authenticated;
+revoke execute on function public.queue_assignment_reminders(timestamptz) from public, anon, authenticated;
+revoke execute on function public.backup_snapshot() from public, anon, authenticated;
+revoke execute on function public.take_backup(text) from public, anon, authenticated;
+revoke execute on function public.take_nightly_backup_if_due(timestamptz) from public, anon, authenticated;
+revoke execute on function public.backup_to_email(timestamptz) from public, anon, authenticated;
+revoke execute on function public.mark_backup_emailed(bigint, timestamptz) from public, anon, authenticated;
+revoke execute on function public.set_service_status(text, boolean, text) from public, anon, authenticated;
+revoke execute on function public.cancel_class(text, date, text) from public, anon;
+revoke execute on function public.restore_class(text, date) from public, anon;
+revoke execute on function public.copy_course(text, text, date) from public, anon;
+revoke execute on function public.record_final_grades(text, jsonb) from public, anon;
+revoke execute on function public.save_transcript_entry(uuid, uuid, text, numeric, text, text, date, date, numeric, text, text, text) from public, anon;
+revoke execute on function public.delete_transcript_entry(uuid) from public, anon;
+revoke execute on function public.list_backups() from public, anon;
+revoke execute on function public.download_backup(bigint) from public, anon;
+revoke execute on function public.get_service_status() from public, anon;
+revoke execute on function public.course_scheduled_dates(text) from public, anon;
 revoke execute on function public.calendar_feed_events(text) from public, anon, authenticated;
 revoke execute on function public.my_calendar_token() from public, anon;
 revoke execute on function public.reset_calendar_token() from public, anon;
@@ -1335,6 +1883,16 @@ grant execute on function public.clear_attendance(text, date) to authenticated;
 grant execute on function public.register_push(text, text, text, text) to authenticated;
 grant execute on function public.push_public_key() to authenticated;
 grant execute on function public.my_calendar_token() to authenticated;
+grant execute on function public.cancel_class(text, date, text) to authenticated;
+grant execute on function public.restore_class(text, date) to authenticated;
+grant execute on function public.copy_course(text, text, date) to authenticated;
+grant execute on function public.record_final_grades(text, jsonb) to authenticated;
+grant execute on function public.save_transcript_entry(uuid, uuid, text, numeric, text, text, date, date, numeric, text, text, text) to authenticated;
+grant execute on function public.delete_transcript_entry(uuid) to authenticated;
+grant execute on function public.list_backups() to authenticated;
+grant execute on function public.download_backup(bigint) to authenticated;
+grant execute on function public.get_service_status() to authenticated;
+grant execute on function public.course_scheduled_dates(text) to authenticated;
 grant execute on function public.reset_calendar_token() to authenticated;
 
 -- ---------------------------------------------------------------------------
@@ -1351,3 +1909,8 @@ revoke insert, update on public.push_subscriptions from authenticated;
 revoke all on public.push_keys, public.attendance_reminders from authenticated;
 -- Reminder records and calendar links: only through the functions above.
 revoke all on public.assignment_reminders, public.calendar_feeds from authenticated;
+-- Cancellations and transcripts change only through their functions;
+-- backups and service health aren't reachable from the website at all.
+revoke insert, update, delete on public.class_cancellations, public.transcript_entries from authenticated;
+revoke update on public.announcements from authenticated;
+revoke all on public.site_backups, public.service_status from authenticated;
