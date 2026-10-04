@@ -451,17 +451,23 @@ admin(f"insert into public.submissions (assignment_id, student_id, status) value
 EVE = "((public.local_today() + time '18:30') at time zone 'America/Anchorage')"
 MORN = "(((public.local_today() + 1) + time '08:15') at time zone 'America/Anchorage')"
 NOON = "((public.local_today() + time '13:00') at time zone 'America/Anchorage')"
+admin("delete from public.notifications where kind = 'due'")
 check("The website can't trigger assignment reminders itself", False,
-      "select * from public.claim_assignment_reminders()", stu1)
+      "select public.queue_assignment_reminders()", stu1)
 check("Early afternoon: no assignment reminders go out", True,
-      f"select count(*) from public.claim_assignment_reminders({NOON}) where assignment_title like 'Reminder%' or assignment_title in ('Already Done','Still Locked')", None, expect_out=0)
+      f"select public.queue_assignment_reminders({NOON})", None, expect_out=0)
 check("6:30 PM the evening before: only work not turned in, only students who chose evenings", True,
-      f"select string_agg(assignment_title || '>' || (student_id = '{stu1}'), ',') from public.claim_assignment_reminders({EVE}) where assignment_title in ('Reminder Essay','Already Done','Still Locked')", None, expect_out="Reminder Essay>true")
+      f"select public.queue_assignment_reminders({EVE}) \\g /dev/null\nselect string_agg(subject || '>' || (user_id = '{stu1}'), ',') from public.notifications where kind = 'due'", None,
+      expect_out="Due tomorrow: Reminder Essay (Hermeneutics I)>true")
+check("…it's a notification that opens the assignment", True,
+      f"select link = '/?assignment={rq1}' from public.notifications where kind = 'due'", None, expect_out="t")
 check("…exactly once", True,
-      f"select count(*) from public.claim_assignment_reminders({EVE}) where assignment_title = 'Reminder Essay'", None, expect_out=0)
+      f"select public.queue_assignment_reminders({EVE})", None, expect_out=0)
+admin("delete from public.notifications where kind = 'due'")
 check("8:15 AM the day it's due: the student who chose mornings (and the locked one has now opened)", True,
-      f"select string_agg(assignment_title || '>' || (student_id = '{stu2}'), ',' order by assignment_title) from public.claim_assignment_reminders({MORN}) where assignment_title in ('Reminder Essay','Already Done','Still Locked')", None,
-      expect_out="Already Done>true,Reminder Essay>true,Still Locked>true")
+      f"select public.queue_assignment_reminders({MORN}) \\g /dev/null\nselect string_agg(subject || '>' || (user_id = '{stu2}'), ',' order by subject) from public.notifications where kind = 'due'", None,
+      expect_out="Due today: Already Done (Hermeneutics I)>true,Due today: Reminder Essay (Hermeneutics I)>true,Due today: Still Locked (Hermeneutics I)>true")
+admin("delete from public.notifications where kind = 'due'")
 check("The reminder records can't be read from the website", False, "select * from public.assignment_reminders", phil)
 admin(f"delete from public.assignments where id in ('{rq1}', '{rq2}', '{rq3}')")
 admin("delete from public.push_subscriptions")
@@ -543,6 +549,167 @@ check("Nobody can clear someone else's notifications", True,
 check("People can clear their own notifications", True,
       f"with d as (delete from public.notifications where user_id = '{church}' returning 1) select count(*) > 0 from d", church, expect_out="t")
 
+# --- notifications by phone and email ------------------------------------------------------
+admin("delete from public.notifications")
+admin("delete from public.push_subscriptions")
+check("A student's phone is turned on", True,
+      "select public.register_push('https://push.example.com/n1', 'BKey', 'a', 'iPhone')", stu1)
+admin(f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c1', '{stu1}', '{phil}', 'faculty', 'Please see me after class.')")
+check("A teacher's message creates a bell notification that links to the conversation", True,
+      f"select link from public.notifications where user_id = '{stu1}' and kind = 'message'", None, expect_out="/?thread=c1")
+gq = admin("insert into public.assignments (course_id, title, due, points) values ('c1', 'Notify Quiz', public.local_today(), 10) returning id").splitlines()[0]
+admin(f"insert into public.submissions (assignment_id, student_id, status, score) values ('{gq}', '{stu1}', 'graded', 9)")
+check("A grade notification links to the assignment", True,
+      f"select link from public.notifications where user_id = '{stu1}' and kind = 'grade'", None, expect_out=f"/?assignment={gq}")
+check("Nothing is sent to phones in the first minute (so things arrive together)", True,
+      "select count(*) from public.claim_push_deliveries(now())", None, expect_out=0)
+NOW2 = "now() + interval '3 minutes'"
+check("After a minute: sent to the student's phone, once", True,
+      f"select count(*) from public.claim_push_deliveries({NOW2}) where user_id = '{stu1}'", None, expect_out=2)
+check("…and never again", True, f"select count(*) from public.claim_push_deliveries({NOW2})", None, expect_out=0)
+check("Instant email: the same notifications go out by email after two minutes", True,
+      f"select count(*) || ',' || bool_and(email = 'blake@example.com') || ',' || bool_and(not digest) from public.claim_email_deliveries({NOW2}) where user_id = '{stu1}'", None, expect_out="2,true,true")
+check("…once", True, f"select count(*) from public.claim_email_deliveries({NOW2})", None, expect_out=0)
+check("A student picks a daily email summary", True,
+      f"update public.profiles set notify_email = 'daily' where id = '{stu2}'", stu2)
+check("…from the allowed choices only", False, f"update public.profiles set notify_email = 'hourly' where id = '{stu2}'", stu2)
+check("…and can't fake when their last summary went out", False,
+      f"update public.profiles set last_digest_on = '2030-01-01' where id = '{stu2}'", stu2)
+admin(f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c1', '{stu2}', '{phil}', 'faculty', 'Welcome!')")
+admin(f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c1', '{stu2}', '{phil}', 'faculty', 'One more thing.')")
+LATE = "((public.local_today() + time '06:30') at time zone 'America/Anchorage') + interval '1 day'"
+SEVEN = "((public.local_today() + time '07:05') at time zone 'America/Anchorage') + interval '1 day'"
+check("Daily: nothing before 7 AM", True, f"select count(*) from public.claim_email_deliveries({LATE}) where user_id = '{stu2}'", None, expect_out=0)
+check("Daily: one morning summary with everything waiting", True,
+      f"select count(*) || ',' || bool_and(digest) from public.claim_email_deliveries({SEVEN}) where user_id = '{stu2}'", None, expect_out="2,true")
+check("…only once that day", True,
+      f"select count(*) from public.claim_email_deliveries({SEVEN} + interval '2 hours') where user_id = '{stu2}'", None, expect_out=0)
+check("Email off: nothing is emailed", True,
+      f"update public.profiles set notify_email = 'off' where id = '{stu2}'", stu2)
+admin(f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c1', '{stu2}', '{phil}', 'faculty', 'Quiet.')")
+check("…(really nothing)", True, f"select count(*) from public.claim_email_deliveries({NOW2})", None, expect_out=0)
+admin(f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c1', '{stu1}', '{phil}', 'faculty', 'Seen already.')")
+admin(f"update public.notifications set read = true where user_id = '{stu1}' and pushed_at is null")
+check("Something already seen on the site isn't sent to the phone", True,
+      f"select count(*) from public.claim_push_deliveries({NOW2})", None, expect_out=0)
+check("…or emailed", True, f"select count(*) from public.claim_email_deliveries({NOW2})", None, expect_out=0)
+check("The website can't claim deliveries", False, "select * from public.claim_push_deliveries()", phil)
+check("…or send notifications of its own", False, f"select public.notify('{stu1}', 'Fake grade: A')", phil)
+check("A user can't send themselves a link to another website", False,
+      f"update public.notifications set link = 'https://evil.example' where user_id = '{stu1}'", stu1)
+admin(f"update public.profiles set notify_email = 'instant' where id = '{stu2}'")
+admin("delete from public.push_subscriptions")
+
+# --- class cancellations ---------------------------------------------------------------------
+admin("update public.courses set sched_start = public.local_today() - 14, sched_weeks = 6, sched_days = array[to_char(public.local_today() + 2, 'Dy')], sched_time = '19:00' where id = 'c1'")
+NEXT = "(public.local_today() + 2)"
+admin("delete from public.notifications")
+check("Students can't cancel a class", False, f"select public.cancel_class('c1', {NEXT}, 'snow')", stu1)
+check("Other faculty can't cancel someone else's class", False, f"select public.cancel_class('c1', {NEXT}, 'snow')", ruth)
+check("Only real class days can be canceled", False, f"select public.cancel_class('c1', {NEXT} + 1, 'snow')", phil)
+check("Past classes can't be canceled", False, f"select public.cancel_class('c1', {NEXT} - 7, 'snow')", phil)
+check("The teacher cancels Thursday's class because of snow", True,
+      f"select public.cancel_class('c1', {NEXT}, 'Roads are closed by snow.')", phil)
+check("…every active student is told, with the reason", True,
+      f"select count(*) || ',' || bool_and(subject like 'Class canceled: Hermeneutics I on %Roads are closed by snow.') from public.notifications where kind = 'cancel'", None, expect_out="2,true")
+check("…the day drops off the class days", True,
+      f"select count(*) from public.course_class_dates('c1') d where d = {NEXT}", None, expect_out=0)
+check("…students can see the cancellation", True, "select count(*) from public.class_cancellations", stu1, expect_out=1)
+check("…but students in other courses can't", True, "select count(*) from public.class_cancellations", stu3, expect_out=0)
+check("…nobody can change it directly", False, f"insert into public.class_cancellations (course_id, class_date) values ('c1', {NEXT} + 7)", phil)
+check("The teacher puts the class back on", True,
+      f"select public.restore_class('c1', {NEXT}); select count(*) from public.course_class_dates('c1') d where d = {NEXT}", phil, expect_out=1)
+check("…and students hear it's back on", True,
+      "select count(*) from public.notifications where subject like 'Class is back on%'", None, expect_out=2)
+
+# --- announcements ---------------------------------------------------------------------------
+admin("delete from public.notifications")
+check("Students can't post announcements", False,
+      f"insert into public.announcements (course_id, author_id, body) values ('c1', '{stu1}', 'Party at my house')", stu1)
+check("Other faculty can't post to someone else's course", False,
+      f"insert into public.announcements (course_id, author_id, body) values ('c1', '{ruth}', 'Hi')", ruth)
+check("The teacher posts an announcement", True,
+      f"insert into public.announcements (course_id, author_id, body) values ('c1', '{phil}', 'Bring your Bible and a notebook on Thursday.')", phil)
+check("…every enrolled student is notified, linked to the course", True,
+      "select count(*) || ',' || bool_and(link = '/?course=c1') from public.notifications where kind = 'announcement'", None, expect_out="2,true")
+check("…students in the course see it", True, "select count(*) from public.announcements", stu1, expect_out=1)
+check("…students outside it don't", True, "select count(*) from public.announcements", stu3, expect_out=0)
+check("…nobody can post as someone else", False,
+      f"insert into public.announcements (course_id, author_id, body) values ('c1', '{church}', 'x')", phil)
+
+# --- location and online link ----------------------------------------------------------------
+check("The teacher sets the room and an online link", True,
+      "update public.courses set location = 'Fellowship Hall', meeting_url = 'https://zoom.us/j/123' where id = 'c1'", phil)
+check("…only secure (https) links are allowed", False,
+      "update public.courses set meeting_url = 'javascript:alert(1)' where id = 'c1'", phil)
+check("…and they appear in the phone calendar feed", True,
+      f"select bool_and(location = 'Fellowship Hall') from public.calendar_feed_events((select token from public.calendar_feeds where user_id = '{phil}')) where kind = 'class' and course_id = 'c1'", None, expect_out="t")
+admin(f"select public.cancel_class('c1', {NEXT}, 'Snow') from (select set_config('request.jwt.claim.sub', '{phil}', true)) x")
+check("A canceled class stays on the phone calendar, marked canceled", True,
+      f"select count(*) from public.calendar_feed_events((select token from public.calendar_feeds where user_id = '{phil}')) where kind = 'canceled' and day = {NEXT}", None, expect_out=1)
+admin("delete from public.class_cancellations")
+
+# --- copy a course for next term ------------------------------------------------------------
+NEWSTART = "(public.local_today() + 120)"
+check("Students can't copy courses", False, f"select public.copy_course('c1', 'Copy', {NEWSTART})", stu1)
+check("Other faculty can't copy someone else's course", False, f"select public.copy_course('c1', 'Copy', {NEWSTART})", ruth)
+cpy = check("The teacher copies Hermeneutics I for next term", True,
+      f"select public.copy_course('c1', 'Hermeneutics I (Spring)', {NEWSTART})", phil)
+check("…same assignments, due dates moved with the new start date", True,
+      f"select (select count(*) from public.assignments where course_id = '{cpy}') = (select count(*) from public.assignments where course_id = 'c1') and (select min(due) from public.assignments where course_id = '{cpy}') - (select min(due) from public.assignments where course_id = 'c1') = 134", None, expect_out="t")
+check("…with no students, no turned-in work", True,
+      f"select (select count(*) from public.enrollments where course_id = '{cpy}') + (select count(*) from public.submissions s join public.assignments a on a.id = s.assignment_id where a.course_id = '{cpy}')", None, expect_out=0)
+check("…the copier teaches it, with the room and link carried over", True,
+      f"select (faculty_id = '{phil}') || ',' || location || ',' || (sched_start = {NEWSTART}) from public.courses where id = '{cpy}'", None, expect_out="true,Fellowship Hall,true")
+admin(f"delete from public.courses where id = '{cpy}'")
+admin(f"delete from public.assignments where id = '{gq}'")
+
+# --- transcripts -----------------------------------------------------------------------------
+admin("delete from public.notifications")
+ENTRIES = f"""'[{{"student": "{stu1}", "grade": "A", "percent": 93.5, "attendance": 100}}, {{"student": "{stu2}", "grade": "B", "percent": 84}}]'::jsonb"""
+check("Students can't record grades", False, f"select public.record_final_grades('c1', {ENTRIES})", stu1)
+check("Other faculty can't record grades for someone else's course", False, f"select public.record_final_grades('c1', {ENTRIES})", ruth)
+check("Grades can only be recorded for students on the roster", False,
+      f"""select public.record_final_grades('c1', '[{{"student": "{stu3}", "grade": "A"}}]'::jsonb)""", phil)
+check("Only real letter grades are accepted", False,
+      f"""select public.record_final_grades('c1', '[{{"student": "{stu1}", "grade": "A++"}}]'::jsonb)""", phil)
+check("The teacher records final grades", True, f"select public.record_final_grades('c1', {ENTRIES})", phil, expect_out=2)
+check("…each student is told, with a link to their transcript", True,
+      "select count(*) || ',' || bool_and(link = '/?transcript=1') from public.notifications where kind = 'transcript'", None, expect_out="2,true")
+check("…the entry keeps its own copy of the course and term", True,
+      f"select course_title || ',' || credits || ',' || (term <> '') || ',' || teacher_name from public.transcript_entries where student_id = '{stu1}'", None, expect_out="Hermeneutics I,3,true,Pastor Phil McBroom")
+check("Recording again updates rather than duplicates", True,
+      f"""select public.record_final_grades('c1', '[{{"student": "{stu1}", "grade": "A", "percent": 95}}]'::jsonb) \\g /dev/null\nselect count(*) || ',' || max(percent) from public.transcript_entries where student_id = '{stu1}'""", phil, expect_out="1,95")
+check("A student sees only their own transcript", True, "select count(*) || ',' || max(grade) from public.transcript_entries", stu1, expect_out="1,A")
+check("…not a classmate's", True, f"select count(*) from public.transcript_entries where student_id = '{stu2}'", stu1, expect_out=0)
+check("The course's teacher sees its entries", True, "select count(*) from public.transcript_entries", phil, expect_out=2)
+check("Other faculty don't", True, "select count(*) from public.transcript_entries", ruth, expect_out=0)
+check("Admins see every transcript", True, "select count(*) from public.transcript_entries", church, expect_out=2)
+check("Nobody changes a transcript directly", False,
+      f"update public.transcript_entries set grade = 'A' where student_id = '{stu2}'", stu2)
+check("…not even the teacher", False, f"update public.transcript_entries set grade = 'A' where student_id = '{stu2}'", phil)
+check("Faculty can't add past courses (Admins only)", False,
+      f"select public.save_transcript_entry(null, '{stu2}', 'Old Course', 2, '', 'Fall 2024', null, null, 88, 'B', 'Bro. Smith', '')", phil)
+hist = check("An Admin adds a course taken before the site existed", True,
+      f"select public.save_transcript_entry(null, '{stu2}', 'Bible Doctrines I', 2, 'Foundational', 'Fall 2024', '2024-09-01', '2024-12-15', 88, 'B', 'Bro. Smith', 'From the paper records')", church)
+check("…and corrects it", True,
+      f"select public.save_transcript_entry('{hist}', null, 'Bible Doctrines I', 3, 'Foundational', 'Fall 2024', '2024-09-01', '2024-12-15', 91, 'A', 'Bro. Smith', ''); select grade || credits from public.transcript_entries where id = '{hist}'", church, expect_out=f"{hist}\nA3")
+check("The student sees it on their transcript", True, "select count(*) from public.transcript_entries", stu2, expect_out=2)
+
+# --- backups ---------------------------------------------------------------------------------
+check("Nobody can read backups directly", False, "select * from public.site_backups", church)
+check("Students can't download backups", False, "select public.download_backup()", stu1)
+check("Faculty who aren't Admins can't either", False, "select public.download_backup()", phil)
+check("An Admin downloads a fresh backup", True,
+      "select (public.download_backup() -> 'tables' -> 'transcript_entries') is not null", church, expect_out="t")
+check("…it holds every course and leaves out private phone keys and calendar links", True,
+      "select (jsonb_array_length(public.download_backup() -> 'tables' -> 'courses') = (select count(*) from public.courses)) || ',' || ((public.download_backup() -> 'tables') ? 'calendar_feeds') || ',' || ((public.download_backup() -> 'tables') ? 'push_keys')", church, expect_out="true,false,false")
+check("The nightly backup runs once a night from 2 AM", True,
+      "select (public.take_nightly_backup_if_due((public.local_today() + time '01:00') at time zone 'America/Anchorage') is null) || ',' || (public.take_nightly_backup_if_due((public.local_today() + time '02:01') at time zone 'America/Anchorage') is not null) || ',' || (public.take_nightly_backup_if_due((public.local_today() + time '03:00') at time zone 'America/Anchorage') is null)", None, expect_out="true,true,true")
+check("Admins see the list of backups", True, "select count(*) >= 1 from public.list_backups() where kind = 'nightly'", church, expect_out="t")
+check("The website can't take or email backups itself", False, "select * from public.backup_to_email()", church)
+check("Only Admins see service health", False, "select * from public.get_service_status()", phil)
+
 # --- archive & delete ----------------------------------------------------------------------
 admin("update public.courses set archived = true where id = 'c1'")
 check("Archived course: its assignments disappear for students", True,
@@ -554,6 +721,8 @@ check("Students cannot delete accounts", False, f"select public.delete_user('{st
 check("Faculty can't delete an active account (Admins only)", False, f"select public.delete_user('{stu2}')", phil)
 check("An Admin deletes an account → all their data goes with it", True,
       f"select public.delete_user('{stu1}'); select (select count(*) from public.submissions where student_id = '{stu1}') + (select count(*) from public.messages where student_id = '{stu1}') + (select count(*) from public.enrollments where student_id = '{stu1}') + (select count(*) from public.profiles where id = '{stu1}')", church, expect_out=0)
+check("…but their transcript is kept for the Institute's records", True,
+      f"select count(*) || ',' || bool_and(student_id is null) || ',' || max(student_name) from public.transcript_entries where student_ref = '{stu1}'", church, expect_out="1,true,Blake A. Amis")
 admin(f"insert into public.courses (id, title, faculty_id, archived) values ('rmc', 'Old Course', '{phil}', true)")
 check("A course's own teacher (faculty) can't delete it — Admins only", True,
       "with d as (delete from public.courses where id = 'rmc' returning 1) select count(*) from d", phil, expect_out=0)
