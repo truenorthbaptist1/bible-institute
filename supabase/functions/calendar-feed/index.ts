@@ -27,7 +27,7 @@ export const CLASS_MINUTES = 90;
 // deno-lint-ignore no-explicit-any
 type Sql = any;
 export type FeedRow = {
-  kind: "class" | "due";
+  kind: "class" | "canceled" | "due";
   ref: string;
   course_id: string;
   course_title: string;
@@ -36,6 +36,9 @@ export type FeedRow = {
   class_time: string;
   done: boolean;
   owner_name: string;
+  location?: string;
+  meeting_url?: string;
+  note?: string;
 };
 
 function isoDay(d: unknown): string {
@@ -106,8 +109,8 @@ export function buildCalendar(rows: FeedRow[], now = new Date()): string {
   const dtstamp = stamp(now);
   for (const r of rows) {
     const ds = isoDay(r.day);
-    const ev = ["BEGIN:VEVENT", `UID:${r.kind}-${r.ref}@tnbbibleinstitute.com`, `DTSTAMP:${dtstamp}`];
-    if (r.kind === "class") {
+    const ev = ["BEGIN:VEVENT", `UID:${r.kind === "canceled" ? "class" : r.kind}-${r.ref}@tnbbibleinstitute.com`, `DTSTAMP:${dtstamp}`];
+    if (r.kind === "class" || r.kind === "canceled") {
       const timed = /^\d{1,2}:\d{2}/.test(r.class_time || "");
       if (timed) {
         const hhmm = r.class_time.slice(0, 5).padStart(5, "0");
@@ -121,10 +124,23 @@ export function buildCalendar(rows: FeedRow[], now = new Date()): string {
       } else {
         ev.push(`DTSTART;VALUE=DATE:${compactDay(ds)}`, `DTEND;VALUE=DATE:${compactDay(nextDay(ds))}`);
       }
+      const canceled = r.kind === "canceled";
+      const online = /^https:\/\//.test(r.meeting_url || "") ? r.meeting_url! : "";
+      const where = (r.location || "").trim() || (online ? "Online" : "");
+      const lines = [
+        canceled ? `CANCELED${r.note ? ` — ${r.note}` : ""}` : "Class — True North Baptist Church Bible Institute.",
+        timed ? `${canceled ? "Was to start" : "Starts"} ${prettyTime(r.class_time)} (Alaska time).` : "",
+        where && !canceled ? `Where: ${where}` : "",
+        online && !canceled ? `Join online: ${online}` : "",
+        SITE,
+      ].filter(Boolean);
       ev.push(
-        `SUMMARY:${esc(r.course_title)}`,
-        `DESCRIPTION:${esc(`Class — True North Baptist Church Bible Institute.${timed ? ` Starts ${prettyTime(r.class_time)} (Alaska time).` : ""}\n${SITE}`)}`,
-        "TRANSP:OPAQUE",
+        `SUMMARY:${esc((canceled ? "Canceled: " : "") + r.course_title)}`,
+        `DESCRIPTION:${esc(lines.join("\n"))}`,
+        ...(where ? [`LOCATION:${esc(where)}`] : []),
+        ...(online ? [`URL:${online}`] : []),
+        `STATUS:${canceled ? "CANCELLED" : "CONFIRMED"}`,
+        `TRANSP:${canceled ? "TRANSPARENT" : "OPAQUE"}`,
         "CATEGORIES:Class",
       );
     } else {
