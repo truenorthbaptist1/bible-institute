@@ -74,6 +74,7 @@
         return {
           upload: (path, file) => post("/storage/upload", { uid: uid(), bucket, path, size: file.size, type: file.type }),
           remove: (paths) => post("/storage/remove", { uid: uid(), bucket, paths }),
+          copy: (from, to) => post("/storage/copy", { uid: uid(), bucket, from, to }),
           list: (prefix) => post("/storage/list", { uid: uid(), bucket, prefix }),
           createSignedUrls: (paths) => post("/storage/signmany", { uid: uid(), bucket, paths }),
           createSignedUrl: (path, exp, opts) => post("/storage/sign", { uid: uid(), bucket, path, download: opts && opts.download }),

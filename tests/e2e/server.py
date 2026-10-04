@@ -16,8 +16,9 @@ SITE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "docs
 PASSWORDS = {}
 PORT = 8765
 TABLES = {"profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments", "submissions",
-          "discussion_posts", "messages", "notifications", "bible_highlights", "attendance_days", "attendance", "push_subscriptions"}
-SETOF_FUNCS = {"visible_people"}
+          "discussion_posts", "messages", "notifications", "bible_highlights", "attendance_days", "attendance", "push_subscriptions",
+          "class_cancellations", "announcements", "transcript_entries"}
+SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status"}
 IDENT = lambda s: '"' + str(s).replace('"', '') + '"'
 
 
@@ -115,7 +116,13 @@ def rpc(req):
     if err:
         return {"data": None, "error": err}
     bools = {"t": True, "true": True, "f": False, "false": False}
-    return {"data": bools[out] if out in bools else (out or None), "error": None}
+    if out in bools:
+        return {"data": bools[out], "error": None}
+    if out and out[0] in "{[":
+        return {"data": json.loads(out), "error": None}
+    if out and out.lstrip("-").isdigit():
+        return {"data": int(out), "error": None}
+    return {"data": out or None, "error": None}
 
 
 GOLD_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGPY0GuPFTEMLQkAOzNfAVOXhvQAAAAASUVORK5CYII="
@@ -147,6 +154,12 @@ def storage(kind, req):
             seen.add(head)
             items.append({"name": head, "id": None if "/" in rest else str(uuid.uuid4())})
         return {"data": items, "error": None}
+    if kind == "copy":
+        n, err = run_sql(f"select count(*) from storage.objects where bucket_id = {lit(b)} and name = {lit(req['from'])}", uid)
+        if err or n != "1":
+            return {"data": None, "error": err or {"message": "Object not found"}}
+        out, err = run_sql(f"insert into storage.objects (bucket_id, name, owner) values ({lit(b)}, {lit(req['to'])}, {lit(uid)})", uid)
+        return {"data": {"path": req["to"]} if not err else None, "error": err}
     if kind == "signmany":
         out = []
         for path in req["paths"]:
