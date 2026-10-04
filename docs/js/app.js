@@ -955,9 +955,8 @@ function renderDashboard(main) {
   main.innerHTML = `
     <div class="page-header">
       <div class="eyebrow">Student Dashboard</div>
-      <h1>Welcome to the Institute</h1>
+      <h1>Welcome${currentUser && currentUser.name ? `, ${esc(currentUser.name.trim().split(/\s+/)[0])}` : " to the Institute"}</h1>
     </div>
-    ${welcomeBanner()}
     ${profileNudge()}
     <div class="grid">
       ${tiles
@@ -987,37 +986,6 @@ const TILE_HUE = {
   messages: "amber", submit: "olive", discussion: "clay", resourceLibrary: "slate", profile: "gold",
   settings: "gray", attendanceHome: "green",
 };
-
-// A warm greeting and a verse for the day (KJV), the same for everyone on
-// a given day.
-const DAILY_VERSES = [
-  ["Thy word is a lamp unto my feet, and a light unto my path.", "Psalm 119:105"],
-  ["Study to shew thyself approved unto God, a workman that needeth not to be ashamed, rightly dividing the word of truth.", "2 Timothy 2:15"],
-  ["And the things that thou hast heard of me among many witnesses, the same commit thou to faithful men, who shall be able to teach others also.", "2 Timothy 2:2"],
-  ["All scripture is given by inspiration of God, and is profitable for doctrine, for reproof, for correction, for instruction in righteousness.", "2 Timothy 3:16"],
-  ["Trust in the LORD with all thine heart; and lean not unto thine own understanding.", "Proverbs 3:5"],
-  ["But grow in grace, and in the knowledge of our Lord and Saviour Jesus Christ.", "2 Peter 3:18"],
-  ["The grass withereth, the flower fadeth: but the word of our God shall stand for ever.", "Isaiah 40:8"],
-  ["Thy word have I hid in mine heart, that I might not sin against thee.", "Psalm 119:11"],
-  ["So then faith cometh by hearing, and hearing by the word of God.", "Romans 10:17"],
-  ["For the word of God is quick, and powerful, and sharper than any twoedged sword.", "Hebrews 4:12"],
-  ["Open thou mine eyes, that I may behold wondrous things out of thy law.", "Psalm 119:18"],
-  ["Sanctify them through thy truth: thy word is truth.", "John 17:17"],
-  ["Let the word of Christ dwell in you richly in all wisdom; teaching and admonishing one another.", "Colossians 3:16"],
-  ["The entrance of thy words giveth light; it giveth understanding unto the simple.", "Psalm 119:130"],
-];
-function welcomeBanner() {
-  const h = new Date().getHours();
-  const part = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
-  const first = ((currentUser && currentUser.name) || "").trim().split(/\s+/)[0];
-  const dayNum = Math.floor(new Date(todayStr() + "T12:00:00").getTime() / 86400000);
-  const [verse, ref] = DAILY_VERSES[dayNum % DAILY_VERSES.length];
-  return `
-    <div class="welcome-banner">
-      <div class="welcome-greet">${part}${first ? `, ${esc(first)}` : ""}.</div>
-      <blockquote class="welcome-verse">“${esc(verse)}”<cite>${esc(ref)}</cite></blockquote>
-    </div>`;
-}
 
 // Day / night: follows the device until someone picks; their pick is kept
 // on this device.
@@ -1200,7 +1168,6 @@ function renderFacultyHome(main) {
       <div class="eyebrow">Faculty &amp; Admin</div>
       <h1>Welcome Professor</h1>
     </div>
-    ${welcomeBanner()}
     ${profileNudge()}
     <div class="grid">
       ${tiles
@@ -3965,7 +3932,7 @@ async function renderReminderCard() {
         <ol>
           <li>In Safari, tap the <strong>Share</strong> button <span aria-hidden="true">(the square with an arrow)</span>.</li>
           <li>Choose <strong>Add to Home Screen</strong>, then <strong>Add</strong>.</li>
-          <li>Open the <strong>Bible Institute</strong> icon from your Home Screen, sign in, and come back to <strong>My Profile</strong> to turn reminders on.</li>
+          <li>Open the <strong>TNBBI</strong> icon from your Home Screen, sign in, and come back to <strong>My Profile</strong> to turn reminders on.</li>
         </ol>
         <p class="field-hint" style="margin:6px 0 0;">Needs iOS 16.4 or newer (Settings → General → About → iOS Version).</p>
       </div>` : `<p class="field-hint" style="margin:0;">This browser can't receive notifications. On a phone, use Safari (iPhone) or Chrome (Android).</p>`);

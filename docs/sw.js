@@ -10,8 +10,8 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 self.addEventListener("push", (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; }
-  catch (e) { data = { title: "Bible Institute", body: event.data ? event.data.text() : "" }; }
-  event.waitUntil(self.registration.showNotification(data.title || "Bible Institute", {
+  catch (e) { data = { title: "TNBBI", body: event.data ? event.data.text() : "" }; }
+  event.waitUntil(self.registration.showNotification(data.title || "TNBBI", {
     body: data.body || "",
     icon: "brand/icon-192.png",
     badge: "brand/favicon.png",
