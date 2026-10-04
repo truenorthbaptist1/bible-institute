@@ -1,0 +1,6 @@
+# made while the tests run
+.svc.ts
+.feed.ts
+.feed.ics
+.backup.json
+.email-*.html
