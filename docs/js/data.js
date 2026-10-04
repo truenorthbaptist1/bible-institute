@@ -98,6 +98,7 @@ function profileToUser(p) {
     homeChurch: p.home_church || "",
     bio: p.bio || "",
     avatarPath: p.avatar_path || null,
+    dueReminders: p.due_reminders || "evening",
   };
 }
 
@@ -483,6 +484,13 @@ const DB = {
   },
   async myPushDevices() {
     return must(await sb.from("push_subscriptions").select("endpoint,device,created_at"));
+  },
+  // Phone calendar: the person's private subscription link code.
+  async myCalendarToken() {
+    return must(await sb.rpc("my_calendar_token"));
+  },
+  async resetCalendarToken() {
+    return must(await sb.rpc("reset_calendar_token"));
   },
   // The reminder function lives at Supabase; these two calls set it up the
   // first time and send a test notification.

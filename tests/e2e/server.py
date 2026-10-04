@@ -114,7 +114,8 @@ def rpc(req):
     out, err = run_sql(f"select public.{IDENT(fn)}({args})::text", req.get("uid"))
     if err:
         return {"data": None, "error": err}
-    return {"data": {"t": True, "true": True, "f": False, "false": False}.get(out, None), "error": None}
+    bools = {"t": True, "true": True, "f": False, "false": False}
+    return {"data": bools[out] if out in bools else (out or None), "error": None}
 
 
 GOLD_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGPY0GuPFTEMLQkAOzNfAVOXhvQAAAAASUVORK5CYII="

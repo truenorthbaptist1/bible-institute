@@ -191,6 +191,23 @@ You're ready to test. See **TESTING.md** for how.
 
 ---
 
+## Phone calendar links (added Oct 4, 2026)
+
+The Calendar page's **Add to My Phone's Calendar** button gives each person a
+private link their phone's calendar subscribes to. The link is served by a
+second small function:
+
+1. Supabase → **Edge Functions** → **Deploy a new function** → **Via Editor**.
+2. Name it exactly **calendar-feed**. Replace the template with the contents of
+   `supabase/functions/calendar-feed/index.ts`, then **Deploy**.
+3. Open the function's **Details** and turn **Verify JWT** (Enforce JWT) **off**,
+   then save. (Calendar apps can't sign in; the long random code in each
+   person's link is what protects it.)
+
+Students' due-date reminders use the existing **attendance-reminders** function
+(redeploy it with the updated `index.ts`); its every-minute schedule is
+unchanged.
+
 ## Good to know
 
 - **The test banner.** A gold strip says "Test site" across the top. When you go live, set `testMode: false` in `docs/js/config.js` (edit it right on GitHub).

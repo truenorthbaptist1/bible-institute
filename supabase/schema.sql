@@ -245,6 +245,37 @@ create table if not exists public.attendance_reminders (
   primary key (course_id, class_date)
 );
 
+-- Assignment due-date reminders (added Oct 2026). Each person picks when
+-- they'd like a nudge about work that isn't turned in yet:
+--   evening — 6 PM the evening before it's due (the default)
+--   morning — 8 AM the day it's due
+--   both    — both of those
+--   off     — no assignment reminders
+-- They only arrive on devices the person turned reminders on for.
+alter table public.profiles
+  add column if not exists due_reminders text not null default 'evening'
+    check (due_reminders in ('off','evening','morning','both'));
+
+-- Which assignment reminders have already gone out (each one at most once).
+-- Not readable from the website.
+create table if not exists public.assignment_reminders (
+  assignment_id uuid not null references public.assignments(id) on delete cascade,
+  student_id    uuid not null references public.profiles(id) on delete cascade,
+  kind          text not null check (kind in ('evening','morning')),
+  sent_at       timestamptz not null default now(),
+  primary key (assignment_id, student_id, kind)
+);
+
+-- Phone-calendar subscription (added Oct 2026). Each person gets a private
+-- link their phone's calendar app checks for updates (class days and due
+-- dates). The link carries a long random code instead of a password; the
+-- person can replace it any time, which stops the old link working.
+create table if not exists public.calendar_feeds (
+  user_id    uuid primary key references public.profiles(id) on delete cascade,
+  token      text not null unique,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists idx_assignments_course on public.assignments(course_id);
 create index if not exists idx_submissions_student on public.submissions(student_id);
 create index if not exists idx_messages_thread on public.messages(course_id, student_id);
@@ -692,6 +723,116 @@ language sql volatile security definer set search_path = public as $$
     from due join claimed on claimed.course_id = due.id and claimed.class_date = due.d
 $$;
 
+-- Used only by the reminder function (never by the website): assignment
+-- reminders that are due right now. A student is reminded about an
+-- assignment that's open, not yet turned in, in a course they're enrolled
+-- in — at 6 PM the evening before and/or 8 AM the day it's due (Alaska
+-- time), as they chose. Only people with at least one device turned on are
+-- included, and each reminder is claimed exactly once.
+-- (p_now is only for testing; the reminder function leaves it as "now".)
+drop function if exists public.claim_assignment_reminders();
+create or replace function public.claim_assignment_reminders(p_now timestamptz default now())
+returns table (student_id uuid, kind text, assignment_id uuid, assignment_title text,
+               course_id text, course_title text, due date)
+language sql volatile security definer set search_path = public as $$
+  with now_ak as (select (p_now at time zone 'America/Anchorage') as t),
+  windows as (
+    -- evening: from 6 PM until midnight, for work due tomorrow
+    select 'evening'::text as kind, (n.t)::date + 1 as due_day
+      from now_ak n where (n.t)::time >= time '18:00'
+    union all
+    -- morning: from 8 AM until noon, for work due today
+    select 'morning', (n.t)::date
+      from now_ak n where (n.t)::time >= time '08:00' and (n.t)::time < time '12:00'
+  ),
+  due as (
+    select e.student_id, w.kind, a.id as assignment_id, a.title as assignment_title,
+           c.id as course_id, c.title as course_title, a.due
+      from windows w
+      join assignments a on a.due = w.due_day
+      join courses c on c.id = a.course_id and not c.archived
+      join enrollments e on e.course_id = c.id
+      join profiles p on p.id = e.student_id and p.status = 'active'
+     where p.due_reminders in (w.kind, 'both')
+       and (a.submit_anytime or a.open_date is null or a.open_date <= (select (t)::date from now_ak))
+       and not exists (select 1 from submissions s where s.assignment_id = a.id
+                         and s.student_id = e.student_id and s.status in ('submitted','graded'))
+       and exists (select 1 from push_subscriptions ps where ps.user_id = e.student_id)
+  ),
+  claimed as (
+    insert into assignment_reminders (assignment_id, student_id, kind)
+    select assignment_id, student_id, kind from due
+    on conflict do nothing
+    returning assignment_reminders.assignment_id, assignment_reminders.student_id, assignment_reminders.kind
+  )
+  select due.student_id, due.kind, due.assignment_id, due.assignment_title,
+         due.course_id, due.course_title, due.due
+    from due join claimed on claimed.assignment_id = due.assignment_id
+                         and claimed.student_id = due.student_id and claimed.kind = due.kind
+   order by due.student_id, due.course_title, due.assignment_title
+$$;
+
+-- Phone calendar: the signed-in person's private calendar link code
+-- (made the first time it's asked for).
+create or replace function public.my_calendar_token() returns text
+language plpgsql security definer set search_path = public as $$
+declare v text;
+begin
+  if not public.is_active_user() then raise exception 'Not signed in.'; end if;
+  select token into v from calendar_feeds where user_id = auth.uid();
+  if v is null then
+    insert into calendar_feeds (user_id, token)
+    values (auth.uid(), encode(gen_random_bytes(24), 'hex'))
+    on conflict (user_id) do nothing;
+    select token into v from calendar_feeds where user_id = auth.uid();
+  end if;
+  return v;
+end $$;
+
+-- Replace the link (the old one stops working everywhere it was added).
+create or replace function public.reset_calendar_token() returns text
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_active_user() then raise exception 'Not signed in.'; end if;
+  delete from calendar_feeds where user_id = auth.uid();
+  return public.my_calendar_token();
+end $$;
+
+-- Used only by the calendar-feed function (never by the website): every
+-- event on one person's calendar, found by their link code. Students get
+-- the courses they're enrolled in; teachers get the courses they teach.
+-- Class days marked "no class" are left off. Nothing at all for an
+-- account that isn't active.
+--   kind 'class' — a class meeting (class_time empty = time not set yet)
+--   kind 'due'   — an assignment due date (done = already turned in)
+create or replace function public.calendar_feed_events(p_token text)
+returns table (kind text, ref text, course_id text, course_title text, title text,
+               day date, class_time text, done boolean, owner_name text)
+language sql stable security definer set search_path = public as $$
+  with me as (
+    select p.id, p.name from calendar_feeds f join profiles p on p.id = f.user_id
+     where f.token = p_token and length(p_token) >= 32 and p.status = 'active'
+  ),
+  my_courses as (
+    select c.*, false as teaching from courses c join enrollments e on e.course_id = c.id
+     where e.student_id = (select id from me) and not c.archived
+    union
+    select c.*, true from courses c
+     where public.course_teacher(c.id) = (select id from me) and not c.archived
+  )
+  select 'class', mc.id || '-' || d::text, mc.id, mc.title, mc.title, d,
+         coalesce(mc.sched_time, ''), false, (select name from me)
+    from my_courses mc, lateral public.course_class_dates(mc.id) d
+   where not exists (select 1 from attendance_days ad
+                      where ad.course_id = mc.id and ad.class_date = d and not ad.held)
+  union all
+  select 'due', a.id::text, mc.id, mc.title, a.title, a.due, '',
+         (not mc.teaching and exists (select 1 from submissions s where s.assignment_id = a.id
+            and s.student_id = (select id from me) and s.status in ('submitted','graded'))),
+         (select name from me)
+    from my_courses mc join assignments a on a.course_id = mc.id
+$$;
+
 -- Mark the other side's messages in one thread as read.
 create or replace function public.mark_thread_read(p_course text, p_student uuid) returns void
 language plpgsql security definer set search_path = public as $$
@@ -938,6 +1079,8 @@ alter table public.attendance           enable row level security;
 alter table public.push_subscriptions   enable row level security;
 alter table public.push_keys            enable row level security;
 alter table public.attendance_reminders enable row level security;
+alter table public.assignment_reminders enable row level security;
+alter table public.calendar_feeds       enable row level security;
 
 do $$
 declare r record;
@@ -1169,6 +1312,10 @@ revoke execute on function public.clear_attendance(text, date) from public, anon
 revoke execute on function public.register_push(text, text, text, text) from public, anon;
 revoke execute on function public.push_public_key() from public, anon;
 revoke execute on function public.claim_attendance_reminders() from public, anon, authenticated;
+revoke execute on function public.claim_assignment_reminders(timestamptz) from public, anon, authenticated;
+revoke execute on function public.calendar_feed_events(text) from public, anon, authenticated;
+revoke execute on function public.my_calendar_token() from public, anon;
+revoke execute on function public.reset_calendar_token() from public, anon;
 grant execute on function public.claim_bootstrap_super_admin() to authenticated;
 grant execute on function public.delete_user(uuid) to authenticated;
 grant execute on function public.approve_enrollment(text, uuid) to authenticated;
@@ -1187,6 +1334,8 @@ grant execute on function public.save_attendance(text, date, boolean, jsonb) to 
 grant execute on function public.clear_attendance(text, date) to authenticated;
 grant execute on function public.register_push(text, text, text, text) to authenticated;
 grant execute on function public.push_public_key() to authenticated;
+grant execute on function public.my_calendar_token() to authenticated;
+grant execute on function public.reset_calendar_token() to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Table access for signed-in users. This only opens the door; the Row Level
@@ -1200,3 +1349,5 @@ revoke all on all tables in schema public from anon;
 revoke insert, update, delete on public.attendance_days, public.attendance from authenticated;
 revoke insert, update on public.push_subscriptions from authenticated;
 revoke all on public.push_keys, public.attendance_reminders from authenticated;
+-- Reminder records and calendar links: only through the functions above.
+revoke all on public.assignment_reminders, public.calendar_feeds from authenticated;

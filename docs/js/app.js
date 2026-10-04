@@ -253,11 +253,15 @@ let recoveringPassword = new URLSearchParams(location.search).get("reset") === "
 // back to the page) and opened once the teacher is signed in.
 const ATT_LINK_KEY = "tnbbi-open-attendance";
 let pendingAttendanceLink = readAttendanceLink(location.href);
+// Also: ?assignment=<id> (a student's due-date reminder, or an item in their
+// phone's calendar) and ?calendar=<YYYY-MM-DD> (several things due that day).
 function readAttendanceLink(href) {
   try {
     const q = new URL(href, location.origin).searchParams;
-    if (q.get("attendance")) {
-      const v = { course: q.get("attendance"), date: q.get("date") || "" };
+    if (q.get("attendance") || q.get("assignment") || q.get("calendar")) {
+      const v = q.get("attendance") ? { course: q.get("attendance"), date: q.get("date") || "" }
+        : q.get("assignment") ? { assignment: q.get("assignment") }
+        : { calendar: q.get("calendar") };
       try { sessionStorage.setItem(ATT_LINK_KEY, JSON.stringify(v)); } catch (e) { /* private mode */ }
       return v;
     }
@@ -271,9 +275,29 @@ function handlePendingAttendanceLink() {
   pendingAttendanceLink = null;
   try { sessionStorage.removeItem(ATT_LINK_KEY); } catch (e) { /* ignore */ }
   const url = new URL(location.href);
-  url.searchParams.delete("attendance");
-  url.searchParams.delete("date");
+  ["attendance", "date", "assignment", "calendar"].forEach((k) => url.searchParams.delete(k));
   history.replaceState(null, "", url.pathname + url.search + url.hash);
+  if (link.calendar) {
+    calendarCursor = /^\d{4}-\d{2}-\d{2}$/.test(link.calendar) ? link.calendar : todayStr();
+    view = "calendar"; activeCourseId = null; renderNav(); renderMain();
+    return;
+  }
+  if (link.assignment) {
+    const c = courses.find((x) => x.assignments.some((a) => a.id === link.assignment));
+    const a = c && c.assignments.find((x) => x.id === link.assignment);
+    if (!a) { toast("That assignment couldn't be found."); return; }
+    if (role === "student" && c.studentIds.includes(currentStudentId)) {
+      calendarCursor = a.due;
+      view = "calendar"; activeCourseId = null; renderNav(); renderMain();
+      openSubmitModal(c, a, currentStudentId, () => renderMain());
+    } else {
+      calendarCursor = a.due;
+      view = "calendar"; activeCourseId = null; renderNav(); renderMain();
+      const rows = calendarRowsByDate()[a.due] || [];
+      openCalendarDayModal(a.due, rows, calendarClassesByDate()[a.due] || [], () => renderMain());
+    }
+    return;
+  }
   const c = courses.find((x) => x.id === link.course);
   if (!c) { toast("That course couldn't be found."); return; }
   if (role !== "faculty" || !iTeach(c)) { toast("That attendance link is for the course's teacher."); return; }
@@ -824,7 +848,7 @@ async function startSessionInner(session) {
     renderMain();
     startPolling();
     handlePendingAttendanceLink();
-    if (role === "faculty" && pushSupported()) registerServiceWorker();
+    if (pushSupported()) registerServiceWorker();
   } catch (e) {
     console.error(e);
     authMode = "signin";
@@ -1858,14 +1882,25 @@ function calendarRowsByDate() {
   return byDate;
 }
 
-// Faculty: the days each course you teach meets.
+// The days each of your classes meets: the courses you teach, or (for a
+// student) the courses you're enrolled in. A day the teacher marked "no
+// class" is left off.
 function calendarClassesByDate() {
   const out = {};
-  if (role === "student") return out;
-  courses.filter((c) => !c.archived && iTeach(c)).forEach((c) => {
-    classDates(c).forEach((d) => (out[d] = out[d] || []).push(c));
+  const mine = role === "student"
+    ? courses.filter((c) => !c.archived && c.studentIds.includes(currentStudentId))
+    : courses.filter((c) => !c.archived && iTeach(c));
+  mine.forEach((c) => {
+    classDates(c).forEach((d) => {
+      const day = (c.attDays || {})[d];
+      if (day && day.held === false) return;
+      (out[d] = out[d] || []).push(c);
+    });
   });
   return out;
+}
+function classMeetsText(c) {
+  return c.schedule && c.schedule.time ? `Class meets ${fmtTime(c.schedule.time)}` : "Class day (time not set yet)";
 }
 
 // Tapping a calendar day: what's due (and, for teachers, which classes meet).
@@ -1876,13 +1911,14 @@ function openCalendarDayModal(ds, rows, classes, after) {
   const due = (a) => `Due ${fmtDay(a.due, { month: "short", day: "numeric" })} · ${a.points} pts`;
 
   const classHtml = classes.map((c) => {
-    const day = c.attDays[ds];
-    const action = !c.att.on ? `<span class="field-hint" style="margin:0;">Not recording attendance</span>`
+    const day = (c.attDays || {})[ds];
+    const action = role === "student" ? ""
+      : !c.att.on ? `<span class="field-hint" style="margin:0;">Not recording attendance</span>`
       : ds > today ? `<span class="pill pill-navy">Upcoming</span>`
       : `<button class="btn ${day ? "btn-ghost" : "btn-primary"} btn-sm" data-cal-att="${c.id}">${day ? (day.held ? "✓ View Attendance" : "No class — Edit") : "Take Attendance"}</button>`;
     return `<div class="cal-modal-class">
         <div class="cal-class-icon">${icon("calendar")}</div>
-        <div style="flex:1;min-width:0;"><strong>${esc(c.title)}</strong><div class="field-hint" style="margin:2px 0 0;">Class meets ${esc(fmtTime(c.schedule.time) || "")}</div></div>
+        <div style="flex:1;min-width:0;"><strong>${esc(c.title)}</strong><div class="field-hint" style="margin:2px 0 0;">${esc(classMeetsText(c))}</div></div>
         ${action}
       </div>`;
   }).join("");
@@ -1973,6 +2009,72 @@ function calendarDotClass(rows, today) {
   return "cal-dot-navy";
 }
 
+// "Add to My Phone's Calendar": a private link the phone's own calendar app
+// subscribes to (served by the calendar-feed function at Supabase), so class
+// days and due dates appear there and keep themselves up to date.
+function calendarFeedUrl(token) {
+  return `${TNBBI_CONFIG.supabaseUrl.replace(/\/$/, "")}/functions/v1/calendar-feed?t=${encodeURIComponent(token)}`;
+}
+async function openPhoneCalendarModal() {
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal phone-cal-modal" role="dialog" aria-modal="true" aria-labelledby="pcTitle" style="max-width:540px;">
+        <h2 id="pcTitle" style="font-size:1.15rem;margin:0 0 6px;">Add to My Phone's Calendar</h2>
+        <div id="pcBody"><p class="field-hint">Getting your calendar link…</p></div>
+        <div class="form-actions"><button class="btn btn-ghost" id="pcClose">Close</button></div>
+      </div>
+    </div>`;
+  document.getElementById("pcClose").addEventListener("click", closeModal);
+  let token;
+  try { token = await DB.myCalendarToken(); }
+  catch (e) { const b = document.getElementById("pcBody"); if (b) b.innerHTML = `<p class="field-hint" style="color:var(--destructive);">${esc(friendlyError(e))}</p>`; return; }
+  renderPhoneCalendarBody(token);
+}
+function renderPhoneCalendarBody(token) {
+  const body = document.getElementById("pcBody");
+  if (!body) return;
+  const https = calendarFeedUrl(token);
+  const webcal = https.replace(/^https?:/, "webcal:");
+  const google = `https://calendar.google.com/calendar/render?cid=${encodeURIComponent(webcal)}`;
+  const apple = isIOS() || /Macintosh/.test(navigator.userAgent);
+  const android = /Android/.test(navigator.userAgent);
+  const appleBlock = `
+    <div class="pc-option">
+      <div class="pc-head"><strong>iPhone, iPad, or Mac</strong></div>
+      <a class="btn ${apple || !android ? "btn-gold" : "btn-ghost"} btn-sm" id="pcApple" href="${esc(webcal)}">Add to Apple Calendar</a>
+      <p class="field-hint">Tap it, then tap <strong>Subscribe</strong> (on a Mac: <strong>Subscribe</strong>, then <strong>OK</strong>). On iPhone you can choose how often it checks for updates in Settings → Calendar → Accounts → Subscribed Calendars.</p>
+    </div>`;
+  const googleBlock = `
+    <div class="pc-option">
+      <div class="pc-head"><strong>Android or Google Calendar</strong></div>
+      <a class="btn ${android ? "btn-gold" : "btn-ghost"} btn-sm" id="pcGoogle" href="${esc(google)}" target="_blank" rel="noopener">Add to Google Calendar</a>
+      <p class="field-hint">Sign in with the Google account your phone uses, then tap <strong>Add</strong>. If it doesn't show on your phone, open the Google Calendar app → Settings → <strong>TNBBI Classes</strong> → turn on <strong>Sync</strong>. Google checks for changes a few times a day.</p>
+    </div>`;
+  body.innerHTML = `
+    <p style="margin:0 0 14px;">Your class days and due dates will show up in your phone's own calendar app, right next to everything else — and they keep themselves up to date. When a teacher adds an assignment or changes a class, your phone picks it up on its own.</p>
+    ${android ? googleBlock + appleBlock : appleBlock + googleBlock}
+    <div class="pc-option">
+      <div class="pc-head"><strong>Outlook or another calendar app</strong></div>
+      <div class="pc-copy">
+        <input type="text" id="pcLink" readonly value="${esc(https)}" aria-label="Your calendar link">
+        <button class="btn btn-ghost btn-sm" id="pcCopy">Copy Link</button>
+      </div>
+      <p class="field-hint">Choose "Add calendar → From the internet" (or "Subscribe") and paste this link.</p>
+    </div>
+    <div class="privacy-note" style="margin-top:6px;">${icon("lock")}<span>This link is yours alone — anyone who has it can see your class schedule and assignment names, so please don't share it. Class times are Alaska time, shown as 1½ hours each. <button type="button" class="link-btn" id="pcReset">Get a new link</button> (the old one stops working).</span></div>`;
+  document.getElementById("pcLink").addEventListener("focus", (e) => e.target.select());
+  document.getElementById("pcCopy").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(https); toast("Link copied.", "success"); }
+    catch (e) { const i = document.getElementById("pcLink"); i.focus(); i.select(); toast("Press and hold (or Ctrl+C) to copy the selected link."); }
+  });
+  document.getElementById("pcReset").addEventListener("click", async () => {
+    if (!confirm("Make a new calendar link? The old link will stop working — any phone or computer that added it will need the new one.")) return;
+    try { renderPhoneCalendarBody(await DB.resetCalendarToken()); toast("New link ready. Add it to your calendar again.", "success"); }
+    catch (e) { toast(friendlyError(e)); }
+  });
+}
+
 function renderCalendar(main) {
   const today = todayStr();
   const byDate = calendarRowsByDate();
@@ -2013,12 +2115,12 @@ function renderCalendar(main) {
     <div class="page-header">
       <div class="eyebrow">${role === "student" ? "Student Dashboard" : staffEyebrow()}</div>
       <h1>Calendar</h1>
-      <p>${role === "student" ? "Every assignment due date across your classes. Tap a day to see what's due and start it." : "Your class days and every assignment due date in the courses you teach. Tap a day for details."}</p>
+      <p>${role === "student" ? "Your class days and every assignment due date. Tap a day to see what's due and start it." : "Your class days and every assignment due date in the courses you teach. Tap a day for details."}</p>
     </div>
     ${totalAssignments === 0 ? `
     <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("calendar")}</div>
-      <p>${role === "student" ? "Once you're enrolled in a course with assignments, they'll show up here." : "Once a course you teach has a schedule or assignments, they'll show up here."}</p>
+      <p>${role === "student" ? "Once you're enrolled in a course, its class days and assignments will show up here." : "Once a course you teach has a schedule or assignments, they'll show up here."}</p>
     </div>` : `
     <div class="cal-toolbar">
       <div class="cal-nav">
@@ -2044,13 +2146,18 @@ function renderCalendar(main) {
         return `<button type="button" class="cal-day ${inRangeMonth ? "" : "cal-day-outside"} ${isToday ? "cal-day-today" : ""} ${isSelected ? "cal-day-selected" : ""}" data-cal-day="${ds}">
           <span class="cal-day-num">${d.getDate()}</span>
           ${rows.length ? `<span class="cal-dot ${calendarDotClass(rows, today)}" title="${rows.length} due"></span>` : ""}
-          ${classes.length ? `<span class="cal-class ${classes.some((c) => c.att.on && ds <= today && !c.attDays[ds]) ? "cal-class-todo" : ""}" title="${esc(classes.map((c) => `${c.title} ${fmtTime(c.schedule.time) || ""}`).join(", "))}"><span class="cal-class-text">${classes.length > 1 ? `${classes.length} classes` : esc(fmtTime(classes[0].schedule.time) || "Class")}</span></span>` : ""}
+          ${classes.length ? `<span class="cal-class ${role !== "student" && classes.some((c) => c.att.on && ds <= today && !c.attDays[ds]) ? "cal-class-todo" : ""}" title="${esc(classes.map((c) => `${c.title} ${fmtTime(c.schedule.time) || ""}`).join(", "))}"><span class="cal-class-text">${classes.length > 1 ? `${classes.length} classes` : esc(fmtTime(classes[0].schedule.time) || "Class")}</span></span>` : ""}
         </button>`;
       }).join("")}
     </div>
     <div class="cal-legend">
       <span><span class="cal-dot cal-dot-navy"></span> Assignment due</span>
-      ${role === "student" ? "" : `<span><span class="cal-class cal-class-legend"></span> Class meets</span><span><span class="cal-class cal-class-todo cal-class-legend"></span> Attendance not taken</span>`}
+      <span><span class="cal-class cal-class-legend"></span> Class meets</span>
+      ${role === "student" ? "" : `<span><span class="cal-class cal-class-todo cal-class-legend"></span> Attendance not taken</span>`}
+    </div>
+    <div class="cal-takeaway">
+      <button class="btn btn-gold btn-sm" id="calPhone">${icon("calendar")} Add to My Phone's Calendar</button>
+      <button class="btn btn-ghost btn-sm" id="calReminders">${icon("bell")} ${role === "student" ? "Due-Date Reminders" : "Class Reminders"}</button>
     </div>
     <div class="card" id="calDayDetail" style="margin-top:14px;"></div>
     `}
@@ -2065,7 +2172,7 @@ function renderCalendar(main) {
     const heading = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + (ds === today ? " — Today" : "");
     wrap.innerHTML = `
       <div class="section-title" style="margin:0 0 6px;"><h2 style="font-size:1rem;">${heading}</h2></div>
-      ${(classesByDate[ds] || []).map((c) => `<p style="margin:0 0 8px;font-size:.88rem;"><span class="cal-class cal-class-legend"></span> <strong>${esc(c.title)}</strong> meets ${esc(fmtTime(c.schedule.time) || "")}</p>`).join("")}
+      ${(classesByDate[ds] || []).map((c) => `<p style="margin:0 0 8px;font-size:.88rem;"><span class="cal-class cal-class-legend"></span> <strong>${esc(c.title)}</strong> · ${esc(classMeetsText(c))}</p>`).join("")}
       ${rows.length === 0 ? `<p style="color:var(--muted-foreground);font-size:.88rem;">Nothing due this day.</p>` : `
       <ul class="assignments-list">
         ${rows.map((row) => `
@@ -2094,6 +2201,11 @@ function renderCalendar(main) {
     renderCalendar(main);
   });
   document.getElementById("calToday").addEventListener("click", () => { calendarCursor = today; renderCalendar(main); });
+  document.getElementById("calPhone").addEventListener("click", openPhoneCalendarModal);
+  document.getElementById("calReminders").addEventListener("click", () => {
+    openProfile();
+    requestAnimationFrame(() => { const el = document.getElementById("reminderCard"); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); });
+  });
   main.querySelectorAll("[data-cal-mode]").forEach((btn) => {
     btn.addEventListener("click", () => { calendarMode = btn.dataset.calMode; renderCalendar(main); });
   });
@@ -3819,10 +3931,43 @@ function registerServiceWorker() {
   return navigator.serviceWorker.register("sw.js").catch((e) => { console.warn("service worker:", e); return null; });
 }
 
+const DUE_REMINDER_CHOICES = [
+  ["evening", "The evening before", "6 PM"],
+  ["morning", "The morning it's due", "8 AM"],
+  ["both", "Both", "6 PM & 8 AM"],
+  ["off", "No due-date reminders", ""],
+];
+// Students: when to be reminded about work that isn't turned in yet.
+function dueReminderChooser() {
+  if (role !== "student") return "";
+  const me = users.find((u) => u.id === currentUser.id) || {};
+  const cur = me.dueReminders || "evening";
+  return `
+    <div class="due-pref">
+      <div class="cal-modal-label" style="margin:16px 0 8px;">Remind me about assignments not turned in yet</div>
+      <div class="due-pref-options" role="radiogroup" aria-label="When to remind me">
+        ${DUE_REMINDER_CHOICES.map(([k, label, when]) => `
+          <button type="button" role="radio" aria-checked="${cur === k}" class="due-pref-opt ${cur === k ? "active" : ""}" data-due-pref="${k}">
+            <strong>${label}</strong>${when ? `<span>${when}</span>` : ""}
+          </button>`).join("")}
+      </div>
+      <p class="field-hint" style="margin:8px 0 0;">Alaska time. Several assignments due the same day arrive as one note.</p>
+    </div>`;
+}
+function wireDueReminderChooser(wrap) {
+  wrap.querySelectorAll("[data-due-pref]").forEach((b) => b.addEventListener("click", () => {
+    const v = b.dataset.duePref;
+    run(() => DB.updateProfile(currentUser.id, { due_reminders: v }), () => renderReminderCard(),
+      { success: v === "off" ? "Due-date reminders are off." : "Saved — you'll be reminded " + (v === "evening" ? "the evening before." : v === "morning" ? "the morning it's due." : "the evening before and the morning it's due.") });
+  }));
+}
+
 async function renderReminderCard() {
   const wrap = document.getElementById("reminderCard");
   if (!wrap) return;
-  const intro = `<p style="margin:0 0 12px;">When one of your classes starts, get a notification on your phone that opens that day's attendance in one tap. (Only for courses that record attendance, and only if it hasn't been taken yet.)</p>`;
+  const intro = role === "student"
+    ? `<p style="margin:0 0 12px;">Get a notification on your phone when an assignment is coming due and you haven't turned it in yet. Tap it to go straight to the assignment.</p>`
+    : `<p style="margin:0 0 12px;">When one of your classes starts, get a notification on your phone that opens that day's attendance in one tap. (Only for courses that record attendance, and only if it hasn't been taken yet.)</p>`;
 
   if (!pushSupported()) {
     wrap.innerHTML = intro + (isIOS() && !isInstalledApp() ? `
@@ -3834,7 +3979,8 @@ async function renderReminderCard() {
           <li>Open the <strong>TNBBI</strong> icon from your Home Screen, sign in, and come back to <strong>My Profile</strong> to turn reminders on.</li>
         </ol>
         <p class="field-hint" style="margin:6px 0 0;">Needs iOS 16.4 or newer (Settings → General → About → iOS Version).</p>
-      </div>` : `<p class="field-hint" style="margin:0;">This browser can't receive notifications. On a phone, use Safari (iPhone) or Chrome (Android).</p>`);
+      </div>` : `<p class="field-hint" style="margin:0;">This browser can't receive notifications. On a phone, use Safari (iPhone) or Chrome (Android).</p>`) + dueReminderChooser();
+    wireDueReminderChooser(wrap);
     return;
   }
   wrap.innerHTML = intro + `<p class="field-hint" style="margin:0;">Checking this device…</p>`;
@@ -3858,7 +4004,8 @@ async function renderReminderCard() {
       ${onHere
         ? `<button class="btn btn-primary btn-sm" id="pushTest">Send a Test</button><button class="btn btn-ghost btn-sm" id="pushOff">Turn Off on This Device</button>`
         : `<button class="btn btn-gold btn-sm" id="pushOn" ${blocked ? "disabled" : ""}>Turn On Reminders</button>`}
-    </div>`;
+    </div>` + dueReminderChooser();
+  wireDueReminderChooser(wrap);
 
   const on = document.getElementById("pushOn");
   if (on) on.addEventListener("click", async () => {
@@ -4879,8 +5026,8 @@ function renderProfile(main) {
         </div>
       </div>
     </form>
-    ${isSelf && role === "faculty" ? `
-    <div class="section-title"><h2>Class Reminders</h2></div>
+    ${isSelf ? `
+    <div class="section-title"><h2>${role === "student" ? "Due-Date Reminders" : "Class Reminders"}</h2></div>
     <div class="card" id="reminderCard"></div>` : ""}
   `;
   renderReminderCard();

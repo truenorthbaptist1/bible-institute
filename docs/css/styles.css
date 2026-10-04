@@ -970,3 +970,21 @@ body.rte-full-open { overflow: hidden; }
 .idle-warning p { margin: 0; flex: 1 1 220px; font-size: 0.9rem; }
 .written-view th { background: var(--muted); font-weight: 700; }
 .modal:has(.written-view) { max-width: 780px !important; }
+
+/* --- Calendar: take it with you (phone calendar + reminders) --------------- */
+.cal-takeaway { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.cal-takeaway .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
+.pc-option { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 10px; background: var(--card); }
+.pc-head { margin-bottom: 8px; font-size: 0.92rem; }
+.pc-option .btn { text-decoration: none; }
+.pc-option .field-hint { margin: 8px 0 0; }
+.pc-copy { display: flex; gap: 8px; align-items: center; }
+.pc-copy input { flex: 1; min-width: 0; margin: 0; font-size: 0.78rem; }
+.link-btn { background: none; border: none; padding: 0; font: inherit; color: var(--accent); text-decoration: underline; cursor: pointer; }
+
+/* Due-date reminder choices (student's My Profile) */
+.due-pref-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.due-pref-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--card); color: var(--foreground); font: inherit; font-size: 0.86rem; text-align: left; cursor: pointer; }
+.due-pref-opt span { font-size: 0.76rem; color: var(--muted-foreground); }
+.due-pref-opt.active { border-color: var(--gold); box-shadow: 0 0 0 2px color-mix(in srgb, var(--gold) 35%, transparent); background: color-mix(in srgb, var(--gold) 9%, var(--card)); }
+.due-pref-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

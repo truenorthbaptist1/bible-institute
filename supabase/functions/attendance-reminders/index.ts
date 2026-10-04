@@ -1,11 +1,14 @@
 // ============================================================================
 // attendance-reminders — Supabase Edge Function
 //
-// Sends a teacher a phone notification when their class starts: "Time to
-// take attendance", with a tap-through link straight into that day's
-// attendance page. Runs every minute (scheduled by
-// supabase/reminders-schedule.sql). Each class day is reminded at most once,
-// and only if attendance hasn't already been taken.
+// Phone notifications (Web Push) for the Institute. Runs every minute
+// (scheduled by supabase/reminders-schedule.sql). Two kinds:
+//   • Teachers — when their class starts: "Time to take attendance", with a
+//     tap-through link straight into that day's attendance page. Each class
+//     day is reminded at most once, and only if attendance hasn't been taken.
+//   • Students — assignment due dates: at 6 PM the evening before and/or
+//     8 AM the day it's due (their choice on My Profile), for work that isn't
+//     turned in yet. Several due the same day arrive as one notification.
 //
 // Three ways it's called:
 //   (no query)   — the every-minute run: send any reminders that are due
@@ -167,23 +170,72 @@ function prettyTime(t: string): string {
   return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
+function isoDay(d: unknown): string {
+  return d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
+}
+
+// Students' assignment reminders, one notification per student per run.
+type DueRow = { student_id: string; kind: string; assignment_id: string; assignment_title: string; course_id: string; course_title: string; due: unknown };
+export function assignmentMessages(rows: DueRow[]) {
+  const byStudent = new Map<string, DueRow[]>();
+  for (const r of rows) {
+    const k = `${r.student_id}|${r.kind}`;
+    if (!byStudent.has(k)) byStudent.set(k, []);
+    byStudent.get(k)!.push(r);
+  }
+  const out: { userId: string; message: object }[] = [];
+  for (const [k, list] of byStudent) {
+    const [userId, kind] = k.split("|");
+    const when = kind === "evening" ? "tomorrow" : "today";
+    const day = isoDay(list[0].due);
+    if (list.length === 1) {
+      const r = list[0];
+      out.push({ userId, message: {
+        title: `Due ${when}: ${r.assignment_title}`,
+        body: `${r.course_title} — not turned in yet. Tap to open it.`,
+        url: `${SITE}/?assignment=${encodeURIComponent(r.assignment_id)}`,
+        tag: `due-${kind}-${day}`,
+      } });
+    } else {
+      const names = list.map((r) => r.assignment_title);
+      const shown = names.slice(0, 3).join(", ") + (names.length > 3 ? `, and ${names.length - 3} more` : "");
+      out.push({ userId, message: {
+        title: `${list.length} assignments due ${when}`,
+        body: `${shown}. Tap to see them.`,
+        url: `${SITE}/?calendar=${day}`,
+        tag: `due-${kind}-${day}`,
+      } });
+    }
+  }
+  return out;
+}
+
 export async function runReminders(sql: Sql, fetchImpl = fetch) {
   const due = await sql`select * from public.claim_attendance_reminders()`;
-  if (!due.length) return { sent: 0 };
+  // Assignment reminders (tolerant of a database that hasn't been updated
+  // yet, so class reminders keep working either way).
+  let dueWork: DueRow[] = [];
+  try { dueWork = await sql`select * from public.claim_assignment_reminders()`; }
+  catch (e) { console.warn("assignment reminders:", (e as Error).message || e); }
+  if (!due.length && !dueWork.length) return { sent: 0 };
   const keys = await getKeys(sql, true);
   let sent = 0;
+  for (const m of assignmentMessages(dueWork)) {
+    const res = await sendToUser(sql, m.userId, m.message, keys!, fetchImpl);
+    sent += res.delivered;
+  }
   for (const r of due) {
-    const date = r.class_date instanceof Date ? r.class_date.toISOString().slice(0, 10) : String(r.class_date).slice(0, 10);
+    const date = isoDay(r.class_date);
     const msg = {
       title: "Time to take attendance",
       body: `${r.course_title} started at ${prettyTime(r.class_time)}. Tap to mark who's here.`,
       url: `${SITE}/?attendance=${encodeURIComponent(r.course_id)}&date=${date}`,
       tag: `attendance-${r.course_id}-${date}`,
     };
-    const res = await sendToUser(sql, r.teacher_id, msg, keys, fetchImpl);
+    const res = await sendToUser(sql, r.teacher_id, msg, keys!, fetchImpl);
     sent += res.delivered;
   }
-  return { sent, classes: due.length };
+  return { sent, classes: due.length, assignments: dueWork.length };
 }
 
 // Who is calling? (Only for ?test=1.) Asks Supabase Auth to vouch for the
@@ -213,7 +265,7 @@ export async function handler(req: Request, sql: Sql, fetchImpl = fetch): Promis
       const keys = await getKeys(sql, true);
       const res = await sendToUser(sql, uid, {
         title: "Reminders are working",
-        body: "You'll get a note like this when each of your classes starts.",
+        body: "Reminders like this one will arrive on this device.",
         url: `${SITE}/`,
         tag: "tnbbi-test",
       }, keys!, fetchImpl);

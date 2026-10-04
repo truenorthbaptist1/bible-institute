@@ -434,6 +434,76 @@ check("…exactly once (a second run sends nothing)", True,
 admin("delete from public.courses where id like 'rm_'")
 admin("delete from public.push_subscriptions")
 
+# --- assignment due-date reminders ---------------------------------------------------------
+check("A student picks when to be reminded (the morning it's due)", True,
+      f"update public.profiles set due_reminders = 'morning' where id = '{stu2}'; select due_reminders from public.profiles where id = '{stu2}'", stu2, expect_out="morning")
+check("…only from the allowed choices", False,
+      f"update public.profiles set due_reminders = 'hourly' where id = '{stu2}'", stu2)
+check("A student turns on reminders for their phone", True,
+      "select public.register_push('https://push.example.com/s1', 'BKey', 'a', 'iPhone'); select count(*) from public.push_subscriptions", stu1, expect_out=1)
+check("A second student turns on reminders for their phone", True,
+      "select public.register_push('https://push.example.com/s2', 'BKey', 'a', 'Android')", stu2)
+DUE_TMRW = "(public.local_today() + 1)"
+rq1 = admin(f"insert into public.assignments (course_id, title, due, points) values ('c1', 'Reminder Essay', {DUE_TMRW}, 10) returning id").splitlines()[0]
+rq2 = admin(f"insert into public.assignments (course_id, title, due, points) values ('c1', 'Already Done', {DUE_TMRW}, 10) returning id").splitlines()[0]
+rq3 = admin(f"insert into public.assignments (course_id, title, due, points, submit_anytime, open_date) values ('c1', 'Still Locked', {DUE_TMRW}, 10, false, {DUE_TMRW}) returning id").splitlines()[0]
+admin(f"insert into public.submissions (assignment_id, student_id, status) values ('{rq2}', '{stu1}', 'submitted')")
+EVE = "((public.local_today() + time '18:30') at time zone 'America/Anchorage')"
+MORN = "(((public.local_today() + 1) + time '08:15') at time zone 'America/Anchorage')"
+NOON = "((public.local_today() + time '13:00') at time zone 'America/Anchorage')"
+check("The website can't trigger assignment reminders itself", False,
+      "select * from public.claim_assignment_reminders()", stu1)
+check("Early afternoon: no assignment reminders go out", True,
+      f"select count(*) from public.claim_assignment_reminders({NOON}) where assignment_title like 'Reminder%' or assignment_title in ('Already Done','Still Locked')", None, expect_out=0)
+check("6:30 PM the evening before: only work not turned in, only students who chose evenings", True,
+      f"select string_agg(assignment_title || '>' || (student_id = '{stu1}'), ',') from public.claim_assignment_reminders({EVE}) where assignment_title in ('Reminder Essay','Already Done','Still Locked')", None, expect_out="Reminder Essay>true")
+check("…exactly once", True,
+      f"select count(*) from public.claim_assignment_reminders({EVE}) where assignment_title = 'Reminder Essay'", None, expect_out=0)
+check("8:15 AM the day it's due: the student who chose mornings (and the locked one has now opened)", True,
+      f"select string_agg(assignment_title || '>' || (student_id = '{stu2}'), ',' order by assignment_title) from public.claim_assignment_reminders({MORN}) where assignment_title in ('Reminder Essay','Already Done','Still Locked')", None,
+      expect_out="Already Done>true,Reminder Essay>true,Still Locked>true")
+check("The reminder records can't be read from the website", False, "select * from public.assignment_reminders", phil)
+admin(f"delete from public.assignments where id in ('{rq1}', '{rq2}', '{rq3}')")
+admin("delete from public.push_subscriptions")
+
+# --- phone calendar subscription ------------------------------------------------------------
+tok1 = check("A student gets a private calendar link code", True, "select public.my_calendar_token()", stu1)
+check("…the same code each time it's asked for", True, "select public.my_calendar_token()", stu1, expect_out=tok1)
+check("…a long random code", True, f"select length('{tok1}') >= 40", None, expect_out="t")
+check("Nobody can read anyone's calendar codes from the website", True,
+      "select count(*) from public.calendar_feeds", None, expect_out=1)
+check("…not even faculty", False, "select * from public.calendar_feeds", phil)
+check("The website can't read anyone's calendar through the feed", False,
+      f"select * from public.calendar_feed_events('{tok1}')", stu1)
+check("Signed-out visitors can't get a calendar code", False, "select public.my_calendar_token()", None, role="anon")
+admin("update public.courses set sched_time = '19:00', sched_weeks = 2 where id = 'c1'")
+check("The feed holds the student's class days and due dates", True,
+      f"select (count(*) filter (where kind = 'class') > 0) and (count(*) filter (where kind = 'due') > 0) from public.calendar_feed_events('{tok1}')", None, expect_out="t")
+check("…only for courses they're enrolled in", True,
+      f"select (select string_agg(distinct course_id, ',' order by course_id) from public.calendar_feed_events('{tok1}')) = (select string_agg(e.course_id, ',' order by e.course_id) from public.enrollments e join public.courses c on c.id = e.course_id where e.student_id = '{stu1}' and not c.archived)", None, expect_out="t")
+check("Before: the last class day is on the calendar", True,
+      f"select count(*) from public.calendar_feed_events('{tok1}') where kind = 'class' and course_id = 'c1' and day = {LASTCLASS}", None, expect_out=1)
+check("The teacher marks that day 'no class'", True,
+      f"select public.save_attendance('c1', {LASTCLASS}, false, '{{}}'::jsonb)", phil)
+check("…and it's left off the calendar", True,
+      f"select count(*) from public.calendar_feed_events('{tok1}') where kind = 'class' and course_id = 'c1' and day = {LASTCLASS}", None, expect_out=0)
+admin("delete from public.attendance_days where course_id = 'c1'")
+tokp = check("A teacher gets a calendar link too", True, "select public.my_calendar_token()", phil)
+check("…with the courses they teach", True,
+      f"select string_agg(distinct course_id, ',' order by course_id) from public.calendar_feed_events('{tokp}')", None, expect_out="c1,c8")
+check("A wrong code shows nothing", True,
+      "select count(*) from public.calendar_feed_events('0000000000000000000000000000000000000000000000ff')", None, expect_out=0)
+tok1b = check("Resetting the link makes a new code", True, "select public.reset_calendar_token()", stu1)
+check("…and the old link stops working", True,
+      f"select count(*) from public.calendar_feed_events('{tok1}')", None, expect_out=0)
+check("…while the new one works", True,
+      f"select count(*) > 0 from public.calendar_feed_events('{tok1b}')", None, expect_out="t")
+admin(f"update public.profiles set status = 'inactive' where id = '{stu2}'")
+tok2 = admin(f"insert into public.calendar_feeds (user_id, token) values ('{stu2}', repeat('ab', 24)) returning token").splitlines()[0]
+check("A turned-off account's calendar link shows nothing", True,
+      f"select count(*) from public.calendar_feed_events('{tok2}')", None, expect_out=0)
+admin(f"update public.profiles set status = 'active' where id = '{stu2}'")
+
 # --- sign-up approval queue ---------------------------------------------------------------
 admin("delete from public.notifications")
 newbie = mkuser("newbie@example.com", "New Person", approve=False)

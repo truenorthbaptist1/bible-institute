@@ -2,6 +2,8 @@
 
 ## Already verified (before hand-off)
 
+_Oct 4: class days on students' calendars, phone-calendar links, and students' due-date reminders — database check now 229/229; browser run 0 failures, 0 JS errors._
+
 _Oct 2026 updates: My Profile (photos, contact details) and course teachers (only a course's teacher sees its grades, messages, and discussion). Then (Oct 3): attendance, calendar dialogs, class reminders, the in-page document reader, Submit Work, the approval queue, and the day/night look. The database check is now 187/187; the browser run has 135 checks._
 
 **Database privacy rules — 88 automated checks, all passing** (`tests/db/`).
@@ -89,6 +91,19 @@ walks through these with pass/fail boxes.
     the home-screen app for over 30 minutes and reopen it: sign-in screen.
 17. **Notifications on a phone** — the bell's list fits the screen; clear one,
     then *Clear all*.
+18. **Phone calendar** (added Oct 4) — as a student on an iPhone: Calendar →
+    *Add to My Phone's Calendar* → *Add to Apple Calendar* → *Subscribe*. Class
+    days (at the right Alaska time) and due dates appear in the iPhone Calendar
+    app under "TNBBI Classes". Add a new assignment on the site; within an hour
+    or so it appears on the phone (iPhone: Settings → Calendar → Accounts →
+    Subscribed Calendars sets how often it checks). Repeat on Android with
+    *Add to Google Calendar* (and a teacher account — it shows the courses they
+    teach). Then *Get a new link* and check the old one stops updating.
+19. **Due-date reminders** (added Oct 4) — as a student with an assignment due
+    tomorrow and not turned in: My Profile → Due-Date Reminders → *Turn On
+    Reminders* (iPhone: from the Home Screen app). At 6 PM a note arrives
+    ("Due tomorrow: …"); tapping it opens the assignment. Choose *The morning
+    it's due* and check 8 AM. A turned-in assignment sends nothing.
 
 ## Recommended pilot
 
