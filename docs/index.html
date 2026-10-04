@@ -7,7 +7,13 @@
   <meta name="description" content="Student and faculty portal for the True North Baptist Church Bible Institute — Teach Others Also.">
   <meta name="theme-color" content="#1a2c45">
   <link rel="icon" type="image/png" href="brand/favicon.png">
-  <link rel="apple-touch-icon" href="brand/tnbbi-logo-color.png">
+  <link rel="apple-touch-icon" href="brand/apple-touch-icon.png">
+  <!-- "Add to Home Screen" (needed on iPhone for class reminders) -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Bible Institute">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600;700&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -19,6 +25,8 @@
        Each file's version tag is kept so the site can notice an update made
        while someone already has it open (see checkForSiteUpdate in app.js). -->
   <style>html.site-loading body { visibility: hidden; }</style>
+  <!-- Day/night choice, applied before anything draws so there's no flash. -->
+  <script>try { var t = localStorage.getItem("tnbbi-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
   <script>
     document.documentElement.classList.add("site-loading");
     window.TNBBI_ASSETS = { css: ["css/styles.css"], js: ["js/config.js", "js/library-data.js", "js/bible-data.js", "js/data.js", "js/app.js"] };

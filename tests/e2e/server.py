@@ -16,7 +16,7 @@ SITE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "docs
 PASSWORDS = {}
 PORT = 8765
 TABLES = {"profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments", "submissions",
-          "discussion_posts", "messages", "notifications", "bible_highlights"}
+          "discussion_posts", "messages", "notifications", "bible_highlights", "attendance_days", "attendance", "push_subscriptions"}
 SETOF_FUNCS = {"visible_people"}
 IDENT = lambda s: '"' + str(s).replace('"', '') + '"'
 
@@ -28,6 +28,8 @@ def lit(v):
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return repr(v)
+    if isinstance(v, (dict, list)):
+        v = json.dumps(v)
     return "'" + str(v).replace("'", "''") + "'"
 
 

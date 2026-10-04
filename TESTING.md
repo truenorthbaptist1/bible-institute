@@ -2,7 +2,7 @@
 
 ## Already verified (before hand-off)
 
-_Oct 2026 updates: My Profile (photos, contact details) and course teachers (only a course's teacher sees its grades, messages, and discussion). The database check is now 145/145; the browser run covers both._
+_Oct 2026 updates: My Profile (photos, contact details) and course teachers (only a course's teacher sees its grades, messages, and discussion). Then (Oct 3): attendance, calendar dialogs, class reminders, the in-page document reader, Submit Work, the approval queue, and the day/night look. The database check is now 187/187; the browser run has 135 checks._
 
 **Database privacy rules — 88 automated checks, all passing** (`tests/db/`).
 The schema was loaded into a real PostgreSQL database and each rule was tested
@@ -57,6 +57,15 @@ these need real people on the real test site:
    or Discussion lists); have a Super Admin assign you to it and confirm the
    grade book and messages appear for you and disappear for the previous
    teacher; confirm a started course's teacher can't hand it off.
+9. **Phone reminders** (added Oct 2026) — on a teacher's iPhone: add the site to
+   the Home Screen, open it from there, My Profile → Class Reminders → Turn On →
+   Send a Test. Repeat on Android (Chrome). Then set a test course's class time a
+   few minutes ahead with attendance on, and confirm the notification arrives and
+   opens that day's attendance.
+10. **Documents in the page** — open a large PDF, a Word .docx, and an iPhone
+   photo on a phone; try Save as PDF and Download.
+11. **Approval queue** — sign up with a new email, confirm it, and check that a
+   Super Admin gets the bell and can approve from Settings → Users & Roles.
 
 The printable **Pre-Launch Test Checklist** (shared in our conversation)
 walks through these with pass/fail boxes.

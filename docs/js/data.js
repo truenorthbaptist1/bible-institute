@@ -86,6 +86,7 @@ function profileToUser(p) {
     status: p.status || "active",
     superAdmin: !!p.super_admin,
     createdAt: (p.created_at || "").slice(0, 10),
+    emailVerified: !!p.email_verified_at,
     // Profile details. Students only ever receive the public part of a
     // classmate (photo, home church, about me) — phone and address arrive
     // only for their own profile, or for faculty.
@@ -141,7 +142,7 @@ async function fetchOwnProfile(uid) {
 // ---------------------------------------------------------------------------
 async function loadAll() {
   const fac = currentUser.role === "faculty";
-  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine] = await Promise.all([
+  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks] = await Promise.all([
     selectAll("courses", "*", "title"),
     selectAll("enrollments", "course_id,student_id"),
     selectAll("enrollment_requests", "*", "requested_at"),
@@ -156,6 +157,12 @@ async function loadAll() {
     // Your own full profile row — always, so a role change made elsewhere
     // (e.g. faculty promoted or demoted you) is noticed on this load.
     sb.from("profiles").select("*").eq("id", currentUser.id).maybeSingle().then(must),
+    // Attendance: the database returns only what this person may see — a
+    // teacher's own courses, or a student's own marks.
+    // (Tolerant for the few minutes between a site update and its database
+    // update, so the rest of the site keeps working either way.)
+    selectAll("attendance_days", "*", "class_date").catch(() => []),
+    selectAll("attendance", "course_id,class_date,student_id,status").catch(() => []),
   ]);
 
   // Your role changed since this page loaded: switch to the new role and
@@ -200,6 +207,9 @@ async function loadAll() {
       facultyId: r.faculty_id,
       archived: r.archived,
       schedule: { weeks: r.sched_weeks, days: r.sched_days || [], time: r.sched_time, mode: r.sched_mode, startDate: r.sched_start },
+      att: { on: !!r.attendance_on, weight: Number(r.attendance_weight) || 0, lateCredit: r.attendance_late_credit == null ? 50 : Number(r.attendance_late_credit) },
+      attDays: {},   // date → { held, takenBy, takenAt }
+      attMarks: {},  // date → { studentId: status }
       materials: [],
       assignments: [],
       studentIds: [],
@@ -259,6 +269,14 @@ async function loadAll() {
   }));
 
   notifications = notifs.map((n) => ({ id: n.id, toUserId: n.user_id, subject: n.subject, sentAt: n.created_at, read: n.read }));
+  attDays.forEach((d) => {
+    const c = byCourse[d.course_id];
+    if (c) c.attDays[d.class_date] = { held: d.held, takenBy: d.taken_by, takenAt: d.taken_at };
+  });
+  attMarks.forEach((m) => {
+    const c = byCourse[m.course_id];
+    if (c) (c.attMarks[m.class_date] = c.attMarks[m.class_date] || {})[m.student_id] = m.status;
+  });
   bibleHighlightRows = hls;
   dataLoadedAt = Date.now();
 }
@@ -279,8 +297,12 @@ async function fetchThread(courseId, studentId) {
 // ---------------------------------------------------------------------------
 const DB = {
   // --- courses -------------------------------------------------------------
-  async createCourse({ title, description, credits, level, facultyId }) {
-    const row = must(await sb.from("courses").insert({ title, description, credits, level, faculty_id: facultyId || null }).select("id").single());
+  async createCourse({ title, description, credits, level, facultyId, att }) {
+    const a = att || { on: false, weight: 0, lateCredit: 50 };
+    const row = must(await sb.from("courses").insert({
+      title, description, credits, level, faculty_id: facultyId || null,
+      attendance_on: a.on, attendance_weight: a.on ? a.weight : 0, attendance_late_credit: a.lateCredit,
+    }).select("id").single());
     return row.id;
   },
   async updateCourse(id, patch) {
@@ -432,6 +454,43 @@ const DB = {
     // into file storage on its own.
     try { await removeFolder("avatars", id); } catch (e) { console.warn("Storage cleanup:", e); }
     must(await sb.rpc("delete_user", { p_user: id }));
+  },
+
+  // --- attendance --------------------------------------------------------
+  async saveAttendance(courseId, date, held, marks) {
+    must(await sb.rpc("save_attendance", { p_course: courseId, p_date: date, p_held: held, p_marks: marks }));
+  },
+  async clearAttendance(courseId, date) {
+    must(await sb.rpc("clear_attendance", { p_course: courseId, p_date: date }));
+  },
+
+  // --- phone reminders -----------------------------------------------------
+  async pushPublicKey() {
+    return must(await sb.rpc("push_public_key"));
+  },
+  async registerPush(sub, device) {
+    const j = sub.toJSON();
+    must(await sb.rpc("register_push", { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth, p_device: device }));
+  },
+  async unregisterPush(endpoint) {
+    must(await sb.from("push_subscriptions").delete().eq("endpoint", endpoint));
+  },
+  async myPushDevices() {
+    return must(await sb.from("push_subscriptions").select("endpoint,device,created_at"));
+  },
+  // The reminder function lives at Supabase; these two calls set it up the
+  // first time and send a test notification.
+  async reminderFunction(query) {
+    const { data } = await sb.auth.getSession();
+    const token = data && data.session ? data.session.access_token : "";
+    const res = await fetch(`${TNBBI_CONFIG.supabaseUrl}/functions/v1/attendance-reminders?${query}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, apikey: TNBBI_CONFIG.supabaseAnonKey, "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || "The reminder service isn't set up yet.");
+    return body;
   },
 
   // --- Study Bible -----------------------------------------------------------

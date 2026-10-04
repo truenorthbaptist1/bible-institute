@@ -25,6 +25,9 @@ function icon(name) {
     bell: '<path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 7H4c0-1 2-2 2-7Z"/><path d="M10 19a2 2 0 0 0 4 0"/>',
     lock: '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
     user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
+    sun: '<circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/>',
+    moon: '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/>',
+    check: '<rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M8 3v3M16 3v3"/><path d="m8.5 13.5 2.5 2.5 4.5-5"/>',
     bible: '<path d="M12 4.5c-2.2-1.2-5-1.6-8-1v15c3 0 5.8.4 8 1.6M12 4.5c2.2-1.2 5-1.6 8-1v15c-3 0-5.8.4-8 1.6M12 4.5v16"/>',
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${icons[name] || icons.note}</svg>`;
@@ -234,6 +237,48 @@ let authError = "";
 let authInfo = "";
 let pendingEmail = "";
 let recoveringPassword = new URLSearchParams(location.search).get("reset") === "1";
+
+// A reminder notification's link: ?attendance=<course>&date=<YYYY-MM-DD>.
+// Kept through sign-in (including a Google sign-in, which leaves and comes
+// back to the page) and opened once the teacher is signed in.
+const ATT_LINK_KEY = "tnbbi-open-attendance";
+let pendingAttendanceLink = readAttendanceLink(location.href);
+function readAttendanceLink(href) {
+  try {
+    const q = new URL(href, location.origin).searchParams;
+    if (q.get("attendance")) {
+      const v = { course: q.get("attendance"), date: q.get("date") || "" };
+      try { sessionStorage.setItem(ATT_LINK_KEY, JSON.stringify(v)); } catch (e) { /* private mode */ }
+      return v;
+    }
+    const saved = sessionStorage.getItem(ATT_LINK_KEY);
+    return saved ? JSON.parse(saved) : null;
+  } catch (e) { return null; }
+}
+function handlePendingAttendanceLink() {
+  if (!pendingAttendanceLink || !currentUser) return;
+  const link = pendingAttendanceLink;
+  pendingAttendanceLink = null;
+  try { sessionStorage.removeItem(ATT_LINK_KEY); } catch (e) { /* ignore */ }
+  const url = new URL(location.href);
+  url.searchParams.delete("attendance");
+  url.searchParams.delete("date");
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
+  const c = courses.find((x) => x.id === link.course);
+  if (!c) { toast("That course couldn't be found."); return; }
+  if (role !== "faculty" || !iTeach(c)) { toast("That attendance link is for the course's teacher."); return; }
+  openAttendance(c.id, /^\d{4}-\d{2}-\d{2}$/.test(link.date) ? link.date : null, "home");
+}
+// The site already open when a notification is tapped: the phone hands us
+// the link instead of opening a second copy.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (e) => {
+    if (e.data && e.data.type === "tnbbi-open" && e.data.url) {
+      pendingAttendanceLink = readAttendanceLink(e.data.url);
+      handlePendingAttendanceLink();
+    }
+  });
+}
 let sessionUserId = null;
 let pollTimer = null;
 let viewTimers = [];
@@ -297,7 +342,7 @@ function closeModal() {
 // Every modal closes on Escape or a click on the dimmed backdrop — unless
 // it's mid-save.
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && busyCount === 0 && document.querySelector("#modalRoot .modal-backdrop")) closeModal();
+  if (e.key === "Escape" && busyCount === 0 && !document.querySelector(".doc-viewer") && document.querySelector("#modalRoot .modal-backdrop")) closeModal();
 });
 document.addEventListener("mousedown", (e) => {
   if (busyCount === 0 && e.target.classList && e.target.classList.contains("modal-backdrop")) closeModal();
@@ -389,6 +434,7 @@ function renderAuthScreen() {
           : authMode === "checkEmail" ? renderCheckEmail()
           : authMode === "newPassword" ? renderNewPasswordForm()
           : authMode === "loading" ? `<p style="text-align:center;color:var(--muted-foreground);">Signing you in…</p>`
+          : authMode === "pending" ? renderPendingApproval()
           : renderForgotSentForm()}
       </div>
       <p class="auth-foot" style="text-align:center;margin-top:14px;"><a href="privacy.html">Privacy Policy</a></p>
@@ -397,6 +443,38 @@ function renderAuthScreen() {
     b.addEventListener("click", () => { authMode = b.dataset.mode; authError = ""; authInfo = ""; renderAuthScreen(); });
   });
   wireAuthFormHandlers();
+}
+
+// Signed up (and verified), but not yet approved by an administrator.
+let pendingProfile = null;
+let pendingTimer = null;
+function renderPendingApproval() {
+  const first = ((pendingProfile && pendingProfile.name) || "").trim().split(/\s+/)[0];
+  return `
+    <div class="pending-box">
+      <div class="pending-icon">${icon("lock")}</div>
+      <h2 style="font-size:1.2rem;margin:0 0 8px;">Thanks for signing up${first ? `, ${esc(first)}` : ""}!</h2>
+      <p>Your account is waiting for approval by an Institute administrator. This keeps the site safe for our students.</p>
+      <p>You'll be let in as soon as it's approved — this page checks on its own, or you can check now. You'll then be able to set up your profile.</p>
+      ${authInfo ? `<p class="auth-info">${esc(authInfo)}</p>` : ""}
+      <button class="btn btn-primary" id="pendingCheck" style="width:100%;justify-content:center;margin-top:6px;">Check Again</button>
+      <button class="btn btn-ghost" id="pendingSignOut" style="width:100%;justify-content:center;margin-top:10px;">Sign Out</button>
+      <p class="field-hint" style="margin-top:14px;text-align:center;">Signed in as ${esc((pendingProfile && pendingProfile.email) || "")}</p>
+    </div>`;
+}
+async function checkPendingApproval(fromButton) {
+  if (!pendingProfile) return;
+  try {
+    const me = await fetchOwnProfile(pendingProfile.id);
+    if (me.status === "active") {
+      clearInterval(pendingTimer);
+      const { data } = await sb.auth.getSession();
+      if (data && data.session) startSession(data.session, { force: true });
+      return;
+    }
+    if (me.status === "inactive") { clearInterval(pendingTimer); signOut("This account isn't active. Contact the church office."); return; }
+    if (fromButton) { authInfo = "Not approved yet — we'll keep checking."; renderAuthScreen(); }
+  } catch (e) { if (fromButton) { authInfo = friendlyError(e); renderAuthScreen(); } }
 }
 
 function authMessages() {
@@ -495,6 +573,10 @@ function authBusy(form, on) {
 }
 
 function wireAuthFormHandlers() {
+  const pc = document.getElementById("pendingCheck");
+  if (pc) pc.addEventListener("click", () => checkPendingApproval(true));
+  const po = document.getElementById("pendingSignOut");
+  if (po) po.addEventListener("click", () => { clearInterval(pendingTimer); pendingProfile = null; signOut(); });
   const wrap = document.getElementById("authScreen");
   const go = (id, mode) => {
     const el = wrap.querySelector("#" + id);
@@ -644,6 +726,17 @@ async function startSessionInner(session) {
       const { data: claimed } = await sb.rpc("claim_bootstrap_super_admin");
       if (claimed) profile = await fetchOwnProfile(session.user.id);
     }
+    if (profile.status === "pending") {
+      pendingProfile = profile;
+      currentUser = null;
+      authMode = "pending";
+      authError = "";
+      authInfo = "";
+      renderAuthScreen();
+      clearInterval(pendingTimer);
+      pendingTimer = setInterval(() => { if (document.visibilityState === "visible") checkPendingApproval(false); }, 30000);
+      return;
+    }
     if (profile.status !== "active") {
       await sb.auth.signOut();
       currentUser = null;
@@ -669,6 +762,8 @@ async function startSessionInner(session) {
     renderNav();
     renderMain();
     startPolling();
+    handlePendingAttendanceLink();
+    if (role === "faculty" && pushSupported()) registerServiceWorker();
   } catch (e) {
     console.error(e);
     authMode = "signin";
@@ -705,6 +800,8 @@ function startPolling() {
 
 async function signOut(message) {
   clearInterval(pollTimer);
+  clearInterval(pendingTimer);
+  pendingProfile = null;
   clearViewTimers();
   closeModal();
   try { await sb.auth.signOut(); } catch (e) { /* already signed out */ }
@@ -726,6 +823,7 @@ function renderAccountPill() {
   if (!el) return;
   if (!currentUser) { el.innerHTML = ""; return; }
   el.innerHTML = `
+    ${themeToggleHtml()}
     <div class="notif-wrap" id="notifBellWrap"></div>
     <button class="account-me" id="myProfileBtn" title="My Profile" aria-label="My Profile — ${esc(currentUser.name)}">
       ${avatarHtml(users.find((u) => u.id === currentUser.id) || currentUser, 32)}
@@ -737,6 +835,10 @@ function renderAccountPill() {
   `;
   document.getElementById("logoutBtn").addEventListener("click", () => signOut());
   document.getElementById("myProfileBtn").addEventListener("click", () => openProfile());
+  document.getElementById("themeToggle").addEventListener("click", () => {
+    setTheme(currentTheme() === "dark" ? "light" : "dark");
+    renderAccountPill();
+  });
   renderNotifBell();
 }
 
@@ -751,7 +853,7 @@ function renderNav() {
   const homeViews =
     role === "student"
       ? ["home", "courses", "course", "grades", "messages", "messageThread", "submit", "discussion", "discussionBoard", "profile"]
-      : ["home", "catalogue", "manage", "grading", "gradeSheet", "discussion", "discussionBoard", "messages", "messageThread", "settings", "profile"];
+      : ["home", "catalogue", "manage", "grading", "gradeSheet", "discussion", "discussionBoard", "messages", "messageThread", "settings", "profile", "attendance", "attendanceHome"];
   nav.innerHTML = items
     .map((i) => {
       const active = i.key === "home" ? homeViews.includes(view) : view === i.key;
@@ -777,8 +879,8 @@ function safeHtml(html) {
 // loaded), so what one person changes — a new enrollment, a grade, a
 // reply — shows up for everyone else without reloading the browser.
 const STALE_MS = 3000;
-const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread"];
-const FACULTY_ONLY_VIEWS = ["catalogue", "manage", "grading", "gradeSheet", "settings"];
+const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance"];
+const FACULTY_ONLY_VIEWS = ["catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome"];
 const STUDENT_ONLY_VIEWS = ["courses", "course", "grades", "submit"];
 
 function renderMain() {
@@ -808,7 +910,7 @@ function renderView() {
   // Faculty only reach the course pages they're allowed to use.
   if (role !== "student" && activeCourseId) {
     const ac = courses.find((x) => x.id === activeCourseId);
-    const needsTeach = ["gradeSheet", "discussionBoard", "messageThread"].includes(view);
+    const needsTeach = ["gradeSheet", "discussionBoard", "messageThread", "attendance"].includes(view);
     if ((view === "manage" && !iManage(ac)) || (needsTeach && !iTeach(ac))) {
       view = view === "manage" ? "catalogue" : "home";
       activeCourseId = null;
@@ -832,6 +934,8 @@ function renderView() {
   if (view === "grading") return renderGrading(main);
   if (view === "gradeSheet") return renderGradeSheet(main);
   if (view === "profile") return renderProfile(main);
+  if (view === "attendance") return renderAttendance(main);
+  if (view === "attendanceHome") return renderAttendanceHome(main);
   if (view === "settings") return Date.now() - dataLoadedAt < 1500 ? renderSettings(main) : withFreshData(() => renderSettings(main));
 }
 
@@ -853,6 +957,7 @@ function renderDashboard(main) {
       <div class="eyebrow">Student Dashboard</div>
       <h1>Welcome to the Institute</h1>
     </div>
+    ${welcomeBanner()}
     ${profileNudge()}
     <div class="grid">
       ${tiles
@@ -860,7 +965,7 @@ function renderDashboard(main) {
           (t) => `
         <div class="tile" data-goto="${t.key}" tabindex="0" role="button">
           ${t.key === "messages" && unread ? `<span class="tile-badge">${unread}</span>` : ""}
-          <div class="icon-badge">${icon(t.i)}</div>
+          <div class="icon-badge hue-${TILE_HUE[t.key] || "blue"}">${icon(t.i)}</div>
           <h3>${esc(t.label)}</h3>
           <p>${esc(t.desc)}</p>
         </div>`
@@ -874,6 +979,63 @@ function renderDashboard(main) {
     el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   });
   wireProfileNudge();
+}
+
+// Dashboard tile colors: one reverent jewel tone per kind of tile.
+const TILE_HUE = {
+  courses: "blue", catalogue: "blue", calendar: "teal", studyBible: "wine", grades: "plum", grading: "plum",
+  messages: "amber", submit: "olive", discussion: "clay", resourceLibrary: "slate", profile: "gold",
+  settings: "gray", attendanceHome: "green",
+};
+
+// A warm greeting and a verse for the day (KJV), the same for everyone on
+// a given day.
+const DAILY_VERSES = [
+  ["Thy word is a lamp unto my feet, and a light unto my path.", "Psalm 119:105"],
+  ["Study to shew thyself approved unto God, a workman that needeth not to be ashamed, rightly dividing the word of truth.", "2 Timothy 2:15"],
+  ["And the things that thou hast heard of me among many witnesses, the same commit thou to faithful men, who shall be able to teach others also.", "2 Timothy 2:2"],
+  ["All scripture is given by inspiration of God, and is profitable for doctrine, for reproof, for correction, for instruction in righteousness.", "2 Timothy 3:16"],
+  ["Trust in the LORD with all thine heart; and lean not unto thine own understanding.", "Proverbs 3:5"],
+  ["But grow in grace, and in the knowledge of our Lord and Saviour Jesus Christ.", "2 Peter 3:18"],
+  ["The grass withereth, the flower fadeth: but the word of our God shall stand for ever.", "Isaiah 40:8"],
+  ["Thy word have I hid in mine heart, that I might not sin against thee.", "Psalm 119:11"],
+  ["So then faith cometh by hearing, and hearing by the word of God.", "Romans 10:17"],
+  ["For the word of God is quick, and powerful, and sharper than any twoedged sword.", "Hebrews 4:12"],
+  ["Open thou mine eyes, that I may behold wondrous things out of thy law.", "Psalm 119:18"],
+  ["Sanctify them through thy truth: thy word is truth.", "John 17:17"],
+  ["Let the word of Christ dwell in you richly in all wisdom; teaching and admonishing one another.", "Colossians 3:16"],
+  ["The entrance of thy words giveth light; it giveth understanding unto the simple.", "Psalm 119:130"],
+];
+function welcomeBanner() {
+  const h = new Date().getHours();
+  const part = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  const first = ((currentUser && currentUser.name) || "").trim().split(/\s+/)[0];
+  const dayNum = Math.floor(new Date(todayStr() + "T12:00:00").getTime() / 86400000);
+  const [verse, ref] = DAILY_VERSES[dayNum % DAILY_VERSES.length];
+  return `
+    <div class="welcome-banner">
+      <div class="welcome-greet">${part}${first ? `, ${esc(first)}` : ""}.</div>
+      <blockquote class="welcome-verse">“${esc(verse)}”<cite>${esc(ref)}</cite></blockquote>
+    </div>`;
+}
+
+// Day / night: follows the device until someone picks; their pick is kept
+// on this device.
+const THEME_KEY = "tnbbi-theme";
+function currentTheme() {
+  const set = document.documentElement.dataset.theme;
+  if (set === "light" || set === "dark") return set;
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* private browsing */ }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", t === "dark" ? "#101b2c" : "#1f3a5f");
+}
+function themeToggleHtml() {
+  const dark = currentTheme() === "dark";
+  return `<button class="icon-btn theme-toggle" id="themeToggle" aria-label="${dark ? "Switch to day mode" : "Switch to night mode"}" title="${dark ? "Day mode" : "Night mode"}">${icon(dark ? "sun" : "moon")}</button>`;
 }
 
 function renderPlaceholder(main, title, iconName, message) {
@@ -1023,6 +1185,7 @@ function renderFacultyHome(main) {
     { key: "catalogue", i: "book", label: "Courses", desc: "Browse everything offered, or add a new course" },
     { key: "calendar", i: "calendar", label: "Calendar", desc: "Every due date in the courses you teach" },
     { key: "studyBible", i: "bible", label: "Study Bible", desc: "Read the KJV with Strong's Concordance" },
+    { key: "attendanceHome", i: "check", label: "Attendance", desc: "Take attendance for today's classes" },
     { key: "grading", i: "cap", label: "Grading", desc: "Review and grade work in your courses" },
     { key: "discussion", i: "chat", label: "Discussion Board", desc: "Lead your classes' discussions" },
     { key: "messages", i: "mail", label: "Message Inbox", desc: "Messages from your students" },
@@ -1037,6 +1200,7 @@ function renderFacultyHome(main) {
       <div class="eyebrow">Faculty &amp; Admin</div>
       <h1>Welcome Professor</h1>
     </div>
+    ${welcomeBanner()}
     ${profileNudge()}
     <div class="grid">
       ${tiles
@@ -1045,7 +1209,9 @@ function renderFacultyHome(main) {
         <div class="tile" data-goto="${t.key}" tabindex="0" role="button">
           ${t.key === "messages" && unread ? `<span class="tile-badge">${unread}</span>` : ""}
           ${t.key === "catalogue" && pendingEnroll ? `<span class="tile-badge" title="${pendingEnroll} enrollment request${pendingEnroll === 1 ? "" : "s"}">${pendingEnroll}</span>` : ""}
-          <div class="icon-badge">${icon(t.i)}</div>
+          ${t.key === "settings" && pendingSignups().filter((u) => u.emailVerified).length ? `<span class="tile-badge" title="Sign-ups waiting for approval">${pendingSignups().filter((u) => u.emailVerified).length}</span>` : ""}
+          ${t.key === "attendanceHome" && attendanceTodayCount() ? `<span class="tile-badge" title="Class today — attendance not taken">${attendanceTodayCount()}</span>` : ""}
+          <div class="icon-badge hue-${TILE_HUE[t.key] || "blue"}">${icon(t.i)}</div>
           <h3>${esc(t.label)}</h3>
           <p>${esc(t.desc)}</p>
         </div>`
@@ -1097,6 +1263,7 @@ function openAddCourseModal() {
         <div class="field-hint">Attach a syllabus, PDF textbook, or other reference materials (up to 50 MB each). You can add or remove these later from the course's Manage page.</div>
         <div id="builderFileChips" class="chip-row"></div>
 
+        ${attSettingsHtml("cb", null)}
         ${role === "faculty" ? `<p class="field-hint" style="margin-top:14px;">You'll be this course's teacher. ${currentUser.superAdmin ? "You can assign someone else from its Manage page." : "You can hand it to another faculty member from its Manage page until it starts."}</p>` : ""}
         <div class="form-actions">
           <button class="btn btn-primary" id="cbSave">Save Course</button>
@@ -1113,6 +1280,7 @@ function openAddCourseModal() {
     }
     renderBuilderFileChips();
   });
+  wireAttSettings("cb");
   document.getElementById("cbSave").addEventListener("click", () => {
     const nameInput = document.getElementById("cbName");
     const name = nameInput.value.trim();
@@ -1124,9 +1292,10 @@ function openAddCourseModal() {
     const credits = parseInt(document.getElementById("cbCredits").value, 10) || 1;
     const level = document.getElementById("cbLevel").value;
     const files = builderFiles.slice();
+    const att = readAttSettings("cb");
     let uploadError = null;
     run(async () => {
-      const id = await DB.createCourse({ title: name, description: desc || "No description yet.", credits, level, facultyId: currentFacultyId() });
+      const id = await DB.createCourse({ title: name, description: desc || "No description yet.", credits, level, facultyId: currentFacultyId(), att });
       if (files.length) {
         try { await DB.addMaterials(id, files); } catch (err) { uploadError = err; }
       }
@@ -1367,7 +1536,7 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
   wireOpenMyFile();
   function wireOpenMyFile() {
     const b = document.getElementById("openMyFile");
-    if (b) b.addEventListener("click", () => openStoredFile("submissions", sub.storagePath, sub.fileName, b));
+    if (b) b.addEventListener("click", () => openFileViewer({ bucket: "submissions", path: sub.storagePath, title: sub.fileName, subtitle: `${course.title} · ${assignment.title}`, mimeType: sub.mimeType, returnFocus: b }));
   }
   function method() { return document.querySelector('input[name="submitMethod"]:checked').value; }
   function syncMethodUI() {
@@ -1415,95 +1584,79 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
 // assignment (from the list the professor entered for that course) rather
 // than scanning the whole inbox first.
 function renderSubmitWork(main) {
-  const items = [];
-  const myCourses = courses.filter((c) => isLive(c) && c.studentIds.includes(currentStudentId));
-  myCourses.forEach((c) => {
-    c.assignments.forEach((a) => {
+  // Every assignment in every course you're enrolled in (including courses
+  // that haven't started yet), grouped by course, in due-date order. "Submit
+  // any time" assignments can be turned in now; locked ones show the day they
+  // open and unlock on their own that morning.
+  const today = todayStr();
+  const myCourses = courses
+    .filter((c) => !c.archived && c.studentIds.includes(currentStudentId))
+    .sort((a, b) => (isLive(b) - isLive(a)) || a.title.localeCompare(b.title));
+  let toDo = 0;
+  const groups = myCourses.map((c) => {
+    const items = [...c.assignments].sort((x, y) => x.due.localeCompare(y.due) || x.title.localeCompare(y.title)).map((a) => {
       const sub = getSubmission(c, a, currentStudentId);
-      if (sub.status !== "graded") items.push({ c, a, sub });
+      const lock = assignmentLock(a);
+      const done = sub.status === "submitted" || sub.status === "graded";
+      if (!done && !lock.locked) toDo++;
+      return { c, a, sub, lock, done };
     });
+    return { c, items };
   });
-  items.sort((x, y) => x.a.due.localeCompare(y.a.due));
 
-  if (!submitPickCourseId || !myCourses.some((c) => c.id === submitPickCourseId)) {
-    submitPickCourseId = myCourses[0] ? myCourses[0].id : "";
-  }
-  const pickCourse = myCourses.find((c) => c.id === submitPickCourseId);
-  const pickAssignments = pickCourse ? [...pickCourse.assignments].sort((a, b) => a.due.localeCompare(b.due)) : [];
-  if (!pickAssignments.some((a) => a.id === submitPickAssignmentId)) {
-    submitPickAssignmentId = pickAssignments[0] ? pickAssignments[0].id : "";
-  }
+  const itemHtml = ({ c, a, sub, lock, done }) => {
+    const overdue = !done && a.due < today;
+    let pill, btn;
+    if (sub.status === "graded") {
+      pill = `<span class="pill pill-green">${sub.score}/${a.points}</span>`;
+      btn = `<button class="btn btn-ghost btn-sm" data-item="${c.id}|${a.id}">View Grade</button>`;
+    } else if (sub.status === "submitted") {
+      pill = `<span class="pill pill-gold">Turned In</span>`;
+      btn = `<button class="btn btn-ghost btn-sm" data-item="${c.id}|${a.id}">View or Replace</button>`;
+    } else if (lock.locked) {
+      pill = `<span class="pill pill-gray">${icon("lock")} Locked</span>`;
+      btn = `<button class="btn btn-ghost btn-sm" disabled>Opens ${fmtDay(lock.opensOn, { month: "short", day: "numeric" })}</button>`;
+    } else {
+      pill = overdue ? `<span class="pill pill-red">Overdue</span>` : sub.status === "in_progress" ? `<span class="pill pill-navy">In Progress</span>` : `<span class="pill pill-navy">Open</span>`;
+      btn = `<button class="btn btn-gold btn-sm" data-item="${c.id}|${a.id}">${sub.status === "in_progress" ? "Continue" : "Start"}</button>`;
+    }
+    return `<li class="submit-item ${lock.locked && !done ? "submit-item-locked" : ""}">
+      <div style="min-width:0;">
+        <div><strong>${esc(a.title)}</strong></div>
+        <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Due ${fmtDay(a.due, { weekday: "short", month: "short", day: "numeric" })} · ${a.points} pts${
+          lock.locked && !done ? ` · <strong>Opens ${fmtDay(lock.opensOn, { weekday: "long", month: "short", day: "numeric" })}</strong>`
+          : a.submitAnytime === false && a.openDate ? ` · Opened ${fmtDay(a.openDate, { month: "short", day: "numeric" })}` : " · Submit any time"}</div>
+      </div>
+      <div class="submit-item-actions">${pill}${btn}</div>
+    </li>`;
+  };
 
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
       <div class="eyebrow">Student Dashboard</div>
       <h1>Submit Work</h1>
-      <p>Everything due across your courses.</p>
+      <p>Every assignment in your courses. Open ones can be turned in now; locked ones open on the date shown.</p>
     </div>
-    ${myCourses.length === 0 ? "" : `
-    <div class="card">
-      <div class="section-title" style="margin:0 0 4px;"><h2 style="font-size:1rem;">Quick Submit</h2></div>
-      <p style="color:var(--muted-foreground);font-size:.85rem;margin-bottom:14px;">Pick a course and assignment your professor has posted, then continue to submit it.</p>
-      <div class="form-row">
-        <div>
-          <label for="pickCourse">Course</label>
-          <select id="pickCourse">${myCourses.map((c) => `<option value="${c.id}" ${c.id === submitPickCourseId ? "selected" : ""}>${esc(c.title)}</option>`).join("")}</select>
-        </div>
-        <div>
-          <label for="pickAssignment">Assignment</label>
-          <select id="pickAssignment" ${pickAssignments.length === 0 ? "disabled" : ""}>
-            ${pickAssignments.length === 0 ? `<option>No assignments yet</option>` : pickAssignments.map((a) => `<option value="${a.id}" ${a.id === submitPickAssignmentId ? "selected" : ""}>${esc(a.title)} — Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</option>`).join("")}
-          </select>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn btn-primary" id="pickContinue" ${pickAssignments.length === 0 ? "disabled" : ""}>Continue</button>
-      </div>
-    </div>`}
-    ${items.length === 0 ? `
-    <div class="card empty-state" style="margin-top:20px;">
+    ${myCourses.length === 0 ? `
+    <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("upload")}</div>
-      <p>Nothing outstanding — you're all caught up.</p>
+      <p>Once you're enrolled in a course, its assignments will appear here.</p>
     </div>` : `
-    <div class="section-title"><h2>Everything Due</h2></div>
-    <div class="card">
-      <ul class="assignments-list">
-        ${items.map(({ c, a, sub }) => {
-          const [label, pillClass] = STATUS_LABEL[sub.status];
-          const overdue = a.due < todayStr() && sub.status !== "submitted";
-          const lock = assignmentLock(a);
-          return `<li>
-            <div>
-              <div><strong>${esc(a.title)}</strong>${lock.locked ? ` <span class="pill pill-gray" style="margin-left:4px;">Locked</span>` : ""}</div>
-              <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">${esc(c.title)} · Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})}${overdue ? ' · <span style="color:var(--destructive);font-weight:600;">Overdue</span>' : ''}${lock.locked ? ` · Opens ${parseDay(lock.opensOn).toLocaleDateString(undefined,{month:'short',day:'numeric'})}` : ""}</div>
-            </div>
-            <div style="text-align:right;">
-              <span class="pill ${pillClass}">${label}</span><br>
-              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" data-item="${c.id}|${a.id}">${lock.locked ? "View" : "Turn In"}</button>
-            </div>
-          </li>`;
-        }).join("")}
-      </ul>
-    </div>`}
+    <div class="submit-summary">${toDo ? `<strong>${toDo}</strong> assignment${toDo === 1 ? "" : "s"} open to turn in` : "You're all caught up on everything that's open."}</div>
+    ${groups.map(({ c, items }) => `
+      <div class="section-title"><h2>${esc(c.title)}</h2>${isLive(c) ? "" : `<span class="pill pill-navy">${c.schedule.startDate ? `Starts ${fmtDay(c.schedule.startDate, { month: "short", day: "numeric" })}` : "Not started"}</span>`}</div>
+      <div class="card">
+        ${items.length === 0 ? `<p style="margin:0;color:var(--muted-foreground);">No assignments posted yet.</p>` : `<ul class="assignments-list">${items.map(itemHtml).join("")}</ul>`}
+      </div>`).join("")}`}
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
-  const pickCourseSel = document.getElementById("pickCourse");
-  if (pickCourseSel) pickCourseSel.addEventListener("change", () => { submitPickCourseId = pickCourseSel.value; submitPickAssignmentId = ""; renderSubmitWork(main); });
-  const pickAssignmentSel = document.getElementById("pickAssignment");
-  if (pickAssignmentSel) pickAssignmentSel.addEventListener("change", () => { submitPickAssignmentId = pickAssignmentSel.value; });
-  const pickContinueBtn = document.getElementById("pickContinue");
-  if (pickContinueBtn) pickContinueBtn.addEventListener("click", () => {
-    const c = courses.find((x) => x.id === submitPickCourseId);
-    const a = c && c.assignments.find((x) => x.id === submitPickAssignmentId);
-    if (c && a) openSubmitModal(c, a, currentStudentId, () => renderSubmitWork(main));
-  });
   main.querySelectorAll("[data-item]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const [cid, aid] = btn.dataset.item.split("|");
       const c = courses.find((x) => x.id === cid);
       const a = c.assignments.find((x) => x.id === aid);
-      openSubmitModal(c, a, currentStudentId, () => renderSubmitWork(main));
+      openSubmitModal(c, a, currentStudentId, () => renderMain());
     });
   });
 }
@@ -1535,6 +1688,91 @@ function calendarRowsByDate() {
     });
   });
   return byDate;
+}
+
+// Faculty: the days each course you teach meets.
+function calendarClassesByDate() {
+  const out = {};
+  if (role === "student") return out;
+  courses.filter((c) => !c.archived && iTeach(c)).forEach((c) => {
+    classDates(c).forEach((d) => (out[d] = out[d] || []).push(c));
+  });
+  return out;
+}
+
+// Tapping a calendar day: what's due (and, for teachers, which classes meet).
+function openCalendarDayModal(ds, rows, classes, after) {
+  const today = todayStr();
+  const heading = parseDay(ds).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + (ds === today ? " — Today" : "");
+  const root = document.getElementById("modalRoot");
+  const due = (a) => `Due ${fmtDay(a.due, { month: "short", day: "numeric" })} · ${a.points} pts`;
+
+  const classHtml = classes.map((c) => {
+    const day = c.attDays[ds];
+    const action = !c.att.on ? `<span class="field-hint" style="margin:0;">Not recording attendance</span>`
+      : ds > today ? `<span class="pill pill-navy">Upcoming</span>`
+      : `<button class="btn ${day ? "btn-ghost" : "btn-primary"} btn-sm" data-cal-att="${c.id}">${day ? (day.held ? "✓ View Attendance" : "No class — Edit") : "Take Attendance"}</button>`;
+    return `<div class="cal-modal-class">
+        <div class="cal-class-icon">${icon("calendar")}</div>
+        <div style="flex:1;min-width:0;"><strong>${esc(c.title)}</strong><div class="field-hint" style="margin:2px 0 0;">Class meets ${esc(fmtTime(c.schedule.time) || "")}</div></div>
+        ${action}
+      </div>`;
+  }).join("");
+
+  const asgHtml = rows.map((row) => {
+    const { c, a } = row;
+    const head = `
+      <div class="cal-asg-head">
+        <div><strong>${esc(a.title)}</strong><div class="field-hint" style="margin:2px 0 0;">${esc(c.title)} · ${due(a)}</div></div>
+      </div>
+      ${a.instructions ? `<p class="cal-asg-instructions">${esc(a.instructions)}</p>` : ""}`;
+    if (role === "student") {
+      const sub = getSubmission(c, a, currentStudentId);
+      const lock = assignmentLock(a);
+      const missing = a.due < today && sub.status !== "submitted" && sub.status !== "graded";
+      const [label, cls] = missing ? ["Missing", "pill-red"] : STATUS_LABEL[sub.status];
+      const btn = lock.locked && sub.status !== "graded"
+        ? `<button class="btn btn-ghost btn-sm" disabled>Opens ${fmtDay(lock.opensOn, { month: "short", day: "numeric" })}</button>`
+        : `<button class="btn ${sub.status === "graded" || sub.status === "submitted" ? "btn-ghost" : "btn-gold"} btn-sm" data-cal-submit="${c.id}|${a.id}">${
+            sub.status === "graded" ? "View Grade & Feedback" : sub.status === "submitted" ? "View or Replace Submission" : sub.status === "in_progress" ? "Continue Assignment" : "Start Assignment"}</button>`;
+      return `<div class="cal-modal-asg">${head}
+        <div class="cal-asg-foot"><span class="pill ${cls}">${sub.status === "graded" ? `${sub.score}/${a.points}` : label}</span>${btn}</div></div>`;
+    }
+    const roster = rosterByLastName(c);
+    const subs = ensureSubmissions(c, a);
+    const done = (sid) => { const st = (subs.find((x) => x.studentId === sid) || {}).status; return st === "submitted" || st === "graded"; };
+    const doneCount = roster.filter((u) => done(u.id)).length;
+    return `<div class="cal-modal-asg">${head}
+      <div class="cal-asg-count"><strong>${doneCount} of ${roster.length}</strong> turned in</div>
+      ${roster.length ? `<ul class="orb-list">${roster.map((u) => {
+        const ok = done(u.id);
+        return `<li><span class="orb ${ok ? "orb-green" : "orb-red"}" aria-hidden="true"></span><span>${esc(lastFirst(u.name))}</span><span class="sr-only">${ok ? "turned in" : "not turned in"}</span></li>`;
+      }).join("")}</ul>` : `<p class="field-hint">No students enrolled.</p>`}
+      <div class="cal-asg-foot"><span></span><button class="btn btn-ghost btn-sm" data-cal-roster="${c.id}|${a.id}">Open Submissions</button></div>
+    </div>`;
+  }).join("");
+
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal cal-modal" role="dialog" aria-modal="true" aria-labelledby="calModalTitle" style="max-width:560px;">
+        <h2 id="calModalTitle" style="font-size:1.15rem;margin:0 0 14px;">${heading}</h2>
+        ${classes.length ? `<div class="cal-modal-section"><div class="cal-modal-label">Class</div>${classHtml}</div>` : ""}
+        ${rows.length ? `<div class="cal-modal-section"><div class="cal-modal-label">${rows.length === 1 ? "Assignment due" : `${rows.length} assignments due`}</div>${asgHtml}</div>` : ""}
+        <div class="form-actions"><button class="btn btn-ghost" id="calModalClose">Close</button></div>
+      </div>
+    </div>`;
+  document.getElementById("calModalClose").addEventListener("click", closeModal);
+  root.querySelectorAll("[data-cal-att]").forEach((b) => b.addEventListener("click", () => openAttendance(b.dataset.calAtt, ds, "calendar")));
+  root.querySelectorAll("[data-cal-submit]").forEach((b) => b.addEventListener("click", () => {
+    const [cid, aid] = b.dataset.calSubmit.split("|");
+    const c = courses.find((x) => x.id === cid);
+    openSubmitModal(c, c.assignments.find((x) => x.id === aid), currentStudentId, after);
+  }));
+  root.querySelectorAll("[data-cal-roster]").forEach((b) => b.addEventListener("click", () => {
+    const [cid, aid] = b.dataset.calRoster.split("|");
+    const c = courses.find((x) => x.id === cid);
+    openAssignmentRoster(c, c.assignments.find((x) => x.id === aid));
+  }));
 }
 
 function calendarStatusPill(row, today) {
@@ -1598,7 +1836,8 @@ function renderCalendar(main) {
     rangeLabel = `${gridStart.toLocaleDateString(undefined, { month: "short", day: "numeric" })} – ${last.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
   }
 
-  const totalAssignments = Object.values(byDate).reduce((n, rows) => n + rows.length, 0);
+  const classesByDate = calendarClassesByDate();
+  const totalAssignments = Object.values(byDate).reduce((n, rows) => n + rows.length, 0) + Object.keys(classesByDate).length;
   const selectedDate = days.find((d) => localISO(d) === calendarCursor) ? calendarCursor : today;
 
   main.innerHTML = `
@@ -1606,12 +1845,12 @@ function renderCalendar(main) {
     <div class="page-header">
       <div class="eyebrow">${role === "student" ? "Student Dashboard" : "Faculty & Admin"}</div>
       <h1>Calendar</h1>
-      <p>Every assignment due date across ${role === "student" ? "your classes" : "every active course"}.</p>
+      <p>${role === "student" ? "Every assignment due date across your classes. Tap a day to see what's due and start it." : "Your class days and every assignment due date in the courses you teach. Tap a day for details."}</p>
     </div>
     ${totalAssignments === 0 ? `
     <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("calendar")}</div>
-      <p>${role === "student" ? "Once you're enrolled in a course with assignments, they'll show up here." : "No assignments have been added to a course yet."}</p>
+      <p>${role === "student" ? "Once you're enrolled in a course with assignments, they'll show up here." : "Once a course you teach has a schedule or assignments, they'll show up here."}</p>
     </div>` : `
     <div class="cal-toolbar">
       <div class="cal-nav">
@@ -1630,16 +1869,22 @@ function renderCalendar(main) {
       ${days.map((d) => {
         const ds = localISO(d);
         const rows = byDate[ds] || [];
+        const classes = classesByDate[ds] || [];
         const inRangeMonth = calendarMode === "month" ? d.getMonth() === cursor.getMonth() : true;
         const isToday = ds === today;
         const isSelected = ds === selectedDate;
         return `<button type="button" class="cal-day ${inRangeMonth ? "" : "cal-day-outside"} ${isToday ? "cal-day-today" : ""} ${isSelected ? "cal-day-selected" : ""}" data-cal-day="${ds}">
           <span class="cal-day-num">${d.getDate()}</span>
           ${rows.length ? `<span class="cal-dot ${calendarDotClass(rows, today)}" title="${rows.length} due"></span>` : ""}
+          ${classes.length ? `<span class="cal-class ${classes.some((c) => c.att.on && ds <= today && !c.attDays[ds]) ? "cal-class-todo" : ""}" title="${esc(classes.map((c) => `${c.title} ${fmtTime(c.schedule.time) || ""}`).join(", "))}"><span class="cal-class-text">${classes.length > 1 ? `${classes.length} classes` : esc(fmtTime(classes[0].schedule.time) || "Class")}</span></span>` : ""}
         </button>`;
       }).join("")}
     </div>
-    <div class="card" id="calDayDetail" style="margin-top:20px;"></div>
+    <div class="cal-legend">
+      <span><span class="cal-dot cal-dot-navy"></span> Assignment due</span>
+      ${role === "student" ? "" : `<span><span class="cal-class cal-class-legend"></span> Class meets</span><span><span class="cal-class cal-class-todo cal-class-legend"></span> Attendance not taken</span>`}
+    </div>
+    <div class="card" id="calDayDetail" style="margin-top:14px;"></div>
     `}
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
@@ -1652,6 +1897,7 @@ function renderCalendar(main) {
     const heading = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + (ds === today ? " — Today" : "");
     wrap.innerHTML = `
       <div class="section-title" style="margin:0 0 6px;"><h2 style="font-size:1rem;">${heading}</h2></div>
+      ${(classesByDate[ds] || []).map((c) => `<p style="margin:0 0 8px;font-size:.88rem;"><span class="cal-class cal-class-legend"></span> <strong>${esc(c.title)}</strong> meets ${esc(fmtTime(c.schedule.time) || "")}</p>`).join("")}
       ${rows.length === 0 ? `<p style="color:var(--muted-foreground);font-size:.88rem;">Nothing due this day.</p>` : `
       <ul class="assignments-list">
         ${rows.map((row) => `
@@ -1685,10 +1931,14 @@ function renderCalendar(main) {
   });
   main.querySelectorAll("[data-cal-day]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      calendarCursor = btn.dataset.calDay;
+      const ds = btn.dataset.calDay;
+      calendarCursor = ds;
       main.querySelectorAll("[data-cal-day]").forEach((b) => b.classList.remove("cal-day-selected"));
       btn.classList.add("cal-day-selected");
-      renderDayDetail(btn.dataset.calDay);
+      renderDayDetail(ds);
+      const rows = byDate[ds] || [];
+      const classes = classesByDate[ds] || [];
+      if (rows.length || classes.length) openCalendarDayModal(ds, rows, classes, () => renderMain());
     });
   });
 }
@@ -2025,6 +2275,17 @@ function renderMyGrades(main) {
       <h2>${esc(c.title)}</h2>
       ${grade.pct === null ? `<span class="pill pill-gray">No grade yet</span>` : `<span><strong>${grade.pct}%</strong> <span class="pill ${letterCls}" style="margin-left:4px;">${grade.letter}</span></span>`}
     </div>
+    ${c.att.on && grade.attendance ? `
+    <div class="card att-mine">
+      <div class="att-mine-head">
+        <div><strong>Attendance${grade.attendance.pct !== null ? `: ${grade.attendance.pct}%` : ""}</strong>
+          <span class="field-hint" style="margin:0 0 0 6px;">${c.att.weight ? `${c.att.weight}% of your grade` : "not part of your grade"}</span></div>
+        <div class="att-summary att-summary-sm">${ATT_STATUSES.map((s) => `<span class="att-count att-count-${s}"><strong>${grade.attendance.counts[s]}</strong> ${ATT_LABEL[s]}</span>`).join("")}</div>
+      </div>
+      ${grade.attendance.rows.length ? `<details><summary>See each class day</summary>
+        <ul class="att-days">${grade.attendance.rows.slice().reverse().map((r) => `<li><span>${fmtDay(r.date, { weekday: "short", month: "short", day: "numeric" })}</span><span class="att-pill att-pill-${r.status}">${ATT_LABEL[r.status]}</span></li>`).join("")}</ul>
+      </details>` : `<p class="field-hint" style="margin:8px 0 0;">No attendance taken yet.</p>`}
+    </div>` : ""}
     <div class="card">
       <table>
         <thead><tr><th>Assignment</th><th>Due</th><th>Status</th><th style="text-align:right;">Grade</th></tr></thead>
@@ -2177,6 +2438,7 @@ function renderGradeSheet(main) {
             <tr>
               <th rowspan="2" class="gs-sticky">Student</th>
               ${categories.map((cat) => `<th colspan="${cat.items.length}">${esc(cat.seriesLabel || cat.items[0].title)}${cat.weight ? ` <span class="pill pill-gold">${cat.weight}%</span>` : ""}</th>`).join("")}
+              ${c.att.on ? `<th rowspan="2">Attendance${c.att.weight ? ` <span class="pill pill-gold">${c.att.weight}%</span>` : ""}</th>` : ""}
               <th rowspan="2" style="text-align:right;">Final Grade</th>
             </tr>
             <tr>
@@ -2211,6 +2473,7 @@ function renderGradeSheet(main) {
                 return `<tr>
                 <td class="gs-sticky"><strong>${esc(u.name)}</strong></td>
                 ${cells}
+                ${c.att.on ? `<td title="${grade.attendance ? `${grade.attendance.counts.present} present · ${grade.attendance.counts.late} late · ${grade.attendance.counts.absent} absent · ${grade.attendance.counts.excused} excused` : ""}">${grade.attendance && grade.attendance.pct !== null ? `${grade.attendance.pct}%` : `<span class="cell-status cell-notdue">—</span>`}</td>` : ""}
                 <td style="text-align:right;">${grade.pct === null ? `<span style="color:var(--muted-foreground);">Not yet</span>` : `<strong>${grade.pct}%</strong> <span class="pill ${letterCls}">${grade.letter}</span>`}</td>
               </tr>`;
               })
@@ -2218,7 +2481,7 @@ function renderGradeSheet(main) {
           </tbody>
         </table>
       </div>
-      <p style="color:var(--muted-foreground);font-size:.8rem;margin:14px 0 0;">Final Grade is a running average of everything graded so far, weighted the way each assignment (or weekly series) was set up in Manage. An assignment past its due date with nothing turned in counts as a zero; work still awaiting a grade doesn't count yet. A <span class="late-dot">●</span> marks a submission that came in after its due date — grading is still entirely up to you, case by case.</p>`}
+      <p style="color:var(--muted-foreground);font-size:.8rem;margin:14px 0 0;">Final Grade is a running average of everything graded so far, weighted the way each assignment (or weekly series) was set up in Manage. An assignment past its due date with nothing turned in counts as a zero; work still awaiting a grade doesn't count yet.${c.att.on ? (c.att.weight ? ` Attendance is ${c.att.weight}% of the Final Grade (assignments ${100 - c.att.weight}%); a Late counts ${c.att.lateCredit}%, and Excused days don't count.` : " Attendance is shown for reference and isn't part of the Final Grade.") : ""} A <span class="late-dot">●</span> marks a submission that came in after its due date — grading is still entirely up to you, case by case.</p>`}
     </div>
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "grading"; renderNav(); renderMain(); });
@@ -2243,7 +2506,7 @@ function openGradeModal(course, assignment, studentId, onSaved) {
       <div class="modal">
         <h2 style="font-size:1.15rem;">${esc(userName(studentId))}</h2>
         <p style="color:var(--muted-foreground);font-size:.85rem;margin-top:2px;">${esc(assignment.title)} · ${esc(course.title)}</p>
-        ${sub.fileName ? `<p style="font-size:.85rem;margin-top:10px;">Submitted: <strong>${esc(sub.fileName)}</strong>${sub.submittedAt ? " on " + parseDay(sub.submittedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : ""} ${sub.storagePath ? `<button class="btn btn-ghost btn-sm" id="gradeOpenFile" style="margin-left:6px;">Open File</button>` : ""}</p>` : sub.writtenContent ? `<p style="font-size:.85rem;margin-top:10px;">Written in editor${sub.submittedAt ? " on " + parseDay(sub.submittedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : ""}:</p><div class="written-view">${safeHtml(sub.writtenContent)}</div>` : `<p style="font-size:.85rem;color:var(--muted-foreground);margin-top:10px;">No file was attached.</p>`}
+        ${sub.fileName ? `<p style="font-size:.85rem;margin-top:10px;">Submitted: <strong>${esc(sub.fileName)}</strong>${sub.submittedAt ? " on " + parseDay(sub.submittedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : ""} ${sub.storagePath ? `<button class="btn btn-primary btn-sm" id="gradeOpenFile" style="margin-left:6px;">Read It Here</button>` : ""}</p>` : sub.writtenContent ? `<p style="font-size:.85rem;margin-top:10px;">Written in editor${sub.submittedAt ? " on " + parseDay(sub.submittedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'}) : ""}:</p><div class="written-view">${safeHtml(sub.writtenContent)}</div>` : `<p style="font-size:.85rem;color:var(--muted-foreground);margin-top:10px;">No file was attached.</p>`}
         ${isLateSubmission(assignment, sub) ? `<p style="font-size:.85rem;margin-top:6px;color:var(--destructive);"><strong>⚠ Turned in late</strong> — ${Math.round((new Date(sub.submittedAt) - new Date(assignment.due)) / 86400000)} day${Math.round((new Date(sub.submittedAt) - new Date(assignment.due)) / 86400000) === 1 ? "" : "s"} after the ${parseDay(assignment.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} due date. The score below is entirely your call.</p>` : ""}
         <label for="gradeScore">Score (out of ${assignment.points})</label>
         <input type="number" id="gradeScore" min="0" max="${assignment.points}" value="${sub.score ?? ""}" />
@@ -2257,7 +2520,7 @@ function openGradeModal(course, assignment, studentId, onSaved) {
     </div>`;
   document.getElementById("gradeCancel").addEventListener("click", closeModal);
   const openBtn = document.getElementById("gradeOpenFile");
-  if (openBtn) openBtn.addEventListener("click", () => openStoredFile("submissions", sub.storagePath, sub.fileName, openBtn));
+  if (openBtn) openBtn.addEventListener("click", () => openFileViewer({ bucket: "submissions", path: sub.storagePath, title: sub.fileName, subtitle: `${userName(studentId)} · ${assignment.title}`, mimeType: sub.mimeType, returnFocus: openBtn }));
   document.getElementById("gradeSave").addEventListener("click", () => {
     const scoreInput = document.getElementById("gradeScore");
     const score = parseFloat(scoreInput.value);
@@ -2799,6 +3062,9 @@ function renderManage(main) {
       <div id="mgRosterList"></div>
     </div>
 
+    <div class="section-title"><h2>Attendance</h2></div>
+    <div class="card" id="mgAttendanceCard"></div>
+
     <div class="section-title"><h2>Course Materials</h2></div>
     <div class="card">
       <ul class="materials-list" id="mgMaterialsList"></ul>
@@ -2843,6 +3109,7 @@ function renderManage(main) {
   });
 
   renderTeacherCard(c);
+  renderAttendanceCard(c);
   renderEnrollmentRequests(c);
   renderRosterList(c);
   renderMaterialsList(c);
@@ -2881,6 +3148,7 @@ function openEditCourseModal(course) {
             </select>
           </div>
         </div>
+        ${attSettingsHtml("ec", course.att)}
         <div class="form-actions">
           <button class="btn btn-primary" id="ecSave">Save Changes</button>
           <button class="btn btn-ghost" id="ecCancel">Cancel</button>
@@ -2888,6 +3156,7 @@ function openEditCourseModal(course) {
       </div>
     </div>`;
   document.getElementById("ecCancel").addEventListener("click", closeModal);
+  wireAttSettings("ec");
   document.getElementById("ecSave").addEventListener("click", () => {
     const nameInput = document.getElementById("ecName");
     const name = nameInput.value.trim();
@@ -2898,6 +3167,8 @@ function openEditCourseModal(course) {
       credits: parseInt(document.getElementById("ecCredits").value, 10) || 1,
       level: document.getElementById("ecLevel").value,
     };
+    const att = readAttSettings("ec");
+    Object.assign(patch, { attendance_on: att.on, attendance_weight: att.weight, attendance_late_credit: att.lateCredit });
     run(async () => { await DB.updateCourse(course.id, patch); closeModal(); }, null, { success: "Course details saved." });
   });
 }
@@ -3002,8 +3273,17 @@ function computeCourseGrade(course, studentId) {
     if (avg !== null && cat.weight) { weightedSum += avg * cat.weight; weightUsed += cat.weight; }
     return { ...cat, avg, countedOf: outcomes.length, totalOf: cat.items.length };
   });
-  const pct = weightUsed > 0 ? Math.round((weightedSum / weightUsed) * 1000) / 10 : null;
-  return { pct, letter: pct === null ? null : pctToLetter(pct), categories };
+  const asgPct = weightUsed > 0 ? Math.round((weightedSum / weightUsed) * 1000) / 10 : null;
+  // Attendance, when it's part of the grade, takes its share; assignments
+  // make up the rest. If only one side has anything counted yet, that side
+  // stands alone until the other fills in.
+  const attendance = course.att && course.att.on ? studentAttendance(course, studentId) : null;
+  let pct = asgPct;
+  if (attendance && course.att.weight > 0 && attendance.pct !== null) {
+    const w = course.att.weight / 100;
+    pct = asgPct === null ? attendance.pct : Math.round((asgPct * (1 - w) + attendance.pct * w) * 10) / 10;
+  }
+  return { pct, letter: pct === null ? null : pctToLetter(pct), categories, assignmentsPct: asgPct, attendance };
 }
 
 function renderAssignmentsList(c) {
@@ -3308,6 +3588,442 @@ function openAssignmentRoster(course, assignment) {
 // page stays quiet otherwise. Approve adds the student to the roster
 // immediately; Deny requires a short note, which is delivered as a
 // message to the student's inbox (see denyEnrollment).
+// ---------------------------------------------------------------------------
+// Attendance
+//
+// Each course can record attendance (Edit Course Details → Attendance):
+//   - "% of final grade": attendance's share; assignments make up the rest.
+//     0% = taken and shown to students, but not part of the grade.
+//   - "Not recording attendance" (only when 0%) turns it off entirely.
+//   - "Late counts as __%": the teacher's choice of credit for a Late.
+// Marks: Present (full credit), Late (the course's late credit), Absent
+// (none), Excused (not counted either way). Only the course's teacher takes
+// and sees it; each student sees their own in My Grades.
+// ---------------------------------------------------------------------------
+const ATT_STATUSES = ["present", "late", "absent", "excused"];
+const ATT_LABEL = { present: "Present", late: "Late", absent: "Absent", excused: "Excused" };
+let attendanceDate = null;
+let attendanceBackView = "home";
+let attDraft = null; // { courseId, date, held, marks: { studentId: status } }
+
+// Every scheduled class day for a course (YYYY-MM-DD), from its schedule.
+function classDates(c) {
+  const s = c.schedule;
+  if (!s || !s.startDate || !s.days || !s.days.length) return [];
+  const start = parseDay(s.startDate);
+  const out = [];
+  for (let i = 0; i < (s.weeks || 52) * 7; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    if (s.days.includes(DAY_NAMES[d.getDay()])) out.push(localISO(d));
+  }
+  return out;
+}
+// Scheduled days plus any extra day attendance was taken (a make-up class).
+function attendanceDates(c) {
+  return [...new Set([...classDates(c), ...Object.keys(c.attDays || {})])].sort();
+}
+function lastFirst(name) {
+  const parts = (name || "").trim().split(/\s+/);
+  return parts.length > 1 ? `${parts[parts.length - 1]}, ${parts.slice(0, -1).join(" ")}` : (name || "");
+}
+function lastNameKey(name) {
+  const parts = (name || "").trim().split(/\s+/);
+  return (parts[parts.length - 1] + " " + parts.slice(0, -1).join(" ")).toLowerCase();
+}
+function rosterByLastName(c) {
+  return c.studentIds.map((id) => users.find((u) => u.id === id)).filter(Boolean)
+    .sort((a, b) => lastNameKey(a.name).localeCompare(lastNameKey(b.name)));
+}
+function fmtDay(ds, opts = { weekday: "short", month: "short", day: "numeric" }) {
+  return parseDay(ds).toLocaleDateString(undefined, opts);
+}
+
+// One student's attendance in one course: counts, a 0–1 rate, and each day.
+function studentAttendance(c, studentId) {
+  const counts = { present: 0, late: 0, absent: 0, excused: 0 };
+  const rows = [];
+  let credit = 0, counted = 0;
+  Object.keys(c.attDays || {}).sort().forEach((ds) => {
+    const day = c.attDays[ds];
+    if (!day.held) return;
+    const st = (c.attMarks[ds] || {})[studentId];
+    if (!st) return; // wasn't on the roster that day
+    counts[st]++;
+    rows.push({ date: ds, status: st });
+    if (st === "excused") return;
+    counted++;
+    credit += st === "present" ? 1 : st === "late" ? (c.att.lateCredit / 100) : 0;
+  });
+  return { rate: counted ? credit / counted : null, pct: counted ? Math.round((credit / counted) * 1000) / 10 : null, counts, rows };
+}
+
+// Class days up to today that haven't been taken (or marked "no class").
+function untakenDays(c) {
+  const today = todayStr();
+  return classDates(c).filter((d) => d <= today && !(c.attDays || {})[d]);
+}
+function myAttendanceCourses() {
+  return courses.filter((c) => !c.archived && c.att.on && iTeach(c));
+}
+function attendanceTodayCount() {
+  const today = todayStr();
+  return myAttendanceCourses().filter((c) => classDates(c).includes(today) && !c.attDays[today]).length;
+}
+
+function openAttendance(courseId, date, back) {
+  closeModal();
+  activeCourseId = courseId;
+  attendanceDate = date || null;
+  attendanceBackView = back || (view === "attendance" ? attendanceBackView : view) || "home";
+  attDraft = null;
+  view = "attendance";
+  renderNav();
+  renderMain();
+}
+
+// --- Course settings: the Attendance block in Add/Edit Course ------------
+function attSettingsHtml(p, att) {
+  const a = att || { on: false, weight: 0, lateCredit: 50 };
+  return `
+    <fieldset class="att-settings">
+      <legend>Attendance</legend>
+      <label for="${p}AttWeight">Attendance % of final grade</label>
+      <div class="att-inline">
+        <div class="pct-input"><input type="number" id="${p}AttWeight" min="0" max="100" step="1" value="${a.on ? a.weight : 0}" ${a.on ? "" : "disabled"} inputmode="numeric" /><span>%</span></div>
+        <label class="check-inline"><input type="checkbox" id="${p}AttOff" ${a.on ? "" : "checked"} ${a.on && a.weight > 0 ? "disabled" : ""} /> Not recording attendance</label>
+      </div>
+      <div class="field-hint" id="${p}AttHint"></div>
+      <div id="${p}AttLateWrap">
+        <label for="${p}AttLate">A "Late" counts as</label>
+        <div class="pct-input"><input type="number" id="${p}AttLate" min="0" max="100" step="5" value="${a.lateCredit}" inputmode="numeric" /><span>% of Present</span></div>
+      </div>
+    </fieldset>`;
+}
+function wireAttSettings(p) {
+  const w = document.getElementById(`${p}AttWeight`);
+  const off = document.getElementById(`${p}AttOff`);
+  const hint = document.getElementById(`${p}AttHint`);
+  const late = document.getElementById(`${p}AttLateWrap`);
+  const sync = () => {
+    const val = Math.max(0, Math.min(100, Number(w.value) || 0));
+    off.disabled = val > 0;
+    w.disabled = off.checked;
+    late.style.display = off.checked ? "none" : "";
+    hint.textContent = off.checked
+      ? "Attendance won't be taken for this course."
+      : val > 0 ? `Attendance is ${val}% of the final grade; assignments make up the other ${100 - val}%.`
+        : "Attendance will be taken and shown to students, but won't affect the grade. Check the box to stop recording it.";
+  };
+  off.addEventListener("change", () => { if (off.checked) w.value = 0; sync(); });
+  w.addEventListener("input", sync);
+  sync();
+}
+function readAttSettings(p) {
+  const on = !document.getElementById(`${p}AttOff`).checked;
+  const weight = Math.max(0, Math.min(100, Math.round(Number(document.getElementById(`${p}AttWeight`).value) || 0)));
+  const lateCredit = Math.max(0, Math.min(100, Math.round(Number(document.getElementById(`${p}AttLate`).value) || 0)));
+  return { on, weight: on ? weight : 0, lateCredit };
+}
+
+// --- The attendance page ----------------------------------------------------
+function renderAttendance(main) {
+  const c = courses.find((x) => x.id === activeCourseId);
+  const today = todayStr();
+  const backLabel = { calendar: "Calendar", manage: "Course", attendanceHome: "Attendance", home: "Dashboard" }[attendanceBackView] || "Dashboard";
+  const header = `
+    <button class="back-link" id="backLink">&larr; Back to ${backLabel}</button>
+    <div class="page-header">
+      <div class="eyebrow">Attendance</div>
+      <h1>${esc(c.title)}</h1>
+      <p>${esc(scheduleLine(c) || "No class schedule set yet")}${c.att.on ? ` · ${c.att.weight ? `${c.att.weight}% of the final grade` : "recorded, not graded"} · Late = ${c.att.lateCredit}%` : ""}</p>
+    </div>`;
+  const goBack = () => { view = attendanceBackView || "home"; if (view !== "manage") activeCourseId = null; renderNav(); renderMain(); };
+
+  if (!c.att.on) {
+    main.innerHTML = `${header}
+      <div class="card empty-state">
+        <div class="icon-badge" style="margin:0 auto 14px;">${icon("check")}</div>
+        <p>This course isn't recording attendance. Turn it on in <strong>Edit Course Details</strong> on the course's page.</p>
+        ${iManage(c) ? `<button class="btn btn-primary btn-sm" id="attGoManage" style="margin-top:12px;">Open the Course</button>` : ""}
+      </div>`;
+    document.getElementById("backLink").addEventListener("click", goBack);
+    const gm = document.getElementById("attGoManage");
+    if (gm) gm.addEventListener("click", () => { view = "manage"; renderNav(); renderMain(); });
+    return;
+  }
+
+  const dates = attendanceDates(c).filter((d) => d <= today);
+  if (!attendanceDate || attendanceDate > today) {
+    const wanted = attendanceDate;
+    attendanceDate = dates.length ? dates[dates.length - 1] : today;
+    if (wanted && wanted > today) toast(`${fmtDay(wanted)} hasn't happened yet — showing the most recent class.`, "success");
+  }
+  if (!dates.includes(attendanceDate)) dates.push(attendanceDate), dates.sort();
+  const date = attendanceDate;
+  const day = c.attDays[date];
+  const roster = rosterByLastName(c);
+  if (!attDraft || attDraft.courseId !== c.id || attDraft.date !== date) {
+    const saved = c.attMarks[date] || {};
+    attDraft = { courseId: c.id, date, held: day ? day.held : true, marks: {} };
+    roster.forEach((u) => { attDraft.marks[u.id] = saved[u.id] || "present"; });
+  }
+  const idx = dates.indexOf(date);
+  const scheduled = classDates(c).includes(date);
+  const counts = { present: 0, late: 0, absent: 0, excused: 0 };
+  roster.forEach((u) => counts[attDraft.marks[u.id]]++);
+  const takenBy = day && day.takenBy ? userName(day.takenBy) : "";
+
+  main.innerHTML = `${header}
+    <div class="card att-daybar">
+      <button class="btn btn-ghost btn-sm" id="attPrev" ${idx <= 0 ? "disabled" : ""} aria-label="Previous class">&larr;</button>
+      <select id="attDateSel" aria-label="Class day">
+        ${dates.slice().reverse().map((d) => `<option value="${d}" ${d === date ? "selected" : ""}>${fmtDay(d, { weekday: "long", month: "short", day: "numeric" })}${d === today ? " (today)" : ""}${c.attDays[d] ? (c.attDays[d].held ? " ✓" : " — no class") : ""}</option>`).join("")}
+      </select>
+      <button class="btn btn-ghost btn-sm" id="attNext" ${idx >= dates.length - 1 ? "disabled" : ""} aria-label="Next class">&rarr;</button>
+      <span class="pill ${day ? "pill-green" : "pill-gold"} att-status">${day ? (day.held ? "Taken" : "No class") : "Not taken yet"}</span>
+    </div>
+    ${day ? `<p class="field-hint" style="margin:-6px 0 14px;">Saved${takenBy ? ` by ${esc(takenBy)}` : ""} ${new Date(day.takenAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}. You can change it and save again.</p>` : !scheduled ? `<p class="field-hint" style="margin:-6px 0 14px;">This isn't one of the course's scheduled days — saving it adds a make-up class day.</p>` : ""}
+
+    <div class="subtabs att-held" id="attHeld">
+      <button data-held="1" class="${attDraft.held ? "active" : ""}">Class held</button>
+      <button data-held="0" class="${attDraft.held ? "" : "active"}">No class this day</button>
+    </div>
+
+    ${!attDraft.held ? `
+    <div class="card empty-state"><p>No class was held on ${fmtDay(date, { weekday: "long", month: "long", day: "numeric" })}. It won't count for or against anyone.</p></div>` :
+    roster.length === 0 ? `<div class="card empty-state"><p>No students are enrolled yet.</p></div>` : `
+    <div class="att-summary">
+      ${ATT_STATUSES.map((s) => `<span class="att-count att-count-${s}"><strong>${counts[s]}</strong> ${ATT_LABEL[s]}</span>`).join("")}
+      <button class="btn btn-ghost btn-sm" id="attAllPresent" style="margin-left:auto;">Mark everyone present</button>
+    </div>
+    <div class="card att-roster">
+      ${roster.map((u) => `
+        <div class="att-row" data-student="${u.id}">
+          <div class="att-who">${avatarHtml(u, 34)}<span>${esc(lastFirst(u.name))}</span></div>
+          <div class="att-marks" role="radiogroup" aria-label="Attendance for ${esc(u.name)}">
+            ${ATT_STATUSES.map((s) => `<button type="button" role="radio" aria-checked="${attDraft.marks[u.id] === s}" class="att-mark att-mark-${s} ${attDraft.marks[u.id] === s ? "on" : ""}" data-mark="${s}" title="${ATT_LABEL[s]}"><span class="att-full">${ATT_LABEL[s]}</span><span class="att-short">${ATT_LABEL[s][0]}</span></button>`).join("")}
+          </div>
+        </div>`).join("")}
+    </div>`}
+    <div class="att-savebar">
+      <button class="btn btn-primary" id="attSave">${day ? "Save Changes" : "Save Attendance"}</button>
+      ${day ? `<button class="btn btn-ghost btn-sm" id="attClear">Clear this day</button>` : ""}
+    </div>
+  `;
+
+  document.getElementById("backLink").addEventListener("click", goBack);
+  const go = (d) => { attendanceDate = d; attDraft = null; renderAttendance(main); };
+  document.getElementById("attPrev").addEventListener("click", () => idx > 0 && go(dates[idx - 1]));
+  document.getElementById("attNext").addEventListener("click", () => idx < dates.length - 1 && go(dates[idx + 1]));
+  document.getElementById("attDateSel").addEventListener("change", (e) => go(e.target.value));
+  document.querySelectorAll("#attHeld [data-held]").forEach((b) => b.addEventListener("click", () => { attDraft.held = b.dataset.held === "1"; renderAttendance(main); }));
+  main.querySelectorAll(".att-row").forEach((row) => {
+    row.querySelectorAll("[data-mark]").forEach((b) => b.addEventListener("click", () => {
+      attDraft.marks[row.dataset.student] = b.dataset.mark;
+      const y = window.scrollY;
+      renderAttendance(main);
+      window.scrollTo(0, y);
+    }));
+  });
+  const allP = document.getElementById("attAllPresent");
+  if (allP) allP.addEventListener("click", () => { Object.keys(attDraft.marks).forEach((k) => { attDraft.marks[k] = "present"; }); renderAttendance(main); });
+  document.getElementById("attSave").addEventListener("click", () => {
+    const marks = {};
+    Object.entries(attDraft.marks).forEach(([sid, st]) => { if (st !== "present") marks[sid] = st; });
+    run(() => DB.saveAttendance(c.id, date, attDraft.held, marks), () => { attDraft = null; renderMain(); },
+      { success: `Attendance saved for ${fmtDay(date, { weekday: "long", month: "short", day: "numeric" })}.` });
+  });
+  const clr = document.getElementById("attClear");
+  if (clr) clr.addEventListener("click", () => {
+    if (!confirm(`Clear attendance for ${fmtDay(date, { weekday: "long", month: "short", day: "numeric" })}? This day will go back to "Not taken yet".`)) return;
+    run(() => DB.clearAttendance(c.id, date), () => { attDraft = null; renderMain(); }, { success: "That day's attendance was cleared." });
+  });
+}
+
+// --- Faculty: the Attendance tile — every course you teach that records it.
+function renderAttendanceHome(main) {
+  const today = todayStr();
+  const list = myAttendanceCourses();
+  main.innerHTML = `
+    <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
+    <div class="page-header">
+      <div class="eyebrow">Faculty &amp; Admin</div>
+      <h1>Attendance</h1>
+      <p>Your courses that record attendance. Tap a course to take or review it.</p>
+    </div>
+    ${list.length === 0 ? `
+    <div class="card empty-state">
+      <div class="icon-badge" style="margin:0 auto 14px;">${icon("check")}</div>
+      <p>None of the courses you teach record attendance yet. Turn it on from a course's <strong>Edit Course Details</strong>.</p>
+    </div>` : `
+    <div class="grid grid-compact">
+      ${list.map((c) => {
+        const meetsToday = classDates(c).includes(today);
+        const missed = untakenDays(c).filter((d) => d < today);
+        return `
+        <div class="tile tile-compact" data-att-course="${c.id}" tabindex="0" role="button">
+          ${meetsToday && !c.attDays[today] ? `<span class="tile-badge" title="Class today — attendance not taken">!</span>` : ""}
+          <span class="pill pill-navy">${esc(c.level)} Level</span>
+          <h3>${esc(c.title)}</h3>
+          <p class="tile-meta">${esc(scheduleLine(c) || "No schedule set")}</p>
+          <p class="tile-meta" style="margin-top:8px;font-size:.78rem;">
+            ${meetsToday ? (c.attDays[today] ? `<span class="pill pill-green">Today: taken</span>` : `<span class="pill pill-gold">Class today</span>`) : ""}
+            ${missed.length ? `<span class="pill pill-red">${missed.length} earlier day${missed.length === 1 ? "" : "s"} not taken</span>` : ""}
+          </p>
+        </div>`;
+      }).join("")}
+    </div>`}
+  `;
+  document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
+  main.querySelectorAll("[data-att-course]").forEach((el) => {
+    const open = () => {
+      const c = courses.find((x) => x.id === el.dataset.attCourse);
+      const missed = untakenDays(c);
+      openAttendance(c.id, classDates(c).includes(today) ? today : (missed[missed.length - 1] || null), "attendanceHome");
+    };
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+}
+
+// --- The Attendance card on a course's Manage page ------------------------
+function renderAttendanceCard(c) {
+  const wrap = document.getElementById("mgAttendanceCard");
+  if (!wrap) return;
+  if (!c.att.on) {
+    wrap.innerHTML = `<p style="margin:0;color:var(--muted-foreground);">Not recording attendance. To turn it on, use <strong>Edit Course Details</strong> above.</p>`;
+    return;
+  }
+  const summary = `<p style="margin:0 0 12px;">${c.att.weight ? `Attendance is <strong>${c.att.weight}%</strong> of the final grade` : "Attendance is recorded but <strong>not graded</strong>"} · a Late counts as <strong>${c.att.lateCredit}%</strong>.</p>`;
+  if (!iTeach(c)) {
+    wrap.innerHTML = `${summary}<div class="privacy-note">${icon("lock")}<span>Attendance records are visible only to this course's teacher.</span></div>`;
+    return;
+  }
+  const today = todayStr();
+  const past = classDates(c).filter((d) => d <= today).slice(-8).reverse();
+  wrap.innerHTML = `${summary}
+    <div class="att-chips">
+      ${past.length === 0 ? `<span class="field-hint">No class days yet — they'll appear here once the course starts.</span>` : past.map((d) => {
+        const day = c.attDays[d];
+        return `<button class="att-chip ${day ? (day.held ? "att-chip-done" : "att-chip-none") : "att-chip-todo"}" data-att-date="${d}">${fmtDay(d)}${d === today ? " · today" : ""}<span>${day ? (day.held ? "✓" : "no class") : "not taken"}</span></button>`;
+      }).join("")}
+    </div>
+    <div class="form-actions"><button class="btn btn-primary btn-sm" id="mgTakeAttendance">${classDates(c).includes(today) ? (c.attDays[today] ? "Review Today's Attendance" : "Take Today's Attendance") : "Open Attendance"}</button></div>`;
+  wrap.querySelectorAll("[data-att-date]").forEach((b) => b.addEventListener("click", () => openAttendance(c.id, b.dataset.attDate, "manage")));
+  document.getElementById("mgTakeAttendance").addEventListener("click", () => openAttendance(c.id, classDates(c).includes(today) ? today : null, "manage"));
+}
+
+// ---------------------------------------------------------------------------
+// Class reminders (phone notifications) — the card on a teacher's My Profile.
+// When a class that records attendance starts, its teacher gets a
+// notification that opens that day's attendance. Each phone (or computer)
+// is turned on separately. iPhones need the site added to the Home Screen
+// first (an Apple rule for web notifications, iOS 16.4 or newer).
+// ---------------------------------------------------------------------------
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+function isIOS() {
+  return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+function isInstalledApp() {
+  return window.navigator.standalone === true || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+}
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const dev = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) || isIOS() ? "iPad" : /Android/.test(ua) ? "Android phone" : /Mac/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows computer" : "This device";
+  const br = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) && !/Edg\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "";
+  return br ? `${dev} · ${br}` : dev;
+}
+function b64urlToBytes(s) {
+  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+  return Uint8Array.from(b, (ch) => ch.charCodeAt(0));
+}
+function bytesToB64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function currentPushSubscription() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return Promise.resolve(null);
+  return navigator.serviceWorker.register("sw.js").catch((e) => { console.warn("service worker:", e); return null; });
+}
+
+async function renderReminderCard() {
+  const wrap = document.getElementById("reminderCard");
+  if (!wrap) return;
+  const intro = `<p style="margin:0 0 12px;">When one of your classes starts, get a notification on your phone that opens that day's attendance in one tap. (Only for courses that record attendance, and only if it hasn't been taken yet.)</p>`;
+
+  if (!pushSupported()) {
+    wrap.innerHTML = intro + (isIOS() && !isInstalledApp() ? `
+      <div class="install-steps">
+        <strong>On iPhone or iPad, add the Institute to your Home Screen first:</strong>
+        <ol>
+          <li>In Safari, tap the <strong>Share</strong> button <span aria-hidden="true">(the square with an arrow)</span>.</li>
+          <li>Choose <strong>Add to Home Screen</strong>, then <strong>Add</strong>.</li>
+          <li>Open the <strong>Bible Institute</strong> icon from your Home Screen, sign in, and come back to <strong>My Profile</strong> to turn reminders on.</li>
+        </ol>
+        <p class="field-hint" style="margin:6px 0 0;">Needs iOS 16.4 or newer (Settings → General → About → iOS Version).</p>
+      </div>` : `<p class="field-hint" style="margin:0;">This browser can't receive notifications. On a phone, use Safari (iPhone) or Chrome (Android).</p>`);
+    return;
+  }
+  wrap.innerHTML = intro + `<p class="field-hint" style="margin:0;">Checking this device…</p>`;
+  let sub = null, devices = [];
+  try {
+    sub = await currentPushSubscription();
+    devices = await DB.myPushDevices();
+  } catch (e) { console.warn(e); }
+  if (!document.getElementById("reminderCard")) return;
+  const onHere = sub && devices.some((d) => d.endpoint === sub.endpoint);
+  const others = devices.filter((d) => !sub || d.endpoint !== sub.endpoint);
+  const blocked = Notification.permission === "denied";
+  wrap.innerHTML = intro + `
+    <div class="reminder-state ${onHere ? "reminder-on" : ""}">
+      <span class="reminder-dot"></span>
+      <div><strong>${onHere ? "On for this device" : "Off for this device"}</strong>
+        <div class="field-hint" style="margin:2px 0 0;">${esc(deviceLabel())}${others.length ? ` · also on for ${others.length} other device${others.length === 1 ? "" : "s"}` : ""}</div></div>
+    </div>
+    ${blocked ? `<p class="field-hint" style="margin:10px 0 0;color:var(--destructive);">Notifications are blocked for this site. Allow them in your browser's (or phone's) settings for tnbbibleinstitute.com, then reload this page.</p>` : ""}
+    <div class="form-actions" style="flex-wrap:wrap;">
+      ${onHere
+        ? `<button class="btn btn-primary btn-sm" id="pushTest">Send a Test</button><button class="btn btn-ghost btn-sm" id="pushOff">Turn Off on This Device</button>`
+        : `<button class="btn btn-gold btn-sm" id="pushOn" ${blocked ? "disabled" : ""}>Turn On Reminders</button>`}
+    </div>`;
+
+  const on = document.getElementById("pushOn");
+  if (on) on.addEventListener("click", async () => {
+    // Ask for permission first, straight from the tap (iPhones require that).
+    let perm;
+    try { perm = await Notification.requestPermission(); } catch (e) { perm = "denied"; }
+    if (perm !== "granted") { toast("Notifications weren't allowed, so reminders can't be turned on for this device."); renderReminderCard(); return; }
+    run(async () => {
+      let key = await DB.pushPublicKey();
+      if (!key) key = (await DB.reminderFunction("setup=1")).publicKey;
+      if (!key) throw new Error("The reminder service isn't set up yet. Please try again later.");
+      const reg = (await registerServiceWorker()) || (await navigator.serviceWorker.ready);
+      await navigator.serviceWorker.ready;
+      let s = await reg.pushManager.getSubscription();
+      if (s && s.options && s.options.applicationServerKey && bytesToB64url(s.options.applicationServerKey) !== key) { await s.unsubscribe(); s = null; }
+      if (!s) s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(key) });
+      await DB.registerPush(s, deviceLabel());
+    }, () => renderReminderCard(), { reload: false, success: "Reminders are on for this device. Tap \"Send a Test\" to try one." });
+  });
+  const test = document.getElementById("pushTest");
+  if (test) test.addEventListener("click", () => run(async () => {
+    const r = await DB.reminderFunction("test=1");
+    if (!r.delivered) throw new Error("The test couldn't be delivered. Try turning reminders off and on again.");
+  }, () => renderReminderCard(), { reload: false, success: "Test sent — it should arrive in a few seconds." }));
+  const off = document.getElementById("pushOff");
+  if (off) off.addEventListener("click", () => run(async () => {
+    const s = await currentPushSubscription();
+    if (s) { await DB.unregisterPush(s.endpoint); await s.unsubscribe().catch(() => {}); }
+  }, () => renderReminderCard(), { reload: false, success: "Reminders are off for this device." }));
+}
+
 // The Teacher card at the top of a course's Manage page.
 function renderTeacherCard(c) {
   const wrap = document.getElementById("mgTeacherCard");
@@ -3590,63 +4306,217 @@ async function openStoredFile(bucket, path, name, btn) {
   }
 }
 
-// Open, download, or print one course material — used by both the faculty
-// Manage page and the student course page.
+// ---------------------------------------------------------------------------
+// Course documents: open right in the page — full screen, phone-friendly —
+// with Download and Save as PDF. Used by both students and faculty.
+//   PDF        → every page drawn with PDF.js (works on iPhone and Android,
+//                where a PDF inside a page often shows only page one or
+//                nothing at all)
+//   Word .docx → shown as formatted text (Mammoth)
+//   images, plain text, audio, video → shown natively
+//   older .doc, PowerPoint, .rtf → can't be shown in a browser; Download
+// The two reader libraries load only the first time someone needs them.
+// ---------------------------------------------------------------------------
+const PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const MAMMOTH_URL = "https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js";
+const scriptLoads = {};
+function loadScriptOnce(src) {
+  if (!scriptLoads[src]) {
+    scriptLoads[src] = new Promise((resolve, reject) => {
+      const el = document.createElement("script");
+      el.src = src; el.async = true;
+      el.onload = resolve;
+      el.onerror = () => { delete scriptLoads[src]; reject(new Error("The document reader couldn't load. Check your internet connection, or use Download.")); };
+      document.head.appendChild(el);
+    });
+  }
+  return scriptLoads[src];
+}
+
+function materialKind(m) {
+  const mime = (m.mimeType || "").toLowerCase();
+  const ext = ((m.storagePath || m.title || "").split(".").pop() || "").toLowerCase();
+  if (mime === "application/pdf" || ext === "pdf") return "pdf";
+  if (ext === "docx" || mime.includes("wordprocessingml")) return "docx";
+  if (/heic|heif/.test(mime) || ext === "heic" || ext === "heif") return "heic";
+  if (mime.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "image";
+  if (mime === "text/plain" || ext === "txt") return "text";
+  if (mime.startsWith("audio/") || ["mp3", "m4a"].includes(ext)) return "audio";
+  if (mime.startsWith("video/") || ext === "mp4") return "video";
+  return "other";
+}
+function pdfFileName(title) {
+  return (title || "document").replace(/\.[a-z0-9]{2,5}$/i, "") + ".pdf";
+}
+
 function openMaterialViewer(course, material) {
-  const root = document.getElementById("modalRoot");
+  openFileViewer({ bucket: "materials", path: material.storagePath, title: material.title, subtitle: course.title, mimeType: material.mimeType, size: material.size });
+}
+
+// The reader itself, for any stored file: course materials, or a student's
+// turned-in work (opened over the grading window, which stays underneath).
+function openFileViewer(file) {
+  let root = document.getElementById("docViewerRoot");
+  if (!root) { root = document.createElement("div"); root.id = "docViewerRoot"; document.body.appendChild(root); }
+  const material = { title: file.title || "Document", storagePath: file.path, mimeType: file.mimeType, size: file.size };
+  const bucket = file.bucket;
   const hasFile = !!material.storagePath;
-  const mime = material.mimeType || "";
-  const isImage = hasFile && mime.startsWith("image/") && !/heic|heif/.test(mime);
-  const isPdf = hasFile && mime === "application/pdf";
+  const kind = hasFile ? materialKind(material) : "none";
+  const canPdf = ["pdf", "docx", "image", "text"].includes(kind);
   root.innerHTML = `
-    <div class="modal-backdrop">
-      <div class="modal" style="max-width:720px;" role="dialog" aria-modal="true" aria-label="${esc(material.title)}">
-        <span class="type-badge">${TYPE_LABEL[material.type] || "Material"}</span>
-        <h2 style="font-size:1.15rem;margin-top:4px;">${esc(material.title)}</h2>
-        <p style="color:var(--muted-foreground);font-size:.85rem;">${esc(course.title)}${material.size ? ` · ${(material.size / 1048576).toFixed(1)} MB` : ""}</p>
-        <div id="matPreview" style="margin-top:14px;">
-          ${!hasFile ? `<div class="card empty-state" style="padding:24px;"><p>No file is attached to this item.</p></div>`
-            : isImage || isPdf ? `<p style="color:var(--muted-foreground);">Loading preview…</p>`
-            : `<div class="card empty-state" style="padding:24px;"><p>This file type can't preview here — use Download to save it, or Open in New Tab.</p></div>`}
+    <div class="doc-viewer" role="dialog" aria-modal="true" aria-label="${esc(material.title)}">
+      <div class="doc-bar">
+        <button class="doc-close" id="matClose" aria-label="Close">&larr;</button>
+        <div class="doc-title">
+          <strong>${esc(material.title)}</strong>
+          <span>${esc(file.subtitle || "")}${material.size ? ` · ${(material.size / 1048576).toFixed(1)} MB` : ""}</span>
         </div>
-        <p id="matStatus" style="font-size:.82rem;color:var(--muted-foreground);min-height:1.2em;margin:10px 0 0;"></p>
-        <div class="form-actions" style="flex-wrap:wrap;">
-          <button class="btn btn-primary" id="matDownload" ${hasFile ? "" : "disabled"}>Download</button>
-          <button class="btn btn-outline-gold" id="matNewTab" ${hasFile ? "" : "disabled"}>Open in New Tab${isPdf || isImage ? " (to Print)" : ""}</button>
-          <button class="btn btn-ghost" id="matClose">Close</button>
+        <div class="doc-actions">
+          ${canPdf ? `<button class="btn btn-gold btn-sm" id="matPdf">${kind === "pdf" ? "Download PDF" : "Save as PDF"}</button>` : ""}
+          ${kind !== "pdf" ? `<button class="btn btn-ghost btn-sm doc-btn-light" id="matDownload" ${hasFile ? "" : "disabled"}>Download</button>` : ""}
         </div>
       </div>
+      <div class="doc-body" id="matPreview">
+        ${!hasFile ? `<div class="doc-message"><p>No file is attached to this item.</p></div>` : `<div class="doc-message"><div class="doc-spinner"></div><p>Opening…</p></div>`}
+      </div>
+      <p id="matStatus" class="doc-status" aria-live="polite"></p>
     </div>`;
-  document.getElementById("matClose").addEventListener("click", closeModal);
+  document.body.classList.add("doc-open");
+  let closed = false;
+  const close = () => { closed = true; document.body.classList.remove("doc-open"); root.innerHTML = ""; const opener = file.returnFocus; if (opener && opener.focus) opener.focus(); };
+  document.getElementById("matClose").addEventListener("click", close);
+  const onKey = (e) => { if (e.key === "Escape" && document.querySelector(".doc-viewer")) { close(); document.removeEventListener("keydown", onKey); } };
+  document.addEventListener("keydown", onKey);
   if (!hasFile) return;
+
+  const box = document.getElementById("matPreview");
   const statusEl = document.getElementById("matStatus");
-  if (isImage || isPdf) {
-    DB.fileUrl("materials", material.storagePath)
-      .then((url) => {
-        const box = document.getElementById("matPreview");
-        if (!box) return;
-        box.innerHTML = isImage
-          ? `<img src="${url}" alt="${esc(material.title)}" style="width:100%;border-radius:8px;border:1px solid var(--border);" />`
-          : `<iframe src="${url}" title="${esc(material.title)}" style="width:100%;height:58vh;border:1px solid var(--border);border-radius:8px;"></iframe>`;
-      })
-      .catch((e) => { const box = document.getElementById("matPreview"); if (box) box.innerHTML = `<div class="warning-box">${icon("warning")}<p>${esc(friendlyError(e))}</p></div>`; });
-  }
-  document.getElementById("matDownload").addEventListener("click", async () => {
-    statusEl.textContent = "Preparing download…";
+  const say = (t) => { if (statusEl) statusEl.textContent = t; };
+  const fail = (msg) => {
+    if (closed || !document.getElementById("matPreview")) return;
+    box.innerHTML = `<div class="doc-message">${icon("note")}<p>${esc(msg)}</p>
+      <button class="btn btn-primary btn-sm" id="matFailDownload">Download the File</button></div>`;
+    document.getElementById("matFailDownload").addEventListener("click", () => downloadOriginal());
+  };
+  let rendered = null; // what's on screen, for Save as PDF: { kind, text, html, imgEl }
+
+  async function downloadOriginal() {
+    say("Preparing download…");
     try {
-      const url = await DB.fileUrl("materials", material.storagePath, material.title);
+      const url = await DB.fileUrl(bucket, material.storagePath, material.title);
       const a = document.createElement("a");
-      a.href = url;
-      a.rel = "noopener";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      statusEl.textContent = "Downloading — check your downloads.";
+      a.href = url; a.rel = "noopener";
+      document.body.appendChild(a); a.click(); a.remove();
+      say("Downloading — check your downloads.");
+    } catch (e) { say(friendlyError(e)); }
+  }
+
+  (async () => {
+    let url;
+    try { url = await DB.fileUrl(bucket, material.storagePath); }
+    catch (e) { fail(friendlyError(e)); return; }
+    if (closed) return;
+    try {
+      if (kind === "pdf") {
+        await loadScriptOnce(PDFJS_URL);
+        const pdfjs = window.pdfjsLib;
+        pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+        const doc = await pdfjs.getDocument({ url }).promise;
+        if (closed) return;
+        box.innerHTML = `<div class="doc-pages" id="docPages"></div>`;
+        const pagesEl = document.getElementById("docPages");
+        say(`${doc.numPages} page${doc.numPages === 1 ? "" : "s"}`);
+        for (let n = 1; n <= doc.numPages; n++) {
+          if (closed) return;
+          const page = await doc.getPage(n);
+          const width = Math.min(pagesEl.clientWidth || 800, 900);
+          const base = page.getViewport({ scale: 1 });
+          const scale = width / base.width;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          const vp = page.getViewport({ scale: scale * dpr });
+          const canvas = document.createElement("canvas");
+          canvas.width = vp.width; canvas.height = vp.height;
+          canvas.style.width = `${width}px`;
+          canvas.className = "doc-page";
+          canvas.setAttribute("aria-label", `Page ${n}`);
+          pagesEl.appendChild(canvas);
+          await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+        }
+        rendered = { kind };
+      } else if (kind === "docx") {
+        const [buf] = await Promise.all([fetch(url).then((r) => { if (!r.ok) throw new Error("The file couldn't be opened."); return r.arrayBuffer(); }), loadScriptOnce(MAMMOTH_URL)]);
+        const out = await window.mammoth.convertToHtml({ arrayBuffer: buf });
+        if (closed) return;
+        const html = window.DOMPurify ? DOMPurify.sanitize(out.value) : esc(out.value);
+        box.innerHTML = `<article class="doc-paper doc-word">${html || "<p><em>This document is empty.</em></p>"}</article>`;
+        rendered = { kind, html };
+        say("Shown as text — some layout (columns, text boxes) may look simpler than in Word.");
+      } else if (kind === "image" || kind === "heic") {
+        box.innerHTML = `<div class="doc-image"><img id="docImg" src="${esc(url)}" alt="${esc(material.title)}" crossorigin="anonymous"></div>`;
+        const img = document.getElementById("docImg");
+        img.addEventListener("error", () => fail(kind === "heic" ? "This iPhone photo format (HEIC) can't be shown in this browser. Download it to view." : "This image couldn't be shown."));
+        rendered = { kind: "image", imgEl: img };
+      } else if (kind === "text") {
+        const text = await fetch(url).then((r) => { if (!r.ok) throw new Error("The file couldn't be opened."); return r.text(); });
+        if (closed) return;
+        box.innerHTML = `<article class="doc-paper"><pre class="doc-text">${esc(text)}</pre></article>`;
+        rendered = { kind, text };
+      } else if (kind === "audio") {
+        box.innerHTML = `<div class="doc-message"><audio controls src="${esc(url)}" style="width:100%;max-width:520px;"></audio></div>`;
+      } else if (kind === "video") {
+        box.innerHTML = `<div class="doc-image"><video controls playsinline src="${esc(url)}" style="max-width:100%;max-height:78vh;"></video></div>`;
+      } else {
+        fail("This kind of file (older Word, PowerPoint, or rich text) can't be shown in the page. Download it to open it on your device.");
+      }
     } catch (e) {
-      statusEl.textContent = friendlyError(e);
+      console.warn("viewer:", e);
+      if (kind === "pdf" && !closed) {
+        // Last resort: the browser's own PDF viewer.
+        box.innerHTML = `<iframe class="doc-frame" src="${esc(url)}" title="${esc(material.title)}"></iframe>`;
+        say("If the document doesn't appear, use Download PDF.");
+        rendered = { kind };
+      } else {
+        fail(friendlyError(e));
+      }
     }
+  })();
+
+  const dl = document.getElementById("matDownload");
+  if (dl) dl.addEventListener("click", downloadOriginal);
+  const pdfBtn = document.getElementById("matPdf");
+  if (pdfBtn) pdfBtn.addEventListener("click", async () => {
+    if (kind === "pdf") { downloadOriginal(); return; }
+    if (!rendered) { say("One moment — the document is still opening."); return; }
+    try {
+      if (rendered.kind === "docx") {
+        // Word documents: the browser's own "Save as PDF" keeps the formatting.
+        const pa = document.getElementById("printArea");
+        pa.innerHTML = `<article class="doc-paper doc-word doc-print">${rendered.html}</article>`;
+        say("In the print window, choose \"Save as PDF\" as the printer.");
+        setTimeout(() => { window.print(); pa.innerHTML = ""; }, 50);
+        return;
+      }
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({ unit: "pt", format: "letter" });
+      const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight(), m = 48;
+      if (rendered.kind === "image") {
+        const img = rendered.imgEl;
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0);
+        const r = Math.min((pw - 2 * m) / c.width, (ph - 2 * m) / c.height);
+        pdf.addImage(c.toDataURL("image/jpeg", 0.9), "JPEG", (pw - c.width * r) / 2, m, c.width * r, c.height * r);
+      } else {
+        pdf.setFont("helvetica"); pdf.setFontSize(11);
+        const lines = pdf.splitTextToSize(rendered.text || "", pw - 2 * m);
+        let y = m;
+        lines.forEach((line) => { if (y > ph - m) { pdf.addPage(); y = m; } pdf.text(line, m, y); y += 15; });
+      }
+      pdf.save(pdfFileName(material.title));
+      say("Saved as PDF — check your downloads.");
+    } catch (e) { console.warn(e); say("Couldn't make a PDF of this file. Use Download instead."); }
   });
-  document.getElementById("matNewTab").addEventListener("click", (e) => openStoredFile("materials", material.storagePath, material.title, e.currentTarget));
 }
 
 function renderMaterialsList(c) {
@@ -3825,6 +4695,7 @@ function renderSettings(main) {
     <div class="card">
       <div class="card-row">
         <div class="subtabs" id="userTabs">
+          <button data-tab="pending">Waiting for Approval${pendingSignups().length ? ` (${pendingSignups().length})` : ""}</button>
           <button data-tab="active">Active</button>
           <button data-tab="inactive">Inactive</button>
         </div>
@@ -3836,7 +4707,7 @@ function renderSettings(main) {
       </div>
       <div id="userListWrap" style="margin-top:6px;"></div>
     </div>
-    <p style="color:var(--muted-foreground);font-size:.85rem;">New accounts appear here automatically as students, active by default. Every faculty account has full admin access over courses and grading — there's no separate tier for that. Super Admin (above, visible only to current Super Admins) is the one exception: a small, separately-managed permission for who can grant it to others.</p>
+    <p style="color:var(--muted-foreground);font-size:.85rem;">New sign-ups wait under <strong>Waiting for Approval</strong> until a faculty member approves them (Super Admins get a bell notification). Approved accounts start as students. Every faculty account has full admin access over courses and grading — there's no separate tier for that. Super Admin (above, visible only to current Super Admins) is the one exception: a small, separately-managed permission for who can grant it to others.</p>
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
 
@@ -3899,6 +4770,12 @@ function renderSuperAdminList() {
   }
 }
 
+// Sign-ups waiting for approval: verified ones first, newest first.
+function pendingSignups() {
+  return users.filter((u) => u.status === "pending")
+    .sort((a, b) => (b.emailVerified - a.emailVerified) || b.createdAt.localeCompare(a.createdAt));
+}
+
 function sortedUsers(list) {
   const copy = [...list];
   if (userSort === "name") copy.sort((a, b) => a.name.localeCompare(b.name));
@@ -3913,6 +4790,30 @@ function renderUserList() {
   });
 
   const wrap = document.getElementById("userListWrap");
+  if (userTab === "pending") {
+    const waiting = pendingSignups();
+    wrap.innerHTML = waiting.length === 0 ? `<div class="empty-state"><p>No sign-ups are waiting.</p></div>` : waiting.map((u) => `
+      <div class="user-row" data-user="${u.id}">
+        <div class="user-info user-info-avatar">
+          ${avatarHtml(u, 40)}
+          <div>
+            <div class="u-name">${esc(u.name)}</div>
+            <div class="u-email">${esc(u.email)}</div>
+            <div class="field-hint" style="margin:2px 0 0;">Signed up ${fmtDay(u.createdAt, { month: "short", day: "numeric", year: "numeric" })} · ${u.emailVerified ? `<span style="color:var(--success);font-weight:600;">Email confirmed</span>` : "Hasn't confirmed their email yet"}</div>
+          </div>
+        </div>
+        <div class="user-actions">
+          <button class="btn btn-gold btn-sm" data-approve="${u.id}">Approve</button>
+          <button class="btn btn-danger btn-sm" data-delete="${u.id}">Decline</button>
+        </div>
+      </div>`).join("");
+    wrap.querySelectorAll("[data-approve]").forEach((btn) => btn.addEventListener("click", () => {
+      const u = users.find((x) => x.id === btn.dataset.approve);
+      run(() => DB.updateProfile(u.id, { status: "active" }), () => renderSettings(document.getElementById("main")), { success: `${u.name} is approved and can now sign in.` });
+    }));
+    wrap.querySelectorAll("[data-delete]").forEach((btn) => btn.addEventListener("click", () => openDeleteUserModal(btn.dataset.delete)));
+    return;
+  }
   const list = sortedUsers(users.filter((u) => u.status === userTab));
 
   if (list.length === 0) {
@@ -4163,7 +5064,11 @@ function renderProfile(main) {
         </div>
       </div>
     </form>
+    ${isSelf && role === "faculty" ? `
+    <div class="section-title"><h2>Class Reminders</h2></div>
+    <div class="card" id="reminderCard"></div>` : ""}
   `;
+  renderReminderCard();
 
   document.getElementById("backLink").addEventListener("click", () => {
     const back = editingOther ? "settings" : "home";

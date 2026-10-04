@@ -30,11 +30,13 @@ def admin(query):
         print("SETUP FAILED:", query, out); sys.exit(1)
     return out
 
-def mkuser(email, name, google=False):
+def mkuser(email, name, google=False, approve=True, verified=True):
     uid = str(uuid.uuid4())
-    admin(f"insert into auth.users (id, email, raw_user_meta_data, email_confirmed_at) values ('{uid}', '{email}', '{{\"full_name\": \"{name}\", \"role\": \"faculty\"}}', now())")
+    admin(f"insert into auth.users (id, email, raw_user_meta_data, email_confirmed_at) values ('{uid}', '{email}', '{{\"full_name\": \"{name}\", \"role\": \"faculty\"}}', {'now()' if verified else 'null'})")
     if google:
         admin(f"insert into auth.identities (user_id, provider) values ('{uid}', 'google')")
+    if approve:
+        admin(f"update public.profiles set status = 'active' where id = '{uid}'")
     return uid
 
 # --- people ----------------------------------------------------------------
@@ -359,6 +361,98 @@ check("…and that student's private thread with the teacher is cleared too", Tr
 admin(f"insert into public.enrollments (course_id, student_id) values ('c1', '{stu2}') on conflict do nothing")
 admin("update public.courses set faculty_id = (select id from public.profiles where email = 'phil@example.com') where id in ('c1', 'c8')")
 admin(f"delete from public.courses where faculty_id = '{church}' or title = 'Pastoral Epistles'")
+
+# --- attendance --------------------------------------------------------------------------
+LASTCLASS = "(select max(d) from public.course_class_dates('c1') d where d <= public.local_today())"
+check("A course's class days come from its schedule (Hermeneutics: 15 Wednesdays)", True,
+      "select count(*) || ',' || bool_and(to_char(d, 'Dy') = 'Wed') from public.course_class_dates('c1') d", None, expect_out="15,true")
+check("The teacher takes attendance for a class day", True,
+      f"""select public.save_attendance('c1', {LASTCLASS}, true, '{{"{stu1}": "late"}}'::jsonb); select count(*) from public.attendance where course_id = 'c1'""", phil, expect_out=3)
+check("…students not tapped are marked Present", True,
+      f"select status from public.attendance where course_id = 'c1' and student_id = '{stu2}'", phil, expect_out="present")
+check("…and the tapped one is Late", True,
+      f"select status from public.attendance where course_id = 'c1' and student_id = '{stu1}'", phil, expect_out="late")
+check("A student sees only their own attendance", True, "select count(*) from public.attendance", stu2, expect_out=1)
+check("…and which days class was held", True, "select count(*) from public.attendance_days where course_id = 'c1'", stu2, expect_out=1)
+check("A student can't take attendance", False, f"select public.save_attendance('c1', {LASTCLASS}, true, '{{}}'::jsonb)", stu2)
+check("A student can't change their own mark directly", False,
+      f"update public.attendance set status = 'present' where student_id = '{stu1}'", stu1)
+check("Other faculty can't see a course's attendance", True, "select count(*) from public.attendance where course_id = 'c1'", ruth, expect_out=0)
+check("…or take it", False, f"select public.save_attendance('c1', {LASTCLASS}, true, '{{}}'::jsonb)", ruth)
+check("A Super Admin who doesn't teach the course can't see its attendance", True,
+      "select count(*) from public.attendance where course_id = 'c1'", church, expect_out=0)
+check("Attendance can't be taken for a day that hasn't happened yet", False,
+      "select public.save_attendance('c1', public.local_today() + 7, true, '{}'::jsonb)", phil)
+check("Re-taking a day replaces its marks (no duplicates)", True,
+      f"""select public.save_attendance('c1', {LASTCLASS}, true, '{{"{stu1}": "excused"}}'::jsonb); select count(*) || ',' || (select status from public.attendance where student_id = '{stu1}' and course_id = 'c1') from public.attendance where course_id = 'c1'""", phil, expect_out="3,excused")
+check("'No class held' clears that day's marks", True,
+      f"select public.save_attendance('c1', {LASTCLASS}, false, '{{}}'::jsonb); select count(*) from public.attendance where course_id = 'c1'", phil, expect_out=0)
+check("Course attendance settings: only 0–100% allowed", False,
+      "update public.courses set attendance_weight = 120 where id = 'c1'", phil)
+check("The teacher sets attendance to 10% with Late = 75%", True,
+      "update public.courses set attendance_on = true, attendance_weight = 10, attendance_late_credit = 75 where id = 'c1'; select attendance_weight::int || ',' || attendance_late_credit::int from public.courses where id = 'c1'", phil, expect_out="10,75")
+check("Other faculty can't change a course's attendance settings (0 rows)", True,
+      "with u as (update public.courses set attendance_weight = 50 where id = 'c1' returning 1) select count(*) from u", ruth, expect_out=0)
+
+# --- phone reminders ----------------------------------------------------------------------
+check("A teacher turns on reminders for their phone", True,
+      "select public.register_push('https://push.example.com/abc', 'BKey', 'authsecret', 'iPhone'); select count(*) from public.push_subscriptions", phil, expect_out=1)
+check("Nobody else can see that device", True, "select count(*) from public.push_subscriptions", stu1, expect_out=0)
+check("Devices can't be added directly (only through the site's sign-up step)", False,
+      f"insert into public.push_subscriptions (user_id, endpoint, p256dh, auth) values ('{stu1}', 'https://evil.example/x', 'k', 'a')", stu1)
+check("A non-https device address is refused", False,
+      "select public.register_push('http://push.example.com/abc', 'BKey', 'authsecret', 'x')", phil)
+check("The push signing keys can't be read from the website", False, "select * from public.push_keys", phil)
+check("The website can't trigger reminders itself", False, "select * from public.claim_attendance_reminders()", church)
+admin(f"""insert into public.courses (id, title, faculty_id, attendance_on, sched_mode, sched_start, sched_weeks, sched_days, sched_time)
+  values ('rm1', 'Reminder Test', '{phil}', true, 'now', public.local_today() - 7, 4,
+          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') - interval '10 minutes', 'HH24:MI')),
+         ('rm2', 'Already Taken', '{phil}', true, 'now', public.local_today() - 7, 4,
+          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') - interval '10 minutes', 'HH24:MI')),
+         ('rm3', 'Not Recording', '{phil}', false, 'now', public.local_today() - 7, 4,
+          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') - interval '10 minutes', 'HH24:MI')),
+         ('rm4', 'Later Today', '{phil}', true, 'now', public.local_today() - 7, 4,
+          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') + interval '30 minutes', 'HH24:MI'))""")
+admin("insert into public.attendance_days (course_id, class_date) values ('rm2', public.local_today())")
+check("At class time, the reminder is claimed for the course's teacher", True,
+      "select string_agg(course_id || '>' || (teacher_id = (select id from public.profiles where email = 'phil@example.com')), ',') from public.claim_attendance_reminders()", None, expect_out="rm1>true")
+check("…exactly once (a second run sends nothing)", True,
+      "select count(*) from public.claim_attendance_reminders()", None, expect_out=0)
+admin("delete from public.courses where id like 'rm_'")
+admin("delete from public.push_subscriptions")
+
+# --- sign-up approval queue ---------------------------------------------------------------
+admin("delete from public.notifications")
+newbie = mkuser("newbie@example.com", "New Person", approve=False)
+check("A new sign-up starts out waiting for approval", True, f"select status from public.profiles where id = '{newbie}'", None, expect_out="pending")
+check("…and the Super Admins get a bell notification", True,
+      f"select count(*) from public.notifications where user_id = '{church}' and subject like 'New sign-up waiting for approval: New Person%'", None, expect_out=1)
+check("…but plain faculty don't", True, f"select count(*) from public.notifications where user_id = '{phil}'", None, expect_out=0)
+check("A waiting account can see its own profile (to show the waiting screen)", True,
+      "select count(*) from public.profiles", newbie, expect_out=1)
+check("…but nothing else — not even the course catalogue", True, "select count(*) from public.courses", newbie, expect_out=0)
+check("…can't fill in its profile yet", False, f"update public.profiles set bio = 'spam spam' where id = '{newbie}'", newbie)
+check("…can't upload a photo", False, f"insert into storage.objects (bucket_id, name) values ('avatars', '{newbie}/x.jpg')", newbie)
+check("…can't approve itself", False, f"update public.profiles set status = 'active' where id = '{newbie}'", newbie)
+unv = mkuser("unverified@example.com", "Not Yet Verified", approve=False, verified=False)
+check("An unverified sign-up doesn't notify anyone yet", True,
+      "select count(*) from public.notifications where subject like '%Not Yet Verified%'", None, expect_out=0)
+admin(f"update auth.users set email_confirmed_at = now() where id = '{unv}'")
+check("…until they confirm their email", True,
+      "select count(*) from public.notifications where subject like '%Not Yet Verified%'", None, expect_out=1)
+check("…which is recorded on their profile", True,
+      f"select email_verified_at is not null from public.profiles where id = '{unv}'", None, expect_out="t")
+check("A waiting account can't change its own verified date", False,
+      f"update public.profiles set email_verified_at = null where id = '{unv}'", unv)
+sql(f"update public.profiles set status = 'active' where id = '{newbie}'", stu2)
+check("Students can't approve sign-ups", True, f"select status from public.profiles where id = '{newbie}'", None, expect_out="pending")
+check("Faculty approve a sign-up", True,
+      f"update public.profiles set status = 'active' where id = '{newbie}'; select status from public.profiles where id = '{newbie}'", phil, expect_out="active")
+check("…and the person is welcomed in their bell", True,
+      f"select count(*) from public.notifications where user_id = '{newbie}' and subject like 'Welcome%approved%'", None, expect_out=1)
+check("…and can now fill in their profile", True, f"update public.profiles set bio = 'Hello!' where id = '{newbie}'", newbie)
+check("Faculty decline a sign-up (delete it)", True,
+      f"select public.delete_user('{unv}'); select count(*) from public.profiles where id = '{unv}'", phil, expect_out=0)
 
 # --- archive & delete ----------------------------------------------------------------------
 admin("update public.courses set archived = true where id = 'c1'")

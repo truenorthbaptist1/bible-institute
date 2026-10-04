@@ -61,6 +61,17 @@ alter table public.profiles
   -- their profile at someone else's picture.
   add column if not exists avatar_path  text check (avatar_path is null or avatar_path like (id::text || '/%'));
 
+-- New sign-ups wait for approval (added Oct 2026, to keep spammers out).
+--   pending  — signed up; can't see or do anything until an admin approves
+--   active   — approved
+--   inactive — turned off by faculty
+-- email_verified_at: when they confirmed their email (Google sign-ins are
+-- verified immediately). The approval queue lists verified sign-ups.
+alter table public.profiles add column if not exists email_verified_at timestamptz;
+alter table public.profiles drop constraint if exists profiles_status_check;
+alter table public.profiles add constraint profiles_status_check check (status in ('active','inactive','pending'));
+alter table public.profiles alter column status set default 'pending';
+
 create table if not exists public.courses (
   id          text primary key default ('c_' || replace(gen_random_uuid()::text, '-', '')),
   title       text not null check (length(trim(title)) > 0),
@@ -76,6 +87,17 @@ create table if not exists public.courses (
   sched_start date,
   created_at  timestamptz not null default now()
 );
+
+-- Attendance settings for each course (added Oct 2026).
+--   attendance_on          — is attendance being recorded at all?
+--   attendance_weight      — % of the final grade (0 = recorded, not graded)
+--   attendance_late_credit — how much a "Late" counts, as % of "Present"
+alter table public.courses
+  add column if not exists attendance_on boolean not null default false,
+  add column if not exists attendance_weight numeric not null default 0
+    check (attendance_weight >= 0 and attendance_weight <= 100),
+  add column if not exists attendance_late_credit numeric not null default 50
+    check (attendance_late_credit >= 0 and attendance_late_credit <= 100);
 
 create table if not exists public.enrollments (
   course_id  text not null references public.courses(id) on delete cascade,
@@ -169,6 +191,53 @@ create table if not exists public.bible_highlights (
   verse_text text not null,
   created_at timestamptz not null default now(),
   primary key (user_id, verse_key)
+);
+
+-- Attendance: one row per class day the teacher took (or marked "no class"),
+-- and one mark per student for that day.
+create table if not exists public.attendance_days (
+  course_id  text not null references public.courses(id) on delete cascade,
+  class_date date not null,
+  held       boolean not null default true,      -- false = no class held that day
+  taken_by   uuid references public.profiles(id) on delete set null,
+  taken_at   timestamptz not null default now(),
+  primary key (course_id, class_date)
+);
+
+create table if not exists public.attendance (
+  course_id  text not null,
+  class_date date not null,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  status     text not null check (status in ('present','late','absent','excused')),
+  primary key (course_id, class_date, student_id),
+  foreign key (course_id, class_date) references public.attendance_days(course_id, class_date) on delete cascade
+);
+
+-- Phone reminders (Web Push). One row per device a person turned them on for.
+create table if not exists public.push_subscriptions (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.profiles(id) on delete cascade,
+  endpoint   text not null unique,
+  p256dh     text not null,
+  auth       text not null,
+  device     text not null default '',
+  created_at timestamptz not null default now()
+);
+
+-- The site's push-signing keys (made once by the reminder function) and a
+-- record of which class days have already been reminded. Neither is
+-- readable from the website at all.
+create table if not exists public.push_keys (
+  id          int primary key default 1 check (id = 1),
+  public_key  text not null,
+  private_jwk jsonb not null,
+  created_at  timestamptz not null default now()
+);
+create table if not exists public.attendance_reminders (
+  course_id  text not null references public.courses(id) on delete cascade,
+  class_date date not null,
+  sent_at    timestamptz not null default now(),
+  primary key (course_id, class_date)
 );
 
 create index if not exists idx_assignments_course on public.assignments(course_id);
@@ -281,6 +350,17 @@ language sql stable security definer set search_path = public as $$
    where super_admin and status = 'active' and public.course_teacher(p_course) is null
 $$;
 
+-- Every day a course meets, from its schedule: the chosen weekdays, from the
+-- start date for the given number of weeks (a year if no length is set).
+create or replace function public.course_class_dates(p_course text) returns setof date
+language sql stable security definer set search_path = public as $$
+  select d::date
+    from courses c,
+         generate_series(c.sched_start, c.sched_start + (coalesce(c.sched_weeks, 52) * 7 - 1), interval '1 day') d
+   where c.id = p_course and c.sched_start is not null
+     and to_char(d, 'Dy') = any (c.sched_days)
+$$;
+
 -- Can the signed-in person see this other person at all? Faculty see
 -- everyone; everyone sees themself and every faculty member; students also
 -- see classmates who share a course with them (so discussion replies show
@@ -318,7 +398,7 @@ $$;
 create or replace function public.handle_new_user() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  insert into public.profiles (id, name, email)
+  insert into public.profiles (id, name, email, status, email_verified_at)
   values (
     new.id,
     coalesce(
@@ -326,9 +406,37 @@ begin
       nullif(trim(new.raw_user_meta_data->>'name'), ''),
       initcap(replace(replace(split_part(coalesce(new.email, ''), '@', 1), '.', ' '), '_', ' '))
     ),
-    lower(coalesce(new.email, ''))
+    lower(coalesce(new.email, '')),
+    'pending',
+    new.email_confirmed_at
   )
   on conflict (id) do nothing;
+  if new.email_confirmed_at is not null then
+    perform public.notify_admins_of_signup(new.id);
+  end if;
+  return new;
+end $$;
+
+-- Tell every active Super Admin that a verified sign-up is waiting.
+create or replace function public.notify_admins_of_signup(p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_name text; v_email text;
+begin
+  select name, email into v_name, v_email from profiles where id = p_user and status = 'pending';
+  if v_email is null then return; end if;
+  insert into notifications (user_id, subject)
+  select id, 'New sign-up waiting for approval: ' || coalesce(nullif(v_name, ''), v_email) || ' (' || v_email || ')'
+    from profiles where super_admin and status = 'active';
+end $$;
+
+-- When someone confirms their email, they join the approval queue.
+create or replace function public.handle_email_verified() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.email_confirmed_at is not null and old.email_confirmed_at is null then
+    update profiles set email_verified_at = new.email_confirmed_at where id = new.id;
+    perform public.notify_admins_of_signup(new.id);
+  end if;
   return new;
 end $$;
 
@@ -336,6 +444,24 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+drop trigger if exists on_auth_email_verified on auth.users;
+create trigger on_auth_email_verified
+  after update of email_confirmed_at on auth.users
+  for each row execute function public.handle_email_verified();
+
+-- Approved: welcome them (they'll see it in their bell).
+create or replace function public.notify_on_approval() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if old.status = 'pending' and new.status = 'active' then
+    insert into notifications (user_id, subject)
+    values (new.id, 'Welcome to the Bible Institute! Your account has been approved.');
+  end if;
+  return new;
+end $$;
+drop trigger if exists notify_on_approval on public.profiles;
+create trigger notify_on_approval after update of status on public.profiles
+  for each row execute function public.notify_on_approval();
 
 create or replace function public.super_admin_count_excluding(p_id uuid) returns int
 language sql stable security definer set search_path = public as $$
@@ -361,8 +487,15 @@ begin
   end if;
 
   if new.id is distinct from old.id or new.email is distinct from old.email
-     or new.created_at is distinct from old.created_at then
+     or new.created_at is distinct from old.created_at
+     or new.email_verified_at is distinct from old.email_verified_at then
     raise exception 'That field cannot be changed.';
+  end if;
+
+  -- An account waiting for approval (or turned off) can't change anything,
+  -- including its own profile.
+  if old.id = auth.uid() and old.status <> 'active' then
+    raise exception 'Your account is waiting for approval.';
   end if;
 
   if (new.role is distinct from old.role or new.status is distinct from old.status)
@@ -461,6 +594,90 @@ begin
   insert into notifications (user_id, subject)
   values (p_student, 'Your enrollment request for ' || v_title || ' was not approved');
 end $$;
+
+-- Take (or re-take) attendance for one class day, all at once. Only the
+-- course's teacher; never for a day that hasn't happened yet. Marks are
+-- kept only for students actually on the roster.
+create or replace function public.save_attendance(p_course text, p_date date, p_held boolean, p_marks jsonb)
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.teaches_course(p_course) then
+    raise exception 'Only this course''s teacher can take its attendance.';
+  end if;
+  if p_date > public.local_today() then
+    raise exception 'Attendance can''t be taken for a day that hasn''t happened yet.';
+  end if;
+  insert into attendance_days (course_id, class_date, held, taken_by, taken_at)
+  values (p_course, p_date, coalesce(p_held, true), auth.uid(), now())
+  on conflict (course_id, class_date) do update
+    set held = excluded.held, taken_by = excluded.taken_by, taken_at = excluded.taken_at;
+  delete from attendance where course_id = p_course and class_date = p_date;
+  if coalesce(p_held, true) then
+    insert into attendance (course_id, class_date, student_id, status)
+    select p_course, p_date, e.student_id, coalesce(p_marks ->> e.student_id::text, 'present')
+      from enrollments e
+     where e.course_id = p_course;
+  end if;
+end $$;
+
+-- Clear a day's attendance (e.g. taken on the wrong day by mistake).
+create or replace function public.clear_attendance(p_course text, p_date date) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.teaches_course(p_course) then
+    raise exception 'Only this course''s teacher can change its attendance.';
+  end if;
+  delete from attendance_days where course_id = p_course and class_date = p_date;
+end $$;
+
+-- Phone reminders: register this device for the signed-in person. A device
+-- belongs to whoever last turned reminders on with it.
+create or replace function public.register_push(p_endpoint text, p_p256dh text, p_auth text, p_device text)
+returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_active_user() then raise exception 'Not signed in.'; end if;
+  if p_endpoint !~ '^https://' or length(p_endpoint) > 1000 then raise exception 'That isn''t a valid device.'; end if;
+  delete from push_subscriptions where endpoint = p_endpoint;
+  insert into push_subscriptions (user_id, endpoint, p256dh, auth, device)
+  values (auth.uid(), p_endpoint, p_p256dh, p_auth, left(coalesce(p_device, ''), 120));
+end $$;
+
+-- The site's public push key (safe to share; it's how a phone knows a
+-- reminder really came from the Institute).
+create or replace function public.push_public_key() returns text
+language sql stable security definer set search_path = public as $$
+  select public_key from push_keys where id = 1
+$$;
+
+-- Used only by the reminder function (never by the website): every class
+-- that has just started, takes attendance, has a teacher, and hasn't been
+-- taken or reminded yet today. Each is claimed exactly once.
+create or replace function public.claim_attendance_reminders()
+returns table (course_id text, course_title text, class_date date, class_time text, teacher_id uuid)
+language sql volatile security definer set search_path = public as $$
+  with now_ak as (select (now() at time zone 'America/Anchorage') as t),
+  due as (
+    select c.id, c.title, (n.t)::date as d, c.sched_time, public.course_teacher(c.id) as teacher
+      from courses c, now_ak n
+     where not c.archived and c.attendance_on
+       and c.sched_time ~ '^[0-9]{1,2}:[0-9]{2}'
+       and public.course_teacher(c.id) is not null
+       and (n.t)::date in (select public.course_class_dates(c.id))
+       and n.t >= (n.t)::date + c.sched_time::time
+       and n.t <  (n.t)::date + c.sched_time::time + interval '2 hours'
+       and not exists (select 1 from attendance_days ad where ad.course_id = c.id and ad.class_date = (n.t)::date)
+  ),
+  claimed as (
+    insert into attendance_reminders (course_id, class_date)
+    select id, d from due
+    on conflict do nothing
+    returning attendance_reminders.course_id, attendance_reminders.class_date
+  )
+  select due.id, due.title, due.d, due.sched_time, due.teacher
+    from due join claimed on claimed.course_id = due.id and claimed.class_date = due.d
+$$;
 
 -- Mark the other side's messages in one thread as read.
 create or replace function public.mark_thread_read(p_course text, p_student uuid) returns void
@@ -703,6 +920,11 @@ alter table public.discussion_posts    enable row level security;
 alter table public.messages            enable row level security;
 alter table public.notifications       enable row level security;
 alter table public.bible_highlights    enable row level security;
+alter table public.attendance_days      enable row level security;
+alter table public.attendance           enable row level security;
+alter table public.push_subscriptions   enable row level security;
+alter table public.push_keys            enable row level security;
+alter table public.attendance_reminders enable row level security;
 
 do $$
 declare r record;
@@ -809,6 +1031,19 @@ create policy notif_select on public.notifications for select to authenticated u
 create policy notif_update on public.notifications for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
 create policy notif_delete on public.notifications for delete to authenticated using (user_id = auth.uid());
 
+-- attendance: like grades — the course's teacher takes and sees it; each
+-- student sees only their own marks (and which days class was held).
+-- Changes go through save_attendance()/clear_attendance().
+create policy attdays_select on public.attendance_days for select to authenticated
+  using (public.teaches_course(course_id) or public.is_enrolled(course_id));
+create policy att_select on public.attendance for select to authenticated
+  using (public.teaches_course(course_id) or (student_id = auth.uid() and public.is_active_user()));
+
+-- push subscriptions: your own devices only (added via register_push()).
+create policy push_select on public.push_subscriptions for select to authenticated using (user_id = auth.uid());
+create policy push_delete on public.push_subscriptions for delete to authenticated using (user_id = auth.uid());
+-- push_keys and attendance_reminders: no policies at all = no website access.
+
 -- Bible highlights: yours only.
 create policy hl_select on public.bible_highlights for select to authenticated using (user_id = auth.uid());
 create policy hl_insert on public.bible_highlights for insert to authenticated with check (user_id = auth.uid() and public.is_active_user());
@@ -914,6 +1149,12 @@ revoke execute on function public.teaches_course(text) from public, anon;
 revoke execute on function public.manages_course(text) from public, anon;
 revoke execute on function public.course_started(text) from public, anon;
 revoke execute on function public.course_recipients(text) from public, anon;
+revoke execute on function public.course_class_dates(text) from public, anon;
+revoke execute on function public.save_attendance(text, date, boolean, jsonb) from public, anon;
+revoke execute on function public.clear_attendance(text, date) from public, anon;
+revoke execute on function public.register_push(text, text, text, text) from public, anon;
+revoke execute on function public.push_public_key() from public, anon;
+revoke execute on function public.claim_attendance_reminders() from public, anon, authenticated;
 grant execute on function public.claim_bootstrap_super_admin() to authenticated;
 grant execute on function public.delete_user(uuid) to authenticated;
 grant execute on function public.approve_enrollment(text, uuid) to authenticated;
@@ -926,6 +1167,12 @@ grant execute on function public.teaches_course(text) to authenticated;
 grant execute on function public.manages_course(text) to authenticated;
 grant execute on function public.course_started(text) to authenticated;
 grant execute on function public.course_recipients(text) to authenticated;
+grant execute on function public.course_class_dates(text) to authenticated;
+revoke execute on function public.notify_admins_of_signup(uuid) from public, anon, authenticated;
+grant execute on function public.save_attendance(text, date, boolean, jsonb) to authenticated;
+grant execute on function public.clear_attendance(text, date) to authenticated;
+grant execute on function public.register_push(text, text, text, text) to authenticated;
+grant execute on function public.push_public_key() to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Table access for signed-in users. This only opens the door; the Row Level
@@ -935,3 +1182,7 @@ grant execute on function public.course_recipients(text) to authenticated;
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on all tables in schema public to authenticated;
 revoke all on all tables in schema public from anon;
+-- Attendance and push data change only through the functions above.
+revoke insert, update, delete on public.attendance_days, public.attendance from authenticated;
+revoke insert, update on public.push_subscriptions from authenticated;
+revoke all on public.push_keys, public.attendance_reminders from authenticated;
