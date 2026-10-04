@@ -2,7 +2,7 @@
 
 ## Already verified (before hand-off)
 
-_Oct 2026 update: with My Profile added, the database check is now 109/109 and the browser run covers profiles, photos, and who can see what._
+_Oct 2026 updates: My Profile (photos, contact details) and course teachers (only a course's teacher sees its grades, messages, and discussion). The database check is now 145/145; the browser run covers both._
 
 **Database privacy rules — 88 automated checks, all passing** (`tests/db/`).
 The schema was loaded into a real PostgreSQL database and each rule was tested
@@ -52,6 +52,11 @@ these need real people on the real test site:
    Drag/zoom in the round frame, save, and confirm the photo shows in the top
    bar and beside discussion replies on another person's screen. Then delete
    a test account that has a photo and confirm no error.
+8. **Course teachers** (added Oct 2026) — with a second faculty account: open
+   a course you don't teach (read-only summary; not in your Grading, Inbox,
+   or Discussion lists); have a Super Admin assign you to it and confirm the
+   grade book and messages appear for you and disappear for the previous
+   teacher; confirm a started course's teacher can't hand it off.
 
 The printable **Pre-Launch Test Checklist** (shared in our conversation)
 walks through these with pass/fail boxes.

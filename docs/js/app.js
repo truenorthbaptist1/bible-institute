@@ -141,6 +141,41 @@ function currentFacultyId() {
   return f ? f.id : null;
 }
 
+// ---------------------------------------------------------------------------
+// Course teachers. Mirrors the database's rules exactly (the database is
+// what actually enforces them — these only decide what the page shows):
+//   - a course's teacher is its assigned instructor while they're active
+//     faculty; with no teacher, the Super Admins cover it
+//   - teaching a course = seeing its grades, private messages, discussion
+//   - managing a course (schedule, roster, requests, assignments,
+//     materials) = its teacher, or any Super Admin
+//   - before the start date the teacher can hand the course to another
+//     faculty member; after it, only a Super Admin can change the teacher
+// ---------------------------------------------------------------------------
+function courseTeacher(c) {
+  return users.find((u) => u.id === c.facultyId && u.role === "faculty" && u.status !== "inactive") || null;
+}
+function iTeach(c) {
+  if (!currentUser || !c) return false;
+  const t = courseTeacher(c);
+  return t ? t.id === currentUser.id : !!currentUser.superAdmin;
+}
+function iManage(c) {
+  return !!(currentUser && c && (currentUser.superAdmin || iTeach(c)));
+}
+function courseStarted(c) {
+  return !!(c.schedule && c.schedule.startDate && c.schedule.startDate <= todayStr());
+}
+function canChangeTeacher(c) {
+  if (!currentUser) return false;
+  if (currentUser.superAdmin) return true;
+  return role === "faculty" && c.facultyId === currentUser.id && !courseStarted(c);
+}
+function teacherLabel(c) {
+  const t = courseTeacher(c);
+  return t ? t.name : "No teacher yet";
+}
+
 function roleTag(id) {
   const u = users.find((x) => x.id === id);
   return u && u.role === "faculty" ? `<span class="pill pill-gold" style="margin-left:6px;">Faculty</span>` : "";
@@ -770,6 +805,16 @@ function renderView() {
     activeCourseId = null;
     renderNav();
   }
+  // Faculty only reach the course pages they're allowed to use.
+  if (role !== "student" && activeCourseId) {
+    const ac = courses.find((x) => x.id === activeCourseId);
+    const needsTeach = ["gradeSheet", "discussionBoard", "messageThread"].includes(view);
+    if ((view === "manage" && !iManage(ac)) || (needsTeach && !iTeach(ac))) {
+      view = view === "manage" ? "catalogue" : "home";
+      activeCourseId = null;
+      renderNav();
+    }
+  }
   if (view === "home") return role === "student" ? renderDashboard(main) : renderFacultyHome(main);
   if (view === "courses") return renderCourses(main);
   if (view === "course") return renderCourse(main);
@@ -866,7 +911,7 @@ function myEnrollmentRequest(course, studentId) {
   return pendingRequestsFor(course).find((r) => r.studentId === studentId);
 }
 function pendingEnrollmentCount() {
-  return courses.filter((c) => !c.archived).reduce((n, c) => n + pendingRequestsFor(c).length, 0);
+  return courses.filter((c) => !c.archived && iTeach(c)).reduce((n, c) => n + pendingRequestsFor(c).length, 0);
 }
 // Each of these saves to the database (which also sends the matching
 // notifications), then reloads and redraws via run().
@@ -976,11 +1021,11 @@ function renderCourses(main) {
 function renderFacultyHome(main) {
   const tiles = [
     { key: "catalogue", i: "book", label: "Courses", desc: "Browse everything offered, or add a new course" },
-    { key: "calendar", i: "calendar", label: "Calendar", desc: "Every due date, across every active course" },
+    { key: "calendar", i: "calendar", label: "Calendar", desc: "Every due date in the courses you teach" },
     { key: "studyBible", i: "bible", label: "Study Bible", desc: "Read the KJV with Strong's Concordance" },
-    { key: "grading", i: "cap", label: "Grading", desc: "Review and grade student work" },
-    { key: "discussion", i: "chat", label: "Discussion Board", desc: "Moderate class discussions" },
-    { key: "messages", i: "mail", label: "Message Inbox", desc: "Messages from students" },
+    { key: "grading", i: "cap", label: "Grading", desc: "Review and grade work in your courses" },
+    { key: "discussion", i: "chat", label: "Discussion Board", desc: "Lead your classes' discussions" },
+    { key: "messages", i: "mail", label: "Message Inbox", desc: "Messages from your students" },
     { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
     { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and About me" },
     { key: "settings", i: "gear", label: "Settings", desc: "Users, roles, and Super Admins" },
@@ -1052,6 +1097,7 @@ function openAddCourseModal() {
         <div class="field-hint">Attach a syllabus, PDF textbook, or other reference materials (up to 50 MB each). You can add or remove these later from the course's Manage page.</div>
         <div id="builderFileChips" class="chip-row"></div>
 
+        ${role === "faculty" ? `<p class="field-hint" style="margin-top:14px;">You'll be this course's teacher. ${currentUser.superAdmin ? "You can assign someone else from its Manage page." : "You can hand it to another faculty member from its Manage page until it starts."}</p>` : ""}
         <div class="form-actions">
           <button class="btn btn-primary" id="cbSave">Save Course</button>
           <button class="btn btn-ghost" id="cbCancel">Cancel</button>
@@ -1116,7 +1162,9 @@ function renderCatalogue(main) {
   flashMessage = "";
   const activeCourses = courses.filter((c) => !c.archived);
   const archivedCourses = courses.filter((c) => c.archived);
-  const list = catalogueTab === "archived" ? archivedCourses : activeCourses;
+  // Courses you teach first, then the rest alphabetically.
+  const list = (catalogueTab === "archived" ? archivedCourses : activeCourses)
+    .slice().sort((a, b) => (iTeach(b) - iTeach(a)) || a.title.localeCompare(b.title));
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
@@ -1125,7 +1173,7 @@ function renderCatalogue(main) {
         <h1 style="margin:0;">Courses</h1>
         <button class="btn btn-primary btn-sm" id="catAddCourse">+ Add Course</button>
       </div>
-      <p>Everything the Institute currently offers. Open a course to set its schedule, roster, and materials.</p>
+      <p>Everything the Institute offers. Open a course you teach to set its schedule, roster, and materials.${currentUser && currentUser.superAdmin ? " As a Super Admin you can open any course and change its teacher." : ""}</p>
     </div>
     ${msg ? `<div class="flash-banner">${esc(msg)}</div>` : ""}
     <div class="subtabs" id="catalogueTabs" style="margin-bottom:16px;">
@@ -1139,16 +1187,19 @@ function renderCatalogue(main) {
         .map((c) => {
           const status = courseStatusLabel(c);
           const pendingCount = pendingRequestsFor(c).length;
+          const mine = iTeach(c) && courseTeacher(c);
           return `
-        <div class="tile tile-compact" data-course="${c.id}" tabindex="0" role="button">
-          ${pendingCount ? `<span class="tile-badge" title="${pendingCount} enrollment request${pendingCount === 1 ? "" : "s"}">${pendingCount}</span>` : ""}
+        <div class="tile tile-compact ${iManage(c) ? "" : "tile-readonly"}" data-course="${c.id}" tabindex="0" role="button">
+          ${pendingCount && iManage(c) ? `<span class="tile-badge" title="${pendingCount} enrollment request${pendingCount === 1 ? "" : "s"}">${pendingCount}</span>` : ""}
           <div style="display:flex;gap:4px;flex-wrap:wrap;">
             <span class="pill pill-navy">${esc(c.level)} Level</span>
             <span class="pill ${status.cls}">${esc(status.text)}</span>
+            ${mine ? `<span class="pill pill-gold">You teach this</span>` : ""}
           </div>
           <h3>${esc(c.title)}</h3>
           <p class="tile-meta">${c.credits} cr · ${c.studentIds.length} enrolled</p>
-          <button class="btn ${c.archived ? "btn-success" : "btn-outline-gold"} btn-sm tile-archive-btn" data-archive-toggle="${c.id}">${c.archived ? "Reactivate" : "Archive"}</button>
+          <p class="tile-teacher ${courseTeacher(c) ? "" : "tile-teacher-none"}">${icon("user")}<span>${esc(teacherLabel(c))}</span></p>
+          ${iManage(c) ? `<button class="btn ${c.archived ? "btn-success" : "btn-outline-gold"} btn-sm tile-archive-btn" data-archive-toggle="${c.id}">${c.archived ? "Reactivate" : "Archive"}</button>` : ""}
         </div>`;
         })
         .join("")}
@@ -1162,6 +1213,8 @@ function renderCatalogue(main) {
   });
   main.querySelectorAll("[data-course]").forEach((el) => {
     const open = () => {
+      const c = courses.find((x) => x.id === el.dataset.course);
+      if (!iManage(c)) { openCourseInfoModal(c); return; }
       activeCourseId = el.dataset.course;
       view = "manage";
       renderNav();
@@ -1179,7 +1232,7 @@ function renderCatalogue(main) {
       const c = courses.find((x) => x.id === btn.dataset.archiveToggle);
       const archiving = !c.archived;
       const hadMessages = c.messages && c.messages.length > 0;
-      if (archiving && hadMessages && !confirm(`Archive "${c.title}"?\n\nThis permanently deletes the course's private student–instructor messages (export any you want to keep first). Materials, grades, and the discussion board are kept.`)) return;
+      if (archiving && hadMessages && !confirm(`Archive "${c.title}"?\n\nThis permanently deletes the course's private student–teacher messages (export any you want to keep first). Materials, grades, and the discussion board are kept.`)) return;
       run(async () => {
         await DB.setArchived(c.id, archiving);
         flashMessage = archiving
@@ -1465,7 +1518,7 @@ function renderSubmitWork(main) {
 function calendarRowsByDate() {
   const myCourses = role === "student"
     ? courses.filter((c) => !c.archived && c.studentIds.includes(currentStudentId))
-    : courses.filter((c) => !c.archived);
+    : courses.filter((c) => !c.archived && iTeach(c));
   const byDate = {};
   myCourses.forEach((c) => {
     c.assignments.forEach((a) => {
@@ -2006,7 +2059,7 @@ function renderMyGrades(main) {
 // Faculty: everything turned in across every course, waiting on a grade,
 // plus a quick look at what's already been graded.
 function renderGrading(main) {
-  const activeCourses = courses.filter((c) => !c.archived);
+  const activeCourses = courses.filter((c) => !c.archived && iTeach(c));
   const needsGrading = [];
   const graded = [];
   activeCourses.forEach((c) => {
@@ -2023,13 +2076,13 @@ function renderGrading(main) {
     <div class="page-header">
       <div class="eyebrow">Faculty &amp; Admin</div>
       <h1>Grading</h1>
-      <p>Work turned in across every course, waiting on a grade.</p>
+      <p>Work turned in across the courses you teach, waiting on a grade.</p>
     </div>
     <div class="section-title"><h2>Grade Sheets</h2></div>
     ${activeCourses.length === 0 ? `
     <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("cap")}</div>
-      <p>No active courses yet — add one from the Courses page first.</p>
+      <p>You aren't teaching any active courses. Add one from the Courses page, or ask a Super Admin to assign you as a course's teacher.</p>
     </div>` : `
     <div class="grid grid-compact">
       ${activeCourses.map((c) => {
@@ -2226,7 +2279,7 @@ function renderDiscussion(main) {
   const list =
     role === "student"
       ? courses.filter((c) => isLive(c) && c.studentIds.includes(currentStudentId))
-      : courses.filter((c) => !c.archived);
+      : courses.filter((c) => !c.archived && iTeach(c));
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
@@ -2237,7 +2290,7 @@ function renderDiscussion(main) {
     ${list.length === 0 ? `
     <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("chat")}</div>
-      <p>${role === "student" ? "Once a course you're enrolled in goes live, its board will appear here." : "No courses to show yet."}</p>
+      <p>${role === "student" ? "Once a course you're enrolled in goes live, its board will appear here." : "Boards for the courses you teach appear here."}</p>
     </div>` : `
     <div class="grid grid-compact">
       ${list
@@ -2382,7 +2435,9 @@ function renderDiscussionPosts(c) {
 // itself, so archiving a course ("the class closes") clears it.
 // ---------------------------------------------------------------------
 function courseInstructor(c) {
-  return users.find((u) => u.id === c.facultyId && u.role === "faculty") || users.find((u) => u.role === "faculty") || { id: null, name: "Your instructor" };
+  // With no teacher assigned, the Institute's Super Admins receive the
+  // messages until one is.
+  return users.find((u) => u.id === c.facultyId && u.role === "faculty") || { id: null, name: "Institute administrators" };
 }
 
 // Faculty see a thread for every enrolled student, plus anyone who has a
@@ -2425,9 +2480,8 @@ function unreadMessageCount() {
       n += unreadInThread(c, currentStudentId);
     });
   } else {
-    // Every faculty account has full admin access (see Settings), so the
-    // inbox spans every active course, not just ones they're assigned to.
-    courses.filter((c) => !c.archived).forEach((c) => {
+    // A course's private messages reach only its teacher.
+    courses.filter((c) => !c.archived && iTeach(c)).forEach((c) => {
       threadStudentIds(c).forEach((sid) => { n += unreadInThread(c, sid); });
     });
   }
@@ -2446,7 +2500,7 @@ function renderMessages(main) {
             return { c, studentId: currentStudentId, last: thread[thread.length - 1] };
           })
       : (() => {
-          const mine = courses.filter((c) => !c.archived);
+          const mine = courses.filter((c) => !c.archived && iTeach(c));
           const list = [];
           mine.forEach((c) => {
             threadStudentIds(c).forEach((sid) => {
@@ -2698,6 +2752,9 @@ function renderManage(main) {
       <p>${esc(c.description)} · ${c.credits} credit${c.credits === 1 ? "" : "s"}</p>
     </div>
 
+    <div class="section-title"><h2>Teacher</h2></div>
+    <div class="card" id="mgTeacherCard"></div>
+
     <div class="section-title"><h2>Schedule</h2></div>
     <div class="card">
       <div class="form-row">
@@ -2785,6 +2842,7 @@ function renderManage(main) {
     run(() => DB.saveSchedule(c.id, { weeks, time, days, mode, startDate }), null, { success: "Schedule saved." });
   });
 
+  renderTeacherCard(c);
   renderEnrollmentRequests(c);
   renderRosterList(c);
   renderMaterialsList(c);
@@ -2823,12 +2881,6 @@ function openEditCourseModal(course) {
             </select>
           </div>
         </div>
-        <label for="ecInstructor">Instructor</label>
-        <select id="ecInstructor">
-          <option value="" ${course.facultyId ? "" : "selected"}>Not assigned</option>
-          ${users.filter((u) => u.role === "faculty" && u.status === "active").map((u) => `<option value="${u.id}" ${u.id === course.facultyId ? "selected" : ""}>${esc(u.name)}</option>`).join("")}
-        </select>
-        <div class="field-hint">Students in this course message this instructor privately from Send Message.</div>
         <div class="form-actions">
           <button class="btn btn-primary" id="ecSave">Save Changes</button>
           <button class="btn btn-ghost" id="ecCancel">Cancel</button>
@@ -2845,7 +2897,6 @@ function openEditCourseModal(course) {
       description: document.getElementById("ecDesc").value.trim() || "No description yet.",
       credits: parseInt(document.getElementById("ecCredits").value, 10) || 1,
       level: document.getElementById("ecLevel").value,
-      faculty_id: document.getElementById("ecInstructor").value || null,
     };
     run(async () => { await DB.updateCourse(course.id, patch); closeModal(); }, null, { success: "Course details saved." });
   });
@@ -2965,7 +3016,8 @@ function renderAssignmentsList(c) {
   // Running total of grade weights, so it's easy to see they add up to 100%.
   const totalWeight = assignmentCategories(c).reduce((n, cat) => n + (Number(cat.weight) || 0), 0);
   const weightOk = Math.abs(totalWeight - 100) < 0.01;
-  wrap.innerHTML = `<li class="weight-total ${weightOk ? "weight-ok" : "weight-off"}" style="border:none;padding-top:0;">
+  const teach = iTeach(c); // grades and turned-in work are for the teacher only
+  wrap.innerHTML = (teach ? "" : `<li class="privacy-note" style="border:none;margin-bottom:8px;">${icon("lock")}<span>Turned-in work and grades for this course are visible only to its teacher.</span></li>`) + `<li class="weight-total ${weightOk ? "weight-ok" : "weight-off"}" style="border:none;padding-top:0;">
       <div><strong>Grade weights assigned: ${Math.round(totalWeight * 10) / 10}%</strong> <span style="color:var(--muted-foreground);font-weight:400;">of 100%</span></div>
       <div style="font-size:.8rem;">${weightOk ? "✓ Adds up to 100%." : totalWeight < 100 ? `${Math.round((100 - totalWeight) * 10) / 10}% not yet assigned — running grades still work, they just scale to what's assigned.` : `${Math.round((totalWeight - 100) * 10) / 10}% over — check each assignment's weight.`}</div>
     </li>` + groupAssignments(c.assignments)
@@ -2979,10 +3031,10 @@ function renderAssignmentsList(c) {
         return `<li>
           <div>
             <div><strong>${esc(a.title)}</strong>${lock.locked ? ` <span class="pill pill-gray" style="margin-left:4px;">Locked until ${parseDay(lock.opensOn).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>` : ""}</div>
-            <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${a.points} pts${a.weight ? ` · ${a.weight}% of grade` : ""} · ${turnedIn}/${c.studentIds.length} turned in · ${gradedCount} graded</div>
+            <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${a.points} pts${a.weight ? ` · ${a.weight}% of grade` : ""}${teach ? ` · ${turnedIn}/${c.studentIds.length} turned in · ${gradedCount} graded` : ""}</div>
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
-            <button class="btn btn-ghost btn-sm" data-view-roster="${a.id}">View Submissions</button>
+            ${teach ? `<button class="btn btn-ghost btn-sm" data-view-roster="${a.id}">View Submissions</button>` : ""}
             <button class="btn btn-ghost btn-sm" data-delete-assignment="${a.id}" aria-label="Delete ${esc(a.title)}">Delete</button>
           </div>
         </li>`;
@@ -2994,7 +3046,7 @@ function renderAssignmentsList(c) {
       return `<li>
         <div>
           <div><strong>🔁 ${esc(g.seriesLabel)}</strong> <span class="pill pill-navy" style="margin-left:6px;">${g.items.length} weeks</span></div>
-          <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Next due ${parseDay(next.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${g.items[0].points} pts each${g.items[0].weight ? ` · ${g.items[0].weight}% of grade (whole series)` : ""} · ${totalTurned}/${possible} turned in · ${totalGraded} graded</div>
+          <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Next due ${parseDay(next.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${g.items[0].points} pts each${g.items[0].weight ? ` · ${g.items[0].weight}% of grade (whole series)` : ""}${teach ? ` · ${totalTurned}/${possible} turned in · ${totalGraded} graded` : ""}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
           <button class="btn btn-ghost btn-sm" data-view-series="${g.seriesId}">View Weeks</button>
@@ -3187,9 +3239,9 @@ function openSeriesModal(course, seriesId) {
               return `<li>
                 <div>
                   <div><strong>${esc(a.title)}</strong></div>
-                  <div style="font-size:.8rem;color:var(--muted-foreground);">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${turnedIn}/${course.studentIds.length} turned in · ${gradedCount} graded</div>
+                  <div style="font-size:.8rem;color:var(--muted-foreground);">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})}${iTeach(course) ? ` · ${turnedIn}/${course.studentIds.length} turned in · ${gradedCount} graded` : ""}</div>
                 </div>
-                <button class="btn btn-ghost btn-sm" data-week-roster="${a.id}">View Submissions</button>
+                ${iTeach(course) ? `<button class="btn btn-ghost btn-sm" data-week-roster="${a.id}">View Submissions</button>` : ""}
               </li>`;
             })
             .join("")}
@@ -3256,6 +3308,89 @@ function openAssignmentRoster(course, assignment) {
 // page stays quiet otherwise. Approve adds the student to the roster
 // immediately; Deny requires a short note, which is delivered as a
 // message to the student's inbox (see denyEnrollment).
+// The Teacher card at the top of a course's Manage page.
+function renderTeacherCard(c) {
+  const wrap = document.getElementById("mgTeacherCard");
+  if (!wrap) return;
+  const t = courseTeacher(c);
+  const sa = !!currentUser.superAdmin;
+  const started = courseStarted(c);
+  const startTxt = c.schedule.startDate ? parseDay(c.schedule.startDate).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }) : "";
+  const faculty = users.filter((u) => u.role === "faculty" && u.status === "active").sort((a, b) => a.name.localeCompare(b.name));
+  const formerNote = c.facultyId && !t ? `<p class="field-hint" style="margin:8px 0 0;">The previously assigned teacher is no longer active faculty, so the Super Admins are covering this course until a new teacher is chosen.</p>` : "";
+  const current = `
+    <div class="teacher-current">
+      ${t ? avatarHtml(t, 44) : `<span class="avatar avatar-initials" style="width:44px;height:44px;font-size:16px;">?</span>`}
+      <div>
+        <div class="teacher-name">${t ? esc(t.name) : "No teacher yet"}${t && t.id === currentUser.id ? ` <span class="pill pill-gold" style="margin-left:6px;">You</span>` : ""}</div>
+        <div class="field-hint" style="margin:2px 0 0;">${t ? "Sees this course's grades, private messages, and discussion board." : "Until one is assigned, the Super Admins receive this course's messages and enrollment requests."}</div>
+      </div>
+    </div>`;
+
+  if (!canChangeTeacher(c)) {
+    wrap.innerHTML = `${current}${formerNote}
+      <div class="privacy-note" style="margin-top:14px;">${icon("lock")}<span>${started
+        ? `This course started ${esc(startTxt)}, so only a Super Admin can change its teacher — for example, if a teacher is unable to finish the course.`
+        : "Only this course's teacher or a Super Admin can change who teaches it."}</span></div>`;
+    return;
+  }
+
+  const hint = sa
+    ? `As a Super Admin you can change the teacher at any time — for example, if a teacher is unable to finish the course. The new teacher sees the course's full grade book, messages, and discussion; the previous teacher no longer does.`
+    : started ? "" : `You can hand this course to another faculty member${startTxt ? ` until it starts on ${esc(startTxt)}` : " until it starts"}. After that, only a Super Admin can change its teacher.`;
+  wrap.innerHTML = `${current}${formerNote}
+    <label for="mgTeacher" style="margin-top:16px;">Change teacher</label>
+    <div class="teacher-change-row">
+      <select id="mgTeacher">
+        ${sa ? `<option value="" ${t ? "" : "selected"}>No teacher (Super Admins cover it)</option>` : ""}
+        ${faculty.map((u) => `<option value="${u.id}" ${t && u.id === t.id ? "selected" : ""}>${esc(u.name)}</option>`).join("")}
+      </select>
+      <button class="btn btn-primary btn-sm" id="mgSaveTeacher">Assign</button>
+    </div>
+    <p class="field-hint" style="margin-top:8px;">${hint}</p>`;
+
+  document.getElementById("mgSaveTeacher").addEventListener("click", () => {
+    const newId = document.getElementById("mgTeacher").value || null;
+    if ((newId || null) === (t ? t.id : null)) { toast("That's already this course's teacher.", "success"); return; }
+    const newName = newId ? userName(newId) : "no teacher";
+    const handingOff = t && t.id === currentUser.id;
+    const msg = handingOff
+      ? `Hand "${c.title}" to ${newName}?\n\nYou'll no longer see this course's grades, private messages, or discussion board.${sa ? "" : " You won't be able to manage the course either, and once it starts only a Super Admin can change its teacher."}`
+      : `Make ${newName === "no teacher" ? "this course unassigned" : newName + " the teacher of \"" + c.title + "\""}?\n\n${newId ? "They'll see the course's full grade book, messages, and discussion board" + (t ? `, and ${t.name} no longer will.` : ".") : "The Super Admins will receive its messages and enrollment requests until a teacher is chosen."}`;
+    if (!confirm(msg)) return;
+    run(() => DB.updateCourse(c.id, { faculty_id: newId }), () => {
+      // Handing your own course away may mean you can no longer manage it.
+      if (!iManage(courses.find((x) => x.id === c.id))) { view = "catalogue"; activeCourseId = null; renderNav(); }
+      renderMain();
+    }, { success: newId ? `${newName} is now teaching ${c.title}.` : `${c.title} has no teacher for now.` });
+  });
+}
+
+// A read-only summary for faculty looking at a course they don't teach.
+function openCourseInfoModal(c) {
+  const t = courseTeacher(c);
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ciTitle" style="max-width:460px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+          <span class="pill pill-navy">${esc(c.level)} Level</span>
+          <span class="pill ${courseStatusLabel(c).cls}">${esc(courseStatusLabel(c).text)}</span>
+        </div>
+        <h2 id="ciTitle" style="font-size:1.25rem;margin:0 0 8px;">${esc(c.title)}</h2>
+        <p style="margin:0 0 14px;color:var(--muted-foreground);">${esc(c.description)}</p>
+        <div class="person-line"><span class="person-label">Teacher</span>
+          ${t ? `<button class="person-chip" data-person="${t.id}">${avatarHtml(t, 28)}<strong>${esc(t.name)}</strong></button>` : "No teacher yet"}</div>
+        <div class="person-line"><span class="person-label">Schedule</span>${esc(scheduleLine(c) || "Not scheduled yet")}</div>
+        <div class="person-line"><span class="person-label">Enrollment</span>${c.studentIds.length} student${c.studentIds.length === 1 ? "" : "s"} · ${c.credits} credit${c.credits === 1 ? "" : "s"}</div>
+        <div class="privacy-note" style="margin-top:14px;">${icon("lock")}<span>Only this course's teacher or a Super Admin can change it. Its grades, messages, and discussion board are visible only to its teacher.</span></div>
+        <div class="form-actions"><button class="btn btn-ghost" id="ciClose">Close</button></div>
+      </div>
+    </div>`;
+  document.getElementById("ciClose").addEventListener("click", closeModal);
+  wirePersonLinks(root);
+}
+
 function renderEnrollmentRequests(c) {
   const section = document.getElementById("mgEnrollRequestsSection");
   if (!section) return;

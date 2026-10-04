@@ -14,8 +14,16 @@
 -- Roles:
 --   student  — every new account. Sees only their own work, grades, and
 --              messages, plus the courses they're enrolled in.
---   faculty  — full admin over courses, grading, rosters, and users.
---   super_admin (separate flag, max 4) — can grant/remove Super Admin.
+--   faculty  — teach courses; manage user accounts and roles.
+--   super_admin (separate flag, max 4) — can grant/remove Super Admin,
+--              and manage (but not read the grades of) every course.
+--
+-- Each course has ONE teacher (courses.faculty_id). Only that teacher sees
+-- the course's grades, private messages, and discussion board. Course
+-- set-up (schedule, roster, enrollment requests, assignments, materials) is
+-- done by its teacher or any Super Admin. A course with no teacher (or
+-- whose teacher is no longer active faculty) is covered by the Super
+-- Admins until one is assigned.
 -- ============================================================================
 
 create extension if not exists pgcrypto;
@@ -228,6 +236,51 @@ language sql stable security definer set search_path = public as $$
   select exists (select 1 from messages where course_id = p_course and student_id = auth.uid())
 $$;
 
+-- A course's teacher: its assigned instructor, as long as that person is
+-- still an active faculty member. NULL means "no teacher right now".
+create or replace function public.course_teacher(p_course text) returns uuid
+language sql stable security definer set search_path = public as $$
+  select p.id from courses c join profiles p on p.id = c.faculty_id
+  where c.id = p_course and p.role = 'faculty' and p.status = 'active'
+$$;
+
+-- Does the signed-in person TEACH this course? Teaching is what unlocks
+-- the course's grades, private messages, and discussion board. When a
+-- course has no teacher, the Super Admins cover it.
+create or replace function public.teaches_course(p_course text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.is_active_user() and coalesce(
+    public.course_teacher(p_course) = auth.uid(),
+    public.is_super_admin()
+  )
+$$;
+
+-- Can the signed-in person MANAGE this course (schedule, roster,
+-- enrollment requests, assignments, materials, details)? Its teacher and
+-- every Super Admin.
+create or replace function public.manages_course(p_course text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.is_super_admin() or public.teaches_course(p_course)
+$$;
+
+-- Has the course started? (Its start date is today or earlier.)
+create or replace function public.course_started(p_course text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from courses where id = p_course
+                 and sched_start is not null and sched_start <= public.local_today())
+$$;
+
+-- Who hears about a course's student messages and enrollment requests:
+-- its teacher, or every active Super Admin when it has none.
+create or replace function public.course_recipients(p_course text)
+returns table (user_id uuid)
+language sql stable security definer set search_path = public as $$
+  select public.course_teacher(p_course) where public.course_teacher(p_course) is not null
+  union
+  select id from profiles
+   where super_admin and status = 'active' and public.course_teacher(p_course) is null
+$$;
+
 -- Can the signed-in person see this other person at all? Faculty see
 -- everyone; everyone sees themself and every faculty member; students also
 -- see classmates who share a course with them (so discussion replies show
@@ -385,7 +438,7 @@ create or replace function public.approve_enrollment(p_course text, p_student uu
 language plpgsql security definer set search_path = public as $$
 declare v_title text;
 begin
-  if not public.is_faculty() then raise exception 'Only faculty can approve enrollment.'; end if;
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or a Super Admin can approve enrollment.'; end if;
   select title into v_title from courses where id = p_course;
   insert into enrollments (course_id, student_id) values (p_course, p_student) on conflict do nothing;
   delete from enrollment_requests where course_id = p_course and student_id = p_student;
@@ -396,7 +449,7 @@ create or replace function public.deny_enrollment(p_course text, p_student uuid,
 language plpgsql security definer set search_path = public as $$
 declare v_title text;
 begin
-  if not public.is_faculty() then raise exception 'Only faculty can deny enrollment.'; end if;
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or a Super Admin can deny enrollment.'; end if;
   if coalesce(trim(p_note), '') = '' then raise exception 'A note to the student is required.'; end if;
   select title into v_title from courses where id = p_course;
   delete from enrollment_requests where course_id = p_course and student_id = p_student;
@@ -413,7 +466,7 @@ end $$;
 create or replace function public.mark_thread_read(p_course text, p_student uuid) returns void
 language plpgsql security definer set search_path = public as $$
 begin
-  if public.is_faculty() then
+  if public.teaches_course(p_course) then
     update messages set read = true
      where course_id = p_course and student_id = p_student and from_role = 'student' and not read;
   elsif p_student = auth.uid() and public.is_active_user() then
@@ -430,10 +483,9 @@ create or replace function public.notify_on_enrollment_request() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   insert into notifications (user_id, subject)
-  select f.id, s.name || ' requested to enroll in ' || c.title
-    from profiles f, profiles s, courses c
-   where f.role = 'faculty' and f.status = 'active'
-     and s.id = new.student_id and c.id = new.course_id;
+  select r.user_id, s.name || ' requested to enroll in ' || c.title
+    from public.course_recipients(new.course_id) r, profiles s, courses c
+   where s.id = new.student_id and c.id = new.course_id;
   return new;
 end $$;
 drop trigger if exists notify_on_enrollment_request on public.enrollment_requests;
@@ -460,8 +512,8 @@ begin
   select name into v_sender from profiles where id = new.sender_id;
   if new.from_role = 'student' then
     insert into notifications (user_id, subject)
-    select id, 'New message from ' || coalesce(v_sender, 'a student') || ' in ' || v_title
-      from profiles where role = 'faculty' and status = 'active';
+    select user_id, 'New message from ' || coalesce(v_sender, 'a student') || ' in ' || v_title
+      from public.course_recipients(new.course_id);
   else
     insert into notifications (user_id, subject)
     values (new.student_id, 'New message from ' || coalesce(v_sender, 'your instructor') || ' in ' || v_title);
@@ -496,7 +548,8 @@ language plpgsql set search_path = public as $$
 declare a record;
 begin
   new.updated_at := now();
-  if current_user not in ('authenticated', 'anon') or public.is_faculty() then
+  if current_user not in ('authenticated', 'anon')
+     or public.teaches_course(public.assignment_course(new.assignment_id)) then
     return new;
   end if;
 
@@ -557,6 +610,86 @@ create trigger guard_discussion before insert on public.discussion_posts
   for each row execute function public.guard_discussion();
 
 -- ---------------------------------------------------------------------------
+-- Course teachers.
+--   * Whoever creates a course becomes its teacher (if they're faculty).
+--   * Before the start date, the current teacher can hand the course to
+--     another faculty member; any Super Admin can reassign it at any time
+--     (e.g. a teacher falls ill mid-course).
+--   * The new teacher sees the course's whole history; the old one no
+--     longer sees its grades, messages, or discussion.
+-- ---------------------------------------------------------------------------
+create or replace function public.guard_course_teacher() returns trigger
+language plpgsql set search_path = public as $$
+begin
+  if current_user not in ('authenticated', 'anon') then return new; end if;
+
+  if tg_op = 'INSERT' then
+    new.faculty_id := case when public.is_faculty() then auth.uid() else null end;
+    return new;
+  end if;
+
+  if new.faculty_id is distinct from old.faculty_id then
+    if new.faculty_id is not null and not exists (
+      select 1 from profiles where id = new.faculty_id and role = 'faculty' and status = 'active'
+    ) then
+      raise exception 'A course''s teacher must be an active faculty member.';
+    end if;
+    if not public.is_super_admin() then
+      if old.faculty_id is distinct from auth.uid() or not public.is_faculty() then
+        raise exception 'Only this course''s teacher or a Super Admin can change who teaches it.';
+      end if;
+      if old.sched_start is not null and old.sched_start <= public.local_today() then
+        raise exception 'This course has already started, so only a Super Admin can change its teacher.';
+      end if;
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists guard_course_teacher on public.courses;
+create trigger guard_course_teacher before insert or update on public.courses
+  for each row execute function public.guard_course_teacher();
+
+-- Let the new teacher know.
+create or replace function public.notify_on_teacher_change() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.faculty_id is not null and new.faculty_id is distinct from old.faculty_id
+     and new.faculty_id is distinct from auth.uid() then
+    insert into notifications (user_id, subject)
+    values (new.faculty_id, 'You''re now the teacher for ' || new.title);
+  end if;
+  return new;
+end $$;
+drop trigger if exists notify_on_teacher_change on public.courses;
+create trigger notify_on_teacher_change after update on public.courses
+  for each row execute function public.notify_on_teacher_change();
+
+-- Private messages belong to an enrollment: they're removed when a student
+-- leaves a course or the course is archived. Done here (not by the site)
+-- so it works even for a Super Admin who can't read those messages.
+create or replace function public.clear_messages_on_unenroll() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from messages where course_id = old.course_id and student_id = old.student_id;
+  return old;
+end $$;
+drop trigger if exists clear_messages_on_unenroll on public.enrollments;
+create trigger clear_messages_on_unenroll after delete on public.enrollments
+  for each row execute function public.clear_messages_on_unenroll();
+
+create or replace function public.clear_messages_on_archive() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.archived and not old.archived then
+    delete from messages where course_id = new.id;
+  end if;
+  return new;
+end $$;
+drop trigger if exists clear_messages_on_archive on public.courses;
+create trigger clear_messages_on_archive after update on public.courses
+  for each row execute function public.clear_messages_on_archive();
+
+-- ---------------------------------------------------------------------------
 -- Row Level Security — who can see and change which rows.
 -- ---------------------------------------------------------------------------
 alter table public.profiles            enable row level security;
@@ -587,22 +720,27 @@ create policy profiles_update on public.profiles for update to authenticated
   using (id = auth.uid() or public.is_faculty())
   with check (id = auth.uid() or public.is_faculty());
 
--- courses: the catalogue is visible to any active account; faculty edit.
+-- courses: the catalogue is visible to any active account. Faculty and
+-- Super Admins add courses; a course is changed by its teacher or a Super
+-- Admin (guard_course_teacher decides who may change the teacher itself).
 create policy courses_select on public.courses for select to authenticated using (public.is_active_user());
-create policy courses_insert on public.courses for insert to authenticated with check (public.is_faculty());
-create policy courses_update on public.courses for update to authenticated using (public.is_faculty()) with check (public.is_faculty());
-create policy courses_delete on public.courses for delete to authenticated using (public.is_faculty());
+create policy courses_insert on public.courses for insert to authenticated with check (public.is_faculty() or public.is_super_admin());
+create policy courses_update on public.courses for update to authenticated
+  using (public.manages_course(id)) with check (public.is_faculty() or public.is_super_admin());
+create policy courses_delete on public.courses for delete to authenticated using (public.manages_course(id));
 
--- enrollments: students see only their own; faculty manage rosters.
+-- enrollments: students see only their own; faculty can see rosters; the
+-- course's teacher or a Super Admin changes them.
 create policy enroll_select on public.enrollments for select to authenticated
-  using (public.is_faculty() or (student_id = auth.uid() and public.is_active_user()));
-create policy enroll_insert on public.enrollments for insert to authenticated with check (public.is_faculty());
-create policy enroll_delete on public.enrollments for delete to authenticated using (public.is_faculty());
+  using (public.is_faculty() or public.is_super_admin() or (student_id = auth.uid() and public.is_active_user()));
+create policy enroll_insert on public.enrollments for insert to authenticated with check (public.manages_course(course_id));
+create policy enroll_delete on public.enrollments for delete to authenticated using (public.manages_course(course_id));
 
 -- enrollment requests: a student may request an upcoming course for
--- themself, and withdraw their own request; faculty see and settle all.
+-- themself, and withdraw their own request; the course's teacher or a
+-- Super Admin sees and settles them.
 create policy req_select on public.enrollment_requests for select to authenticated
-  using (public.is_faculty() or (student_id = auth.uid() and public.is_active_user()));
+  using (public.manages_course(course_id) or (student_id = auth.uid() and public.is_active_user()));
 create policy req_insert on public.enrollment_requests for insert to authenticated
   with check (
     student_id = auth.uid() and public.is_active_user() and not public.is_faculty()
@@ -610,56 +748,61 @@ create policy req_insert on public.enrollment_requests for insert to authenticat
     and not exists (select 1 from public.enrollments e where e.course_id = enrollment_requests.course_id and e.student_id = auth.uid())
   );
 create policy req_delete on public.enrollment_requests for delete to authenticated
-  using (public.is_faculty() or student_id = auth.uid());
+  using (public.manages_course(course_id) or student_id = auth.uid());
 
--- materials & assignments: enrolled students read; faculty manage.
+-- materials & assignments: enrolled students and faculty read; the
+-- course's teacher or a Super Admin manages them.
 create policy materials_select on public.materials for select to authenticated
-  using (public.is_faculty() or public.is_enrolled(course_id));
-create policy materials_insert on public.materials for insert to authenticated with check (public.is_faculty());
-create policy materials_update on public.materials for update to authenticated using (public.is_faculty());
-create policy materials_delete on public.materials for delete to authenticated using (public.is_faculty());
+  using (public.is_faculty() or public.is_super_admin() or public.is_enrolled(course_id));
+create policy materials_insert on public.materials for insert to authenticated with check (public.manages_course(course_id));
+create policy materials_update on public.materials for update to authenticated using (public.manages_course(course_id));
+create policy materials_delete on public.materials for delete to authenticated using (public.manages_course(course_id));
 
 create policy assignments_select on public.assignments for select to authenticated
-  using (public.is_faculty() or public.is_enrolled(course_id));
-create policy assignments_insert on public.assignments for insert to authenticated with check (public.is_faculty());
-create policy assignments_update on public.assignments for update to authenticated using (public.is_faculty());
-create policy assignments_delete on public.assignments for delete to authenticated using (public.is_faculty());
+  using (public.is_faculty() or public.is_super_admin() or public.is_enrolled(course_id));
+create policy assignments_insert on public.assignments for insert to authenticated with check (public.manages_course(course_id));
+create policy assignments_update on public.assignments for update to authenticated using (public.manages_course(course_id));
+create policy assignments_delete on public.assignments for delete to authenticated using (public.manages_course(course_id));
 
--- submissions: a student sees and saves only their own; faculty see all.
+-- submissions & grades: a student sees and saves only their own; only the
+-- course's teacher sees and grades the class's work.
 create policy subs_select on public.submissions for select to authenticated
-  using (public.is_faculty() or (student_id = auth.uid() and public.is_active_user()));
+  using (public.teaches_course(public.assignment_course(assignment_id)) or (student_id = auth.uid() and public.is_active_user()));
 create policy subs_insert on public.submissions for insert to authenticated
-  with check (public.is_faculty() or (student_id = auth.uid() and public.is_enrolled(public.assignment_course(assignment_id))));
+  with check (public.teaches_course(public.assignment_course(assignment_id)) or (student_id = auth.uid() and public.is_enrolled(public.assignment_course(assignment_id))));
 create policy subs_update on public.submissions for update to authenticated
-  using (public.is_faculty() or (student_id = auth.uid() and public.is_enrolled(public.assignment_course(assignment_id))))
-  with check (public.is_faculty() or (student_id = auth.uid() and public.is_enrolled(public.assignment_course(assignment_id))));
-create policy subs_delete on public.submissions for delete to authenticated using (public.is_faculty());
+  using (public.teaches_course(public.assignment_course(assignment_id)) or (student_id = auth.uid() and public.is_enrolled(public.assignment_course(assignment_id))))
+  with check (public.teaches_course(public.assignment_course(assignment_id)) or (student_id = auth.uid() and public.is_enrolled(public.assignment_course(assignment_id))));
+create policy subs_delete on public.submissions for delete to authenticated using (public.teaches_course(public.assignment_course(assignment_id)));
 
--- discussion: enrolled students read and reply; faculty post and moderate.
+-- discussion: enrolled students read and reply; the course's teacher posts
+-- and moderates. Other faculty don't see the board.
 create policy posts_select on public.discussion_posts for select to authenticated
-  using (public.is_faculty() or public.is_enrolled(course_id));
+  using (public.teaches_course(course_id) or public.is_enrolled(course_id));
 create policy posts_insert on public.discussion_posts for insert to authenticated
   with check (
     author_id = auth.uid() and (
-      public.is_faculty()
+      public.teaches_course(course_id)
       or (parent_id is not null and public.is_enrolled(course_id))
     )
   );
 create policy posts_delete on public.discussion_posts for delete to authenticated
-  using (public.is_faculty() or author_id = auth.uid());
+  using (public.teaches_course(course_id) or author_id = auth.uid());
 
--- messages: private student ↔ faculty threads, one per course per student.
+-- messages: private student ↔ teacher threads, one per course per student.
+-- Only that course's teacher (or, with no teacher, the Super Admins) sees
+-- the student's side.
 create policy msg_select on public.messages for select to authenticated
-  using (public.is_faculty() or (student_id = auth.uid() and public.is_active_user()));
+  using (public.teaches_course(course_id) or (student_id = auth.uid() and public.is_active_user()));
 create policy msg_insert on public.messages for insert to authenticated
   with check (
     sender_id = auth.uid() and (
-      (from_role = 'faculty' and public.is_faculty())
+      (from_role = 'faculty' and public.teaches_course(course_id))
       or (from_role = 'student' and student_id = auth.uid() and public.is_active_user() and not public.is_faculty()
           and (public.is_enrolled(course_id) or public.has_message_thread(course_id)))
     )
   );
-create policy msg_delete on public.messages for delete to authenticated using (public.is_faculty());
+create policy msg_delete on public.messages for delete to authenticated using (public.teaches_course(course_id));
 
 -- notifications: yours only. (Created by the database, never by users.)
 create policy notif_select on public.notifications for select to authenticated using (user_id = auth.uid());
@@ -716,23 +859,25 @@ drop policy if exists tnbbi_avatars_update   on storage.objects;
 drop policy if exists tnbbi_avatars_delete   on storage.objects;
 
 create policy tnbbi_materials_read on storage.objects for select to authenticated
-  using (bucket_id = 'materials' and (public.is_faculty() or public.is_enrolled((storage.foldername(name))[1])));
+  using (bucket_id = 'materials' and (public.is_faculty() or public.is_super_admin() or public.is_enrolled((storage.foldername(name))[1])));
 create policy tnbbi_materials_insert on storage.objects for insert to authenticated
-  with check (bucket_id = 'materials' and public.is_faculty());
+  with check (bucket_id = 'materials' and public.manages_course((storage.foldername(name))[1]));
 create policy tnbbi_materials_delete on storage.objects for delete to authenticated
-  using (bucket_id = 'materials' and public.is_faculty());
+  using (bucket_id = 'materials' and public.manages_course((storage.foldername(name))[1]));
 
+-- Turned-in files: the student who turned them in, and the course's teacher.
 create policy tnbbi_subs_read on storage.objects for select to authenticated
-  using (bucket_id = 'submissions' and (public.is_faculty() or (storage.foldername(name))[3] = auth.uid()::text));
+  using (bucket_id = 'submissions' and (public.teaches_course((storage.foldername(name))[1]) or (storage.foldername(name))[3] = auth.uid()::text));
 create policy tnbbi_subs_insert on storage.objects for insert to authenticated
   with check (bucket_id = 'submissions' and (
-    public.is_faculty()
+    public.teaches_course((storage.foldername(name))[1])
     or ((storage.foldername(name))[3] = auth.uid()::text and public.is_enrolled((storage.foldername(name))[1]))
   ));
 create policy tnbbi_subs_update on storage.objects for update to authenticated
-  using (bucket_id = 'submissions' and (public.is_faculty() or (storage.foldername(name))[3] = auth.uid()::text));
+  using (bucket_id = 'submissions' and (public.teaches_course((storage.foldername(name))[1]) or (storage.foldername(name))[3] = auth.uid()::text));
+-- (Deleting a whole course clears its files: the teacher or a Super Admin.)
 create policy tnbbi_subs_delete on storage.objects for delete to authenticated
-  using (bucket_id = 'submissions' and (public.is_faculty() or (storage.foldername(name))[3] = auth.uid()::text));
+  using (bucket_id = 'submissions' and (public.manages_course((storage.foldername(name))[1]) or (storage.foldername(name))[3] = auth.uid()::text));
 
 -- Profile photos: you can see the photo of anyone you can see by name.
 -- You manage your own; faculty can also add or remove anyone's (e.g. to
@@ -764,6 +909,11 @@ revoke execute on function public.deny_enrollment(text, uuid, text) from public,
 revoke execute on function public.mark_thread_read(text, uuid) from public, anon;
 revoke execute on function public.visible_people() from public, anon;
 revoke execute on function public.can_see_person(uuid) from public, anon;
+revoke execute on function public.course_teacher(text) from public, anon;
+revoke execute on function public.teaches_course(text) from public, anon;
+revoke execute on function public.manages_course(text) from public, anon;
+revoke execute on function public.course_started(text) from public, anon;
+revoke execute on function public.course_recipients(text) from public, anon;
 grant execute on function public.claim_bootstrap_super_admin() to authenticated;
 grant execute on function public.delete_user(uuid) to authenticated;
 grant execute on function public.approve_enrollment(text, uuid) to authenticated;
@@ -771,6 +921,11 @@ grant execute on function public.deny_enrollment(text, uuid, text) to authentica
 grant execute on function public.mark_thread_read(text, uuid) to authenticated;
 grant execute on function public.visible_people() to authenticated;
 grant execute on function public.can_see_person(uuid) to authenticated;
+grant execute on function public.course_teacher(text) to authenticated;
+grant execute on function public.teaches_course(text) to authenticated;
+grant execute on function public.manages_course(text) to authenticated;
+grant execute on function public.course_started(text) to authenticated;
+grant execute on function public.course_recipients(text) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Table access for signed-in users. This only opens the door; the Row Level

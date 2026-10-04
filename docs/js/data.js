@@ -153,9 +153,21 @@ async function loadAll() {
     sb.from("notifications").select("*").order("created_at", { ascending: false }).limit(60).then(must),
     selectAll("bible_highlights", "*", "created_at"),
     fac ? selectAll("profiles", "*") : sb.rpc("visible_people").then(must),
-    // A student's own full profile (phone, address) comes from their own row.
-    fac ? null : sb.from("profiles").select("*").eq("id", currentUser.id).maybeSingle().then(must),
+    // Your own full profile row — always, so a role change made elsewhere
+    // (e.g. faculty promoted or demoted you) is noticed on this load.
+    sb.from("profiles").select("*").eq("id", currentUser.id).maybeSingle().then(must),
   ]);
+
+  // Your role changed since this page loaded: switch to the new role and
+  // load again with the right view of the data.
+  if (mine && (mine.role === "faculty") !== fac && !loadAll._retrying) {
+    Object.assign(currentUser, { role: mine.role, superAdmin: !!mine.super_admin });
+    role = mine.role;
+    loadAll._retrying = true;
+    try { await loadAll(); } finally { loadAll._retrying = false; }
+    if (typeof renderAccountPill === "function") { renderAccountPill(); renderNav(); }
+    return;
+  }
 
   users = people.map((p) => profileToUser(p));
   if (!fac) {
@@ -280,9 +292,10 @@ const DB = {
     }).eq("id", id));
   },
   async setArchived(id, archived) {
+    // Archiving ends the enrollment relationship the private threads belong
+    // to; the database clears them itself (so it works for a Super Admin
+    // who can't read them).
     must(await sb.from("courses").update({ archived }).eq("id", id));
-    // Archiving ends the enrollment relationship the private threads belong to.
-    if (archived) must(await sb.from("messages").delete().eq("course_id", id));
   },
   async deleteCourse(id) {
     // Remove the course's files from storage first (best effort), then the
@@ -365,8 +378,8 @@ const DB = {
     must(await sb.from("enrollments").insert({ course_id: courseId, student_id: studentId }));
   },
   async unenroll(courseId, studentId) {
+    // The database also clears this student's private thread for the course.
     must(await sb.from("enrollments").delete().eq("course_id", courseId).eq("student_id", studentId));
-    must(await sb.from("messages").delete().eq("course_id", courseId).eq("student_id", studentId));
   },
 
   // --- discussion & messages -----------------------------------------------

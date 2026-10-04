@@ -113,8 +113,12 @@ check("Students cannot enroll themselves directly", False,
       f"insert into public.enrollments (course_id, student_id) values ('c2', '{stu1}')", stu1)
 check("Student can request an upcoming course", True,
       f"insert into public.enrollment_requests (course_id, student_id) values ('c8', '{stu3}')", stu3)
-check("…and every active faculty member is notified", True,
-      "select count(*) from public.notifications where subject like 'Daniel Dotson requested%'", None, expect_out=2)
+check("…a course with no teacher yet notifies the Super Admins (not every faculty member)", True,
+      "select count(*) from public.notifications where subject like 'Daniel Dotson requested%'", None, expect_out=1)
+check("…and plain faculty aren't notified about a course they don't teach", True,
+      f"select count(*) from public.notifications where user_id = '{phil}' and subject like 'Daniel Dotson requested%'", None, expect_out=0)
+# Pastor Phil teaches the two courses the rest of these checks use.
+admin("update public.courses set faculty_id = (select id from public.profiles where email = 'phil@example.com') where id in ('c1', 'c8')")
 check("Student cannot request a course that has already started", False,
       f"insert into public.enrollment_requests (course_id, student_id) values ('c2', '{stu3}')", stu3)
 check("Student cannot request on someone else's behalf", False,
@@ -280,6 +284,81 @@ check("Inactive accounts can't upload photos", False,
       f"insert into storage.objects (bucket_id, name) values ('avatars', '{stu4}/x.jpg')", stu4)
 check("Signed-out visitors can't list profile photos", True,
       "select count(*) from storage.objects where bucket_id = 'avatars'", None, expect_out=0, role="anon")
+
+# --- course teachers: who teaches, who can reassign, who sees what -----------------
+ruth = mkuser("ruth@example.com", "Ruth Faculty")
+admin(f"update public.profiles set role = 'faculty' where id = '{ruth}'")
+admin(f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c1', '{stu2}', '{stu2}', 'student', 'Question about the reading')")
+admin(f"insert into public.discussion_posts (course_id, author_id, text) values ('c1', '{phil}', 'Welcome to class')")
+newc = check("A new course is assigned to whoever creates it", True,
+      f"insert into public.courses (title, faculty_id) values ('Pastoral Epistles', '{ruth}') returning faculty_id", phil, expect_out=phil)
+check("Another faculty member still sees the course in the catalogue", True, "select count(*) from public.courses where id = 'c1'", ruth, expect_out=1)
+check("…and its roster", True, "select count(*) > 0 from public.enrollments where course_id = 'c1'", ruth, expect_out="t")
+check("…but NOT its grades or turned-in work", True,
+      "select count(*) from public.submissions s join public.assignments a on a.id = s.assignment_id where a.course_id = 'c1'", ruth, expect_out=0)
+check("…NOT its private student messages", True, "select count(*) from public.messages where course_id = 'c1'", ruth, expect_out=0)
+check("…NOT its discussion board", True, "select count(*) from public.discussion_posts where course_id = 'c1'", ruth, expect_out=0)
+check("…and can't open its turned-in files", True,
+      "select count(*) from storage.objects where bucket_id = 'submissions' and name like 'c1/%'", ruth, expect_out=0)
+check("Other faculty can't grade the course", False,
+      f"insert into public.submissions (assignment_id, student_id, status, score) values ('{aid}', '{stu2}', 'graded', 20)", ruth)
+check("Other faculty can't post on its board", False,
+      f"insert into public.discussion_posts (course_id, author_id, text) values ('c1', '{ruth}', 'hi')", ruth)
+check("Other faculty can't message its students", False,
+      f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c1', '{stu2}', '{ruth}', 'faculty', 'hi')", ruth)
+check("Other faculty can't change the course (0 rows)", True,
+      "with u as (update public.courses set title = 'x' where id = 'c1' returning 1) select count(*) from u", ruth, expect_out=0)
+check("Other faculty can't add assignments to it", False,
+      "insert into public.assignments (course_id, title, due) values ('c1', 'x', '2026-12-01')", ruth)
+check("Other faculty can't take over a course themselves", True,
+      f"with u as (update public.courses set faculty_id = '{ruth}' where id = 'c8' returning 1) select count(*) from u", ruth, expect_out=0)
+check("Other faculty can't settle its enrollment requests", False, f"select public.approve_enrollment('c1', '{stu3}')", ruth)
+check("The teacher sees the course's messages", True, "select count(*) > 0 from public.messages where course_id = 'c1'", phil, expect_out="t")
+# A Super Admin who doesn't teach the course: manages it, but doesn't read it.
+check("A Super Admin who doesn't teach it can't see its grades", True,
+      "select count(*) from public.submissions s join public.assignments a on a.id = s.assignment_id where a.course_id = 'c1'", church, expect_out=0)
+check("…or its messages", True, "select count(*) from public.messages where course_id = 'c1'", church, expect_out=0)
+check("…or its discussion board", True, "select count(*) from public.discussion_posts where course_id = 'c1'", church, expect_out=0)
+check("…but can still manage it (schedule, assignments)", True,
+      "update public.courses set sched_time = '19:00' where id = 'c1'; insert into public.assignments (course_id, title, due) values ('c1', 'Admin-added quiz', '2026-12-01'); select 1", church, expect_out=1)
+# Handing a course off before it starts / reassigning after.
+check("Before the start date, the teacher can hand the course to another faculty member", True,
+      f"update public.courses set faculty_id = '{ruth}' where id = 'c8'; select faculty_id from public.courses where id = 'c8'", phil, expect_out=ruth)
+check("…the new teacher is notified", True,
+      f"select count(*) from public.notifications where user_id = '{ruth}' and subject like '%now the teacher for Genesis to Revelation%'", None, expect_out=1)
+check("…sees the course's message history", True, "select count(*) > 0 from public.messages where course_id = 'c8'", ruth, expect_out="t")
+check("…and the old teacher no longer does", True, "select count(*) from public.messages where course_id = 'c8'", phil, expect_out=0)
+check("A course's teacher must be faculty (not a student)", False,
+      f"update public.courses set faculty_id = '{stu2}' where id = 'c8'", ruth)
+check("After the start date, the teacher can't change who teaches it", False,
+      f"update public.courses set faculty_id = '{ruth}' where id = 'c1'", phil)
+check("…but a Super Admin can (e.g. the teacher is ill)", True,
+      f"update public.courses set faculty_id = '{ruth}' where id = 'c1'; select faculty_id from public.courses where id = 'c1'", church, expect_out=ruth)
+check("…and the substitute sees the class's grades and messages", True,
+      "select (select count(*) from public.submissions s join public.assignments a on a.id = s.assignment_id where a.course_id = 'c1') > 0 and (select count(*) from public.messages where course_id = 'c1') > 0", ruth, expect_out="t")
+check("…while the original teacher no longer does", True,
+      "select (select count(*) from public.submissions s join public.assignments a on a.id = s.assignment_id where a.course_id = 'c1') + (select count(*) from public.messages where course_id = 'c1')", phil, expect_out=0)
+check("New courses can't be created on someone else's behalf, even by a Super Admin creating it", True,
+      f"insert into public.courses (title, faculty_id) values ('Church History', '{phil}') returning faculty_id", church, expect_out=church)
+# A teacher who leaves the faculty: the Super Admins cover the course.
+admin(f"update public.profiles set role = 'student' where id = '{ruth}'")
+check("If the teacher is no longer faculty, Super Admins cover the course's messages", True,
+      "select count(*) > 0 from public.messages where course_id = 'c8'", church, expect_out="t")
+check("…and the former teacher sees nothing", True, "select count(*) from public.messages where course_id = 'c8'", ruth, expect_out=0)
+check("…a student can still message that course", True,
+      f"insert into public.messages (course_id, student_id, sender_id, from_role, text) values ('c8', '{stu3}', '{stu3}', 'student', 'Still interested')", stu3)
+check("…and that message notifies the Super Admins", True,
+      f"select count(*) from public.notifications where user_id = '{church}' and subject like 'New message from Daniel%'", None, expect_out=1)
+admin(f"update public.profiles set role = 'faculty' where id = '{ruth}'")
+# Cleanup rules that a non-teacher Super Admin triggers still work.
+admin(f"update public.courses set faculty_id = '{phil}' where id = 'c1'")
+check("A Super Admin who doesn't teach the course can remove a student from it", True,
+      f"with d as (delete from public.enrollments where course_id = 'c1' and student_id = '{stu2}' returning 1) select count(*) from d", church, expect_out=1)
+check("…and that student's private thread with the teacher is cleared too", True,
+      f"select count(*) from public.messages where course_id = 'c1' and student_id = '{stu2}'", None, expect_out=0)
+admin(f"insert into public.enrollments (course_id, student_id) values ('c1', '{stu2}') on conflict do nothing")
+admin("update public.courses set faculty_id = (select id from public.profiles where email = 'phil@example.com') where id in ('c1', 'c8')")
+admin(f"delete from public.courses where faculty_id = '{church}' or title = 'Pastoral Epistles'")
 
 # --- archive & delete ----------------------------------------------------------------------
 admin("update public.courses set archived = true where id = 'c1'")

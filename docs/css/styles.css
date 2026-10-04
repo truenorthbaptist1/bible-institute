@@ -553,3 +553,15 @@ input[type="tel"] { width: 100%; padding: 11px 16px; border: 1px solid var(--bor
 .site-update-bar { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 60; display: flex; align-items: center; gap: 12px; background: var(--primary); color: #fff; padding: 10px 12px 10px 20px; border-radius: 999px; box-shadow: var(--shadow-lg); font-size: 0.9rem; max-width: calc(100vw - 32px); flex-wrap: wrap; justify-content: center; }
 .site-update-later { background: none; border: none; color: #c9d4e3; font: inherit; font-size: 0.85rem; cursor: pointer; padding: 6px 8px; }
 .site-update-later:hover { color: #fff; }
+
+/* Course teachers (Oct 2026) */
+.tile-teacher { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; font-size: 0.82rem; color: var(--foreground); font-weight: 500; }
+.tile-teacher svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--gold); }
+.tile-teacher-none { color: var(--muted-foreground); font-style: italic; font-weight: 400; }
+.tile-readonly { opacity: 0.86; }
+.tile-readonly:hover { opacity: 1; }
+.teacher-current { display: flex; align-items: center; gap: 14px; }
+.teacher-name { font-weight: 700; font-size: 1.02rem; }
+.teacher-change-row { display: flex; gap: 10px; align-items: center; }
+.teacher-change-row select { flex: 1; min-width: 0; }
+li.privacy-note { list-style: none; }
