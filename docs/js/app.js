@@ -28,6 +28,16 @@ function icon(name) {
     sun: '<circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/>',
     moon: '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/>',
     check: '<rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M8 3v3M16 3v3"/><path d="m8.5 13.5 2.5 2.5 4.5-5"/>',
+    help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2 1-1.2 1.9v.5"/><path d="M12 17.2h.01"/>',
+    scroll: '<path d="M7 3h11v15a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-2h11v2a3 3 0 0 0 3 3"/><path d="M7 3a2 2 0 0 0-2 2v11"/><path d="M9 8h6M9 12h6"/>',
+    megaphone: '<path d="M3 10v4h3l9 5V5L6 10H3Z"/><path d="M18 9a4 4 0 0 1 0 6"/>',
+    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
+    pin: '<path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21Z"/><circle cx="12" cy="9.5" r="2.5"/>',
+    video: '<rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/>',
+    textsize: '<path d="M3 19 8.5 5h1L15 19"/><path d="M5 14h8"/><path d="M15 19l3.2-8h.6L22 19"/><path d="M16.2 16h4.6"/>',
+    download: '<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>',
+    cancel: '<circle cx="12" cy="12" r="9"/><path d="m8.5 8.5 7 7M15.5 8.5l-7 7"/>',
+    shield: '<path d="M12 3 4.5 6v6c0 4.5 3.2 8 7.5 9 4.3-1 7.5-4.5 7.5-9V6L12 3Z"/><path d="m9 12 2 2 4-4"/>',
     bible: '<path d="M12 4.5c-2.2-1.2-5-1.6-8-1v15c3 0 5.8.4 8 1.6M12 4.5c2.2-1.2 5-1.6 8-1v15c-3 0-5.8.4-8 1.6M12 4.5v16"/>',
   };
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${icons[name] || icons.note}</svg>`;
@@ -303,14 +313,24 @@ function handlePendingAttendanceLink() {
   if (role !== "faculty" || !iTeach(c)) { toast("That attendance link is for the course's teacher."); return; }
   openAttendance(c.id, /^\d{4}-\d{2}-\d{2}$/.test(link.date) ? link.date : null, "home");
 }
+// Any link inside the site: an assignment/calendar/attendance link (above),
+// or a course, message, transcript… link (features.js).
+function followLink(href) {
+  try {
+    const q = new URL(href, location.origin).searchParams;
+    if (q.get("attendance") || q.get("assignment") || q.get("calendar")) {
+      pendingAttendanceLink = readAttendanceLink(href);
+      handlePendingAttendanceLink();
+      return;
+    }
+  } catch (e) { return; }
+  openSiteLink(href);
+}
 // The site already open when a notification is tapped: the phone hands us
 // the link instead of opening a second copy.
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", (e) => {
-    if (e.data && e.data.type === "tnbbi-open" && e.data.url) {
-      pendingAttendanceLink = readAttendanceLink(e.data.url);
-      handlePendingAttendanceLink();
-    }
+    if (e.data && e.data.type === "tnbbi-open" && e.data.url) followLink(e.data.url);
   });
 }
 let sessionUserId = null;
@@ -406,7 +426,7 @@ function renderNotifBell() {
       ${mine.length === 0 ? `<div class="notif-empty">You're all caught up.</div>` : mine
         .map(
           (n) => `
-        <div class="notif-item ${n.read ? "" : "notif-item-unread"}">
+        <div class="notif-item ${n.read ? "" : "notif-item-unread"} ${n.link && n.link !== "/" ? "notif-item-link" : ""}" ${n.link && n.link !== "/" ? `data-notif-link="${esc(n.link)}" role="button" tabindex="0"` : ""}>
           <div class="notif-item-body">
             <div class="notif-item-subject">${esc(n.subject)}</div>
             <div class="notif-item-time">${new Date(n.sentAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</div>
@@ -431,6 +451,18 @@ function renderNotifBell() {
       DB.deleteNotifications(ids).catch((err) => { toast(friendlyError(err)); });
     };
     panel.querySelectorAll("[data-dismiss]").forEach((btn) => btn.addEventListener("click", (e) => { e.stopPropagation(); clear([btn.dataset.dismiss]); }));
+    panel.querySelectorAll("[data-notif-link]").forEach((item) => {
+      const open = (e) => {
+        if (e.target.closest("[data-dismiss]")) return;
+        e.stopPropagation();
+        notifPanelOpen = false;
+        myNotifications().forEach((n) => (n.read = true));
+        renderNotifBell();
+        followLink(item.dataset.notifLink);
+      };
+      item.addEventListener("click", open);
+      item.addEventListener("keydown", (e) => { if (e.key === "Enter") open(e); });
+    });
     const all = document.getElementById("notifClearAll");
     if (all) all.addEventListener("click", (e) => { e.stopPropagation(); clear(mine.map((n) => n.id)); });
   }
@@ -848,6 +880,8 @@ async function startSessionInner(session) {
     renderMain();
     startPolling();
     handlePendingAttendanceLink();
+    const incoming = takeIncomingLink();
+    if (incoming) openSiteLink(incoming);
     if (pushSupported()) registerServiceWorker();
   } catch (e) {
     console.error(e);
@@ -970,6 +1004,8 @@ function renderAccountPill() {
   if (!el) return;
   if (!currentUser) { el.innerHTML = ""; return; }
   el.innerHTML = `
+    <button id="helpBtn" class="icon-btn" aria-label="Help and tour" title="Help">${icon("help")}</button>
+    ${textSizeToggleHtml()}
     ${themeToggleHtml()}
     <div class="notif-wrap" id="notifBellWrap"></div>
     <button class="account-me" id="myProfileBtn" title="My Profile" aria-label="My Profile — ${esc(currentUser.name)}">
@@ -981,6 +1017,8 @@ function renderAccountPill() {
   `;
   document.getElementById("logoutBtn").addEventListener("click", () => signOut());
   document.getElementById("myProfileBtn").addEventListener("click", () => openProfile());
+  document.getElementById("helpBtn").addEventListener("click", () => { view = "help"; activeCourseId = null; renderNav(); renderMain(); });
+  document.getElementById("textSizeToggle").addEventListener("click", () => { cycleTextSize(); renderAccountPill(); });
   document.getElementById("themeToggle").addEventListener("click", () => {
     setTheme(currentTheme() === "dark" ? "light" : "dark");
     renderAccountPill();
@@ -1072,7 +1110,7 @@ function safeHtml(html) {
 // reply — shows up for everyone else without reloading the browser.
 const STALE_MS = 3000;
 const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance"];
-const FACULTY_ONLY_VIEWS = ["catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome"];
+const FACULTY_ONLY_VIEWS = ["transcripts", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome"];
 const STUDENT_ONLY_VIEWS = ["courses", "course", "grades", "submit"];
 
 function renderMain() {
@@ -1128,20 +1166,25 @@ function renderView() {
   if (view === "profile") return renderProfile(main);
   if (view === "attendance") return renderAttendance(main);
   if (view === "attendanceHome") return renderAttendanceHome(main);
+  if (view === "transcript") return Date.now() - dataLoadedAt < 1500 ? renderTranscript(main) : withFreshData(() => renderTranscript(main));
+  if (view === "transcripts") return Date.now() - dataLoadedAt < 1500 ? renderTranscripts(main) : withFreshData(() => renderTranscripts(main));
+  if (view === "help") return renderHelp(main);
   if (view === "settings") return Date.now() - dataLoadedAt < 1500 ? renderSettings(main) : withFreshData(() => renderSettings(main));
 }
 
 function renderDashboard(main) {
   const tiles = [
     { key: "courses", i: "book", label: "My Courses", desc: "Open your enrolled classes" },
-    { key: "calendar", i: "calendar", label: "Calendar", desc: "Every due date, across all your classes" },
+    { key: "calendar", i: "calendar", label: "Calendar", desc: "Class days and due dates, all in one place" },
     { key: "studyBible", i: "bible", label: "Study Bible", desc: "Read the KJV with Strong's Concordance" },
     { key: "grades", i: "cap", label: "My Grades", desc: "Scores and progress" },
+    { key: "transcript", i: "scroll", label: "My Transcript", desc: "Your permanent record — download a PDF" },
     { key: "messages", i: "mail", label: "Send Message", desc: "Reach a faculty member" },
     { key: "submit", i: "upload", label: "Submit Work", desc: "Turn in worksheets and papers" },
     { key: "discussion", i: "chat", label: "Discussion Board", desc: "Talk with your classmates" },
     { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
-    { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and About me" },
+    { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and notifications" },
+    { key: "help", i: "help", label: "Help & Tour", desc: "How everything works" },
   ];
   const unread = unreadMessageCount();
   main.innerHTML = `
@@ -1149,6 +1192,7 @@ function renderDashboard(main) {
       <div class="eyebrow">Student Dashboard</div>
       <h1>Welcome${currentUser && currentUser.name ? `, ${esc(currentUser.name.trim().split(/\s+/)[0])}` : " to the Institute"}</h1>
     </div>
+    ${recentAnnouncementsHtml()}
     ${profileNudge()}
     <div class="grid">
       ${tiles
@@ -1169,6 +1213,8 @@ function renderDashboard(main) {
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } });
   });
+  wireRecentAnnouncements(main);
+  maybeStartTour();
   wireProfileNudge();
 }
 
@@ -1194,7 +1240,7 @@ function attendanceDueNow() {
 const TILE_HUE = {
   courses: "blue", catalogue: "blue", calendar: "teal", studyBible: "wine", grades: "plum", grading: "plum",
   messages: "amber", submit: "olive", discussion: "clay", resourceLibrary: "slate", profile: "gold",
-  settings: "gray", attendanceHome: "green",
+  settings: "gray", attendanceHome: "green", transcript: "wine", transcripts: "wine", help: "teal",
 };
 
 // Day / night: follows the device until someone picks; their pick is kept
@@ -1361,14 +1407,16 @@ function renderCourses(main) {
 function renderFacultyHome(main) {
   const tiles = [
     { key: "catalogue", i: "book", label: "Courses", desc: "Browse everything offered, or add a new course" },
-    { key: "calendar", i: "calendar", label: "Calendar", desc: "Every due date in the courses you teach" },
+    { key: "calendar", i: "calendar", label: "Calendar", desc: "Class days and due dates in the courses you teach" },
     { key: "studyBible", i: "bible", label: "Study Bible", desc: "Read the KJV with Strong's Concordance" },
     { key: "grading", i: "cap", label: "Grading", desc: "Review and grade work in your courses" },
     { key: "discussion", i: "chat", label: "Discussion Board", desc: "Lead your classes' discussions" },
     { key: "messages", i: "mail", label: "Message Inbox", desc: "Messages from your students" },
     { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
     { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and About me" },
-    { key: "settings", i: "gear", label: "Settings", desc: isAdmin() ? "Users and levels" : "Users and new sign-ups" },
+    ...(isAdmin() ? [{ key: "transcripts", i: "scroll", label: "Transcripts", desc: "Every student's permanent record" }] : []),
+    { key: "settings", i: "gear", label: "Settings", desc: isAdmin() ? "Users, levels, and backups" : "Users and new sign-ups" },
+    { key: "help", i: "help", label: "Help & Tour", desc: "How everything works" },
   ];
   const unread = unreadMessageCount();
   const pendingEnroll = pendingEnrollmentCount();
@@ -1413,6 +1461,7 @@ function renderFacultyHome(main) {
   viewTimers.push(setInterval(() => {
     if (view === "home" && !document.querySelector("#modalRoot .modal-backdrop") && attendanceDueNow().map((c) => c.id).join(",") !== sig) renderMain();
   }, 60000));
+  maybeStartTour();
   wireProfileNudge();
 }
 
@@ -1590,6 +1639,7 @@ function renderCatalogue(main) {
       const c = courses.find((x) => x.id === btn.dataset.archiveToggle);
       const archiving = !c.archived;
       const hadMessages = c.messages && c.messages.length > 0;
+      const go = () => {
       if (archiving && hadMessages && !confirm(`Archive "${c.title}"?\n\nThis permanently deletes the course's private student–teacher messages (export any you want to keep first). Materials, grades, and the discussion board are kept.`)) return;
       run(async () => {
         await DB.setArchived(c.id, archiving);
@@ -1597,6 +1647,8 @@ function renderCatalogue(main) {
           ? `"${c.title}" was archived.${hadMessages ? " Its private messages have been deleted." : ""}`
           : `"${c.title}" is active again.`;
       });
+      };
+      if (archiving) confirmArchiveWithTranscripts(c, go); else go();
     });
     btn.addEventListener("keydown", (e) => e.stopPropagation());
   });
@@ -1611,7 +1663,9 @@ function renderCourse(main) {
       <h1 style="margin-top:10px;">${esc(c.title)}</h1>
       <p>${esc(c.description)}</p>
       ${scheduleLine(c) ? `<p style="color:var(--muted-foreground);font-size:.85rem;margin-top:6px;">${esc(scheduleLine(c))}</p>` : ""}
+      ${whereHtml(c)}
     </div>
+    ${courseAnnouncementsHtml(c)}
     <div class="section-title"><h2>Course Materials</h2></div>
     <div class="card">
       <ul class="materials-list">
@@ -1899,6 +1953,15 @@ function calendarClassesByDate() {
   });
   return out;
 }
+// Canceled class days in my courses: date → [course].
+function calendarCanceledByDate() {
+  const out = {};
+  const mine = role === "student"
+    ? courses.filter((c) => !c.archived && c.studentIds.includes(currentStudentId))
+    : courses.filter((c) => !c.archived && iTeach(c));
+  mine.forEach((c) => Object.keys(c.cancellations || {}).forEach((d) => (out[d] = out[d] || []).push(c)));
+  return out;
+}
 function classMeetsText(c) {
   return c.schedule && c.schedule.time ? `Class meets ${fmtTime(c.schedule.time)}` : "Class day (time not set yet)";
 }
@@ -1910,6 +1973,12 @@ function openCalendarDayModal(ds, rows, classes, after) {
   const root = document.getElementById("modalRoot");
   const due = (a) => `Due ${fmtDay(a.due, { month: "short", day: "numeric" })} · ${a.points} pts`;
 
+  const canceledHere = calendarCanceledByDate()[ds] || [];
+  const canceledHtml = canceledHere.map((c) => `<div class="cal-modal-class cal-modal-canceled">
+        <div class="cal-class-icon">${icon("cancel")}</div>
+        <div style="flex:1;min-width:0;"><strong>${esc(c.title)}</strong> <span class="pill pill-red">Canceled</span><div class="field-hint" style="margin:2px 0 0;">${esc(c.cancellations[ds] || "No class this day.")}</div></div>
+        ${role !== "student" && iManage(c) && ds >= today ? `<button class="btn btn-ghost btn-sm" data-cal-restore="${c.id}">Put Back On</button>` : ""}
+      </div>`).join("");
   const classHtml = classes.map((c) => {
     const day = (c.attDays || {})[ds];
     const action = role === "student" ? ""
@@ -1918,8 +1987,8 @@ function openCalendarDayModal(ds, rows, classes, after) {
       : `<button class="btn ${day ? "btn-ghost" : "btn-primary"} btn-sm" data-cal-att="${c.id}">${day ? (day.held ? "✓ View Attendance" : "No class — Edit") : "Take Attendance"}</button>`;
     return `<div class="cal-modal-class">
         <div class="cal-class-icon">${icon("calendar")}</div>
-        <div style="flex:1;min-width:0;"><strong>${esc(c.title)}</strong><div class="field-hint" style="margin:2px 0 0;">${esc(classMeetsText(c))}</div></div>
-        ${action}
+        <div style="flex:1;min-width:0;"><strong>${esc(c.title)}</strong><div class="field-hint" style="margin:2px 0 0;">${esc(classMeetsText(c))}</div>${whereHtml(c, { short: true })}</div>
+        <div class="cal-class-actions">${action}${role !== "student" && iManage(c) && ds >= today ? `<button class="btn btn-ghost btn-sm" data-cal-cancel="${c.id}">Cancel Class</button>` : ""}</div>
       </div>`;
   }).join("");
 
@@ -1960,13 +2029,15 @@ function openCalendarDayModal(ds, rows, classes, after) {
     <div class="modal-backdrop">
       <div class="modal cal-modal" role="dialog" aria-modal="true" aria-labelledby="calModalTitle" style="max-width:560px;">
         <h2 id="calModalTitle" style="font-size:1.15rem;margin:0 0 14px;">${heading}</h2>
-        ${classes.length ? `<div class="cal-modal-section"><div class="cal-modal-label">Class</div>${classHtml}</div>` : ""}
+        ${classes.length || canceledHere.length ? `<div class="cal-modal-section"><div class="cal-modal-label">Class</div>${canceledHtml}${classHtml}</div>` : ""}
         ${rows.length ? `<div class="cal-modal-section"><div class="cal-modal-label">${rows.length === 1 ? "Assignment due" : `${rows.length} assignments due`}</div>${asgHtml}</div>` : ""}
         <div class="form-actions"><button class="btn btn-ghost" id="calModalClose">Close</button></div>
       </div>
     </div>`;
   document.getElementById("calModalClose").addEventListener("click", closeModal);
   root.querySelectorAll("[data-cal-att]").forEach((b) => b.addEventListener("click", () => openAttendance(b.dataset.calAtt, ds, "calendar")));
+  root.querySelectorAll("[data-cal-cancel]").forEach((b) => b.addEventListener("click", () => openCancelClassModal(courses.find((x) => x.id === b.dataset.calCancel), ds, after)));
+  root.querySelectorAll("[data-cal-restore]").forEach((b) => b.addEventListener("click", () => { closeModal(); restoreClassDay(courses.find((x) => x.id === b.dataset.calRestore), ds, after); }));
   root.querySelectorAll("[data-cal-submit]").forEach((b) => b.addEventListener("click", () => {
     const [cid, aid] = b.dataset.calSubmit.split("|");
     const c = courses.find((x) => x.id === cid);
@@ -2107,6 +2178,7 @@ function renderCalendar(main) {
   }
 
   const classesByDate = calendarClassesByDate();
+  const canceledByDate = calendarCanceledByDate();
   const totalAssignments = Object.values(byDate).reduce((n, rows) => n + rows.length, 0) + Object.keys(classesByDate).length;
   const selectedDate = days.find((d) => localISO(d) === calendarCursor) ? calendarCursor : today;
 
@@ -2146,6 +2218,7 @@ function renderCalendar(main) {
         return `<button type="button" class="cal-day ${inRangeMonth ? "" : "cal-day-outside"} ${isToday ? "cal-day-today" : ""} ${isSelected ? "cal-day-selected" : ""}" data-cal-day="${ds}">
           <span class="cal-day-num">${d.getDate()}</span>
           ${rows.length ? `<span class="cal-dot ${calendarDotClass(rows, today)}" title="${rows.length} due"></span>` : ""}
+          ${(canceledByDate[ds] || []).length ? `<span class="cal-class cal-class-canceled" title="${esc(canceledByDate[ds].map((c) => `${c.title} canceled`).join(", "))}"><span class="cal-class-text">Canceled</span></span>` : ""}
           ${classes.length ? `<span class="cal-class ${role !== "student" && classes.some((c) => c.att.on && ds <= today && !c.attDays[ds]) ? "cal-class-todo" : ""}" title="${esc(classes.map((c) => `${c.title} ${fmtTime(c.schedule.time) || ""}`).join(", "))}"><span class="cal-class-text">${classes.length > 1 ? `${classes.length} classes` : esc(fmtTime(classes[0].schedule.time) || "Class")}</span></span>` : ""}
         </button>`;
       }).join("")}
@@ -2153,6 +2226,7 @@ function renderCalendar(main) {
     <div class="cal-legend">
       <span><span class="cal-dot cal-dot-navy"></span> Assignment due</span>
       <span><span class="cal-class cal-class-legend"></span> Class meets</span>
+      <span><span class="cal-class cal-class-canceled cal-class-legend"></span> Canceled</span>
       ${role === "student" ? "" : `<span><span class="cal-class cal-class-todo cal-class-legend"></span> Attendance not taken</span>`}
     </div>
     <div class="cal-takeaway">
@@ -2172,6 +2246,7 @@ function renderCalendar(main) {
     const heading = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + (ds === today ? " — Today" : "");
     wrap.innerHTML = `
       <div class="section-title" style="margin:0 0 6px;"><h2 style="font-size:1rem;">${heading}</h2></div>
+      ${(canceledByDate[ds] || []).map((c) => `<p style="margin:0 0 8px;font-size:.88rem;"><span class="cal-class cal-class-canceled cal-class-legend"></span> <strong>${esc(c.title)}</strong> · Canceled${c.cancellations[ds] ? ` — ${esc(c.cancellations[ds])}` : ""}</p>`).join("")}
       ${(classesByDate[ds] || []).map((c) => `<p style="margin:0 0 8px;font-size:.88rem;"><span class="cal-class cal-class-legend"></span> <strong>${esc(c.title)}</strong> · ${esc(classMeetsText(c))}</p>`).join("")}
       ${rows.length === 0 ? `<p style="color:var(--muted-foreground);font-size:.88rem;">Nothing due this day.</p>` : `
       <ul class="assignments-list">
@@ -2218,7 +2293,7 @@ function renderCalendar(main) {
       renderDayDetail(ds);
       const rows = byDate[ds] || [];
       const classes = classesByDate[ds] || [];
-      if (rows.length || classes.length) openCalendarDayModal(ds, rows, classes, () => renderMain());
+      if (rows.length || classes.length || (canceledByDate[ds] || []).length) openCalendarDayModal(ds, rows, classes, () => renderMain());
     });
   });
 }
@@ -2402,8 +2477,11 @@ function renderGradeSheet(main) {
         <span class="pill pill-navy">${esc(c.level)} Level</span>
         <span class="pill ${status.cls}">${esc(status.text)}</span>
       </div>
-      <h1 style="margin-top:10px;">${esc(c.title)}</h1>
-      <p>Grade Sheet · ${students.length} student${students.length === 1 ? "" : "s"}</p>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <h1 style="margin-top:10px;">${esc(c.title)}</h1>
+        ${iManage(c) && students.length ? `<button class="btn btn-gold btn-sm" id="gsRecord" style="margin-top:10px;">${icon("scroll")} Record Final Grades</button>` : ""}
+      </div>
+      <p>Grade Sheet · ${students.length} student${students.length === 1 ? "" : "s"}${courseGradesRecorded(c) && students.length ? ` · <span class="pill pill-green">Final grades recorded</span>` : ""}</p>
     </div>
     <div class="card">
       ${categories.length === 0 || students.length === 0 ? `
@@ -2463,6 +2541,8 @@ function renderGradeSheet(main) {
     </div>
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "grading"; renderNav(); renderMain(); });
+  const gsRec = document.getElementById("gsRecord");
+  if (gsRec) gsRec.addEventListener("click", () => openRecordGradesModal(c));
   main.querySelectorAll("[data-cell]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const [cid, aid, sid] = btn.dataset.cell.split("|");
@@ -2987,10 +3067,12 @@ function renderManage(main) {
         <h1 style="margin-top:10px;">${esc(c.title)}</h1>
         <div style="display:flex;gap:8px;margin-top:10px;flex-shrink:0;">
           <button class="btn btn-outline-gold btn-sm" id="mgEditCourse">Edit Course Details</button>
+          ${role === "faculty" ? `<button class="btn btn-ghost btn-sm" id="mgCopyCourse">${icon("copy")} Copy for a New Term</button>` : ""}
           ${c.archived && isAdmin() ? `<button class="btn btn-danger btn-sm" id="mgDeleteCourse">Delete Course</button>` : ""}
         </div>
       </div>
       <p>${esc(c.description)} · ${c.credits} credit${c.credits === 1 ? "" : "s"}</p>
+      ${whereHtml(c)}
     </div>
 
     <div class="section-title"><h2>Teacher</h2></div>
@@ -3031,6 +3113,12 @@ function renderManage(main) {
         ${isLive(c) ? "This course is live — it already appears in enrolled students’ My Courses." : c.schedule.mode === "scheduled" ? "Students will see this course automatically once the start date arrives." : "Choose when this course starts so enrolled students can see it."}
       </p>
     </div>
+
+    <div class="section-title"><h2>Class Days</h2></div>
+    <div class="card" id="mgCancelCard"></div>
+
+    <div class="section-title"><h2>Announcements</h2></div>
+    <div class="card" id="mgAnnounceCard"></div>
 
     <div id="mgEnrollRequestsSection"></div>
 
@@ -3087,6 +3175,10 @@ function renderManage(main) {
   });
 
   renderTeacherCard(c);
+  renderCancellationsCard(c);
+  renderAnnouncementsCard(c);
+  const cp = document.getElementById("mgCopyCourse");
+  if (cp) cp.addEventListener("click", () => openCopyCourseModal(c));
   renderAttendanceCard(c);
   renderEnrollmentRequests(c);
   renderRosterList(c);
@@ -3126,6 +3218,7 @@ function openEditCourseModal(course) {
             </select>
           </div>
         </div>
+        ${locationFieldsHtml("ec", course)}
         ${attSettingsHtml("ec", course.att)}
         <div class="form-actions">
           <button class="btn btn-primary" id="ecSave">Save Changes</button>
@@ -3147,6 +3240,8 @@ function openEditCourseModal(course) {
     };
     const att = readAttSettings("ec");
     Object.assign(patch, { attendance_on: att.on, attendance_weight: att.weight, attendance_late_credit: att.lateCredit });
+    try { Object.assign(patch, readLocationFields("ec")); }
+    catch (e) { toast(e.message); document.getElementById("ecMeetingUrl").focus(); return; }
     run(async () => { await DB.updateCourse(course.id, patch); closeModal(); }, null, { success: "Course details saved." });
   });
 }
@@ -3584,8 +3679,13 @@ let attendanceDate = null;
 let attendanceBackView = "home";
 let attDraft = null; // { courseId, date, held, marks: { studentId: status } }
 
-// Every scheduled class day for a course (YYYY-MM-DD), from its schedule.
+// Every day a course actually meets (YYYY-MM-DD): its scheduled days,
+// minus any the teacher canceled.
 function classDates(c) {
+  return scheduledDates(c).filter((d) => !isCanceled(c, d));
+}
+// Every scheduled class day, canceled or not, from the schedule.
+function scheduledDates(c) {
   const s = c.schedule;
   if (!s || !s.startDate || !s.days || !s.days.length) return [];
   const start = parseDay(s.startDate);
@@ -3965,9 +4065,8 @@ function wireDueReminderChooser(wrap) {
 async function renderReminderCard() {
   const wrap = document.getElementById("reminderCard");
   if (!wrap) return;
-  const intro = role === "student"
-    ? `<p style="margin:0 0 12px;">Get a notification on your phone when an assignment is coming due and you haven't turned it in yet. Tap it to go straight to the assignment.</p>`
-    : `<p style="margin:0 0 12px;">When one of your classes starts, get a notification on your phone that opens that day's attendance in one tap. (Only for courses that record attendance, and only if it hasn't been taken yet.)</p>`;
+  const intro = `<p style="margin:0 0 12px;">Hear about new messages, grades, announcements, class cancellations, and more without having to sign in — on your phone, by email, or both.${role === "student" ? "" : " On your phone you'll also get a reminder when one of your classes starts and attendance hasn't been taken."}</p>
+    <div class="cal-modal-label" style="margin:0 0 8px;">On this phone or computer</div>`;
 
   if (!pushSupported()) {
     wrap.innerHTML = intro + (isIOS() && !isInstalledApp() ? `
@@ -3979,8 +4078,9 @@ async function renderReminderCard() {
           <li>Open the <strong>TNBBI</strong> icon from your Home Screen, sign in, and come back to <strong>My Profile</strong> to turn reminders on.</li>
         </ol>
         <p class="field-hint" style="margin:6px 0 0;">Needs iOS 16.4 or newer (Settings → General → About → iOS Version).</p>
-      </div>` : `<p class="field-hint" style="margin:0;">This browser can't receive notifications. On a phone, use Safari (iPhone) or Chrome (Android).</p>`) + dueReminderChooser();
+      </div>` : `<p class="field-hint" style="margin:0;">This browser can't receive notifications. On a phone, use Safari (iPhone) or Chrome (Android).</p>`) + emailChooserHtml() + dueReminderChooser();
     wireDueReminderChooser(wrap);
+    wireEmailChooser(wrap);
     return;
   }
   wrap.innerHTML = intro + `<p class="field-hint" style="margin:0;">Checking this device…</p>`;
@@ -4003,9 +4103,10 @@ async function renderReminderCard() {
     <div class="form-actions" style="flex-wrap:wrap;">
       ${onHere
         ? `<button class="btn btn-primary btn-sm" id="pushTest">Send a Test</button><button class="btn btn-ghost btn-sm" id="pushOff">Turn Off on This Device</button>`
-        : `<button class="btn btn-gold btn-sm" id="pushOn" ${blocked ? "disabled" : ""}>Turn On Reminders</button>`}
-    </div>` + dueReminderChooser();
+        : `<button class="btn btn-gold btn-sm" id="pushOn" ${blocked ? "disabled" : ""}>Turn On Phone Notifications</button>`}
+    </div>` + emailChooserHtml() + dueReminderChooser();
   wireDueReminderChooser(wrap);
+  wireEmailChooser(wrap);
 
   const on = document.getElementById("pushOn");
   if (on) on.addEventListener("click", async () => {
@@ -4023,7 +4124,7 @@ async function renderReminderCard() {
       if (s && s.options && s.options.applicationServerKey && bytesToB64url(s.options.applicationServerKey) !== key) { await s.unsubscribe(); s = null; }
       if (!s) s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64urlToBytes(key) });
       await DB.registerPush(s, deviceLabel());
-    }, () => renderReminderCard(), { reload: false, success: "Reminders are on for this device. Tap \"Send a Test\" to try one." });
+    }, () => renderReminderCard(), { reload: false, success: "Phone notifications are on for this device. Tap \"Send a Test\" to try one." });
   });
   const test = document.getElementById("pushTest");
   if (test) test.addEventListener("click", () => run(async () => {
@@ -4715,7 +4816,11 @@ function renderSettings(main) {
     </div>
     <p style="color:var(--muted-foreground);font-size:.85rem;">New sign-ups wait under <strong>Waiting for Approval</strong> until Faculty or an Admin approves them (Admins get a bell notification). Approved accounts start as students.
       <strong>Faculty</strong> create and run courses — schedules, rosters, assignments, materials, grading. <strong>Admins</strong> can also change anyone's level, turn accounts off or delete them, and permanently delete courses (up to ${MAX_SUPER_ADMINS} Admins).${isAdmin() ? "" : " Ask an Admin to change someone's level."}</p>
+    ${isAdmin() ? `
+    <div class="section-title"><h2>Backups &amp; Behind the Scenes</h2></div>
+    <div class="card" id="backupsCard"></div>` : ""}
   `;
+  renderBackupsCard();
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
 
   document.getElementById("userTabs").querySelectorAll("button").forEach((b) => {
@@ -5027,7 +5132,7 @@ function renderProfile(main) {
       </div>
     </form>
     ${isSelf ? `
-    <div class="section-title"><h2>${role === "student" ? "Due-Date Reminders" : "Class Reminders"}</h2></div>
+    <div class="section-title" id="notifSettings"><h2>Notifications</h2></div>
     <div class="card" id="reminderCard"></div>` : ""}
   `;
   renderReminderCard();

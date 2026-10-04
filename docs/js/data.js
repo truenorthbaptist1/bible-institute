@@ -20,6 +20,7 @@ const ALLOWED_UPLOAD_EXT = ["pdf", "doc", "docx", "ppt", "pptx", "odt", "rtf", "
 const UPLOAD_ACCEPT = ALLOWED_UPLOAD_EXT.map((e) => "." + e).join(",");
 
 let notifications = [];
+let transcripts = []; // transcript entries this person may see (own; a teacher's courses; all for Admins)
 let bibleHighlightRows = [];
 let dataLoadedAt = 0;
 
@@ -99,6 +100,8 @@ function profileToUser(p) {
     bio: p.bio || "",
     avatarPath: p.avatar_path || null,
     dueReminders: p.due_reminders || "evening",
+    notifyEmail: p.notify_email || "instant",
+    tourSeenAt: p.tour_seen_at || null,
   };
 }
 
@@ -143,7 +146,7 @@ async function fetchOwnProfile(uid) {
 // ---------------------------------------------------------------------------
 async function loadAll() {
   const fac = currentUser.role === "faculty";
-  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks] = await Promise.all([
+  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks, cancels, anns, trans] = await Promise.all([
     selectAll("courses", "*", "title"),
     selectAll("enrollments", "course_id,student_id"),
     selectAll("enrollment_requests", "*", "requested_at"),
@@ -164,6 +167,10 @@ async function loadAll() {
     // update, so the rest of the site keeps working either way.)
     selectAll("attendance_days", "*", "class_date").catch(() => []),
     selectAll("attendance", "course_id,class_date,student_id,status").catch(() => []),
+    // Added Oct 4 (tolerant the same way).
+    selectAll("class_cancellations", "*", "class_date").catch(() => []),
+    selectAll("announcements", "*", "created_at").catch(() => []),
+    selectAll("transcript_entries", "*", "start_date").catch(() => []),
   ]);
 
   // Your role changed since this page loaded: switch to the new role and
@@ -211,6 +218,10 @@ async function loadAll() {
       att: { on: !!r.attendance_on, weight: Number(r.attendance_weight) || 0, lateCredit: r.attendance_late_credit == null ? 50 : Number(r.attendance_late_credit) },
       attDays: {},   // date → { held, takenBy, takenAt }
       attMarks: {},  // date → { studentId: status }
+      location: r.location || "",
+      meetingUrl: r.meeting_url || "",
+      cancellations: {}, // date → reason
+      announcements: [],
       materials: [],
       assignments: [],
       studentIds: [],
@@ -269,7 +280,11 @@ async function loadAll() {
     id: m.id, studentId: m.student_id, from: m.from_role, senderId: m.sender_id, text: m.text, sentAt: m.sent_at, read: m.read,
   }));
 
-  notifications = notifs.map((n) => ({ id: n.id, toUserId: n.user_id, subject: n.subject, sentAt: n.created_at, read: n.read }));
+  notifications = notifs.map(notificationFromRow);
+  cancels.forEach((x) => { if (byCourse[x.course_id]) byCourse[x.course_id].cancellations[x.class_date] = x.reason || ""; });
+  anns.forEach((a) => byCourse[a.course_id] && byCourse[a.course_id].announcements.push({ id: a.id, authorId: a.author_id, body: a.body, postedAt: a.created_at }));
+  Object.values(byCourse).forEach((c) => c.announcements.sort((x, y) => y.postedAt.localeCompare(x.postedAt)));
+  transcripts = trans.map(transcriptFromRow);
   attDays.forEach((d) => {
     const c = byCourse[d.course_id];
     if (c) c.attDays[d.class_date] = { held: d.held, takenBy: d.taken_by, takenAt: d.taken_at };
@@ -285,7 +300,21 @@ async function loadAll() {
 async function refreshNotifications() {
   if (!currentUser) return;
   const data = must(await sb.from("notifications").select("*").order("created_at", { ascending: false }).limit(60));
-  notifications = data.map((n) => ({ id: n.id, toUserId: n.user_id, subject: n.subject, sentAt: n.created_at, read: n.read }));
+  notifications = data.map(notificationFromRow);
+}
+
+function notificationFromRow(n) {
+  return { id: n.id, toUserId: n.user_id, subject: n.subject, sentAt: n.created_at, read: n.read, link: n.link || "/", kind: n.kind || "general" };
+}
+
+function transcriptFromRow(t) {
+  return {
+    id: t.id, studentId: t.student_id, studentRef: t.student_ref, studentName: t.student_name, studentEmail: t.student_email || "",
+    courseId: t.course_id, courseTitle: t.course_title, credits: Number(t.credits) || 0, level: t.level || "", term: t.term || "",
+    startDate: t.start_date, endDate: t.end_date, percent: t.percent === null || t.percent === undefined ? null : Number(t.percent),
+    grade: t.grade, attendancePct: t.attendance_percent === null || t.attendance_percent === undefined ? null : Number(t.attendance_percent),
+    teacherName: t.teacher_name || "", note: t.note || "", recordedAt: t.recorded_at,
+  };
 }
 
 async function fetchThread(courseId, studentId) {
@@ -485,6 +514,64 @@ const DB = {
   async myPushDevices() {
     return must(await sb.from("push_subscriptions").select("endpoint,device,created_at"));
   },
+  // --- Oct 4: cancellations, announcements, copying, transcripts, backups --
+  async cancelClass(courseId, date, reason) {
+    must(await sb.rpc("cancel_class", { p_course: courseId, p_date: date, p_reason: reason || "" }));
+  },
+  async restoreClass(courseId, date) {
+    must(await sb.rpc("restore_class", { p_course: courseId, p_date: date }));
+  },
+  async postAnnouncement(courseId, body) {
+    must(await sb.from("announcements").insert({ course_id: courseId, author_id: currentUser.id, body }));
+  },
+  async deleteAnnouncement(id) {
+    must(await sb.from("announcements").delete().eq("id", id));
+  },
+  // Copies the course (details, schedule pattern, assignments) in the
+  // database, then its files in storage. Returns { id, filesFailed }.
+  async copyCourse(course, title, startDate) {
+    const id = must(await sb.rpc("copy_course", { p_course: course.id, p_title: title, p_start: startDate || null }));
+    let filesFailed = 0;
+    for (const m of course.materials) {
+      try {
+        if (m.storagePath) {
+          const path = `${id}/${newId()}-${safeFileName(m.title)}`;
+          must(await sb.storage.from("materials").copy(m.storagePath, path));
+          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, storage_path: path, mime_type: m.mimeType || null, size_bytes: m.size || null }));
+        } else {
+          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title }));
+        }
+      } catch (e) { console.warn("copy file:", e); filesFailed++; }
+    }
+    return { id, filesFailed };
+  },
+  async recordFinalGrades(courseId, entries) {
+    return must(await sb.rpc("record_final_grades", { p_course: courseId, p_entries: entries }));
+  },
+  async saveTranscriptEntry(e) {
+    return must(await sb.rpc("save_transcript_entry", {
+      p_id: e.id || null, p_student: e.studentId || null, p_course_title: e.courseTitle, p_credits: e.credits,
+      p_level: e.level || "", p_term: e.term || "", p_start: e.startDate || null, p_end: e.endDate || null,
+      p_percent: e.percent === "" || e.percent === null || e.percent === undefined ? null : Number(e.percent),
+      p_grade: e.grade, p_teacher: e.teacherName || "", p_note: e.note || "",
+    }));
+  },
+  async deleteTranscriptEntry(id) {
+    must(await sb.rpc("delete_transcript_entry", { p_id: id }));
+  },
+  async listBackups() {
+    return must(await sb.rpc("list_backups"));
+  },
+  async downloadBackup(id) {
+    return must(await sb.rpc("download_backup", { p_id: id || null }));
+  },
+  async serviceStatus() {
+    return must(await sb.rpc("get_service_status"));
+  },
+  async markTourSeen() {
+    must(await sb.from("profiles").update({ tour_seen_at: new Date().toISOString() }).eq("id", currentUser.id));
+  },
+
   // Phone calendar: the person's private subscription link code.
   async myCalendarToken() {
     return must(await sb.rpc("my_calendar_token"));
