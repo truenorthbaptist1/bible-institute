@@ -1,26 +1,32 @@
 // ============================================================================
 // attendance-reminders — Supabase Edge Function
 //
-// Phone notifications (Web Push) for the Institute. Runs every minute
-// (scheduled by supabase/reminders-schedule.sql). Two kinds:
-//   • Teachers — when their class starts: "Time to take attendance", with a
-//     tap-through link straight into that day's attendance page. Each class
-//     day is reminded at most once, and only if attendance hasn't been taken.
-//   • Students — assignment due dates: at 6 PM the evening before and/or
-//     8 AM the day it's due (their choice on My Profile), for work that isn't
-//     turned in yet. Several due the same day arrive as one notification.
+// The Institute's behind-the-scenes service. Runs every minute (scheduled
+// by supabase/reminders-schedule.sql) and:
+//   • reminds teachers to take attendance when their class starts
+//   • turns assignment due dates into reminders for students (6 PM the
+//     evening before and/or 8 AM the day it's due — their choice)
+//   • delivers every bell notification to people's phones (Web Push) and
+//     by email (right away, as a morning summary, or not at all — their
+//     choice), so nobody has to sign in to find out what's new
+//   • takes a nightly backup of the database (2 AM Alaska time) and emails
+//     a copy to the church's Gmail once a week (Sunday morning)
+// Email needs the GMAIL_APP_PASSWORD secret (see SETUP.md); everything
+// else works without it.
 //
-// Three ways it's called:
+// Ways it's called:
 //   (no query)   — the every-minute run: send any reminders that are due
 //   ?setup=1     — make the site's push keys if they don't exist yet
 //                  (the website calls this the first time someone turns
 //                  reminders on; harmless to call again)
+//   ?testemail=1 — send a test email to the signed-in person
+//   ?mailcheck=1 — can the function reach Gmail? (and is the password set?)
 //   ?test=1      — send a test notification to the signed-in person's own
 //                  devices (the website's "Send a test" button)
 //
-// Uses only the database connection Supabase gives every function
-// (SUPABASE_DB_URL) and the browser-standard Web Crypto API — no other
-// keys or settings to configure. Deploy with "Verify JWT" turned OFF.
+// Uses the database connection Supabase gives every function
+// (SUPABASE_DB_URL) and the browser-standard Web Crypto API. Deploy with
+// "Verify JWT" turned OFF.
 // ============================================================================
 import postgres from "npm:postgres@3.4.5";
 
@@ -174,68 +180,305 @@ function isoDay(d: unknown): string {
   return d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
 }
 
-// Students' assignment reminders, one notification per student per run.
-type DueRow = { student_id: string; kind: string; assignment_id: string; assignment_title: string; course_id: string; course_title: string; due: unknown };
-export function assignmentMessages(rows: DueRow[]) {
-  const byStudent = new Map<string, DueRow[]>();
-  for (const r of rows) {
-    const k = `${r.student_id}|${r.kind}`;
-    if (!byStudent.has(k)) byStudent.set(k, []);
-    byStudent.get(k)!.push(r);
-  }
-  const out: { userId: string; message: object }[] = [];
-  for (const [k, list] of byStudent) {
-    const [userId, kind] = k.split("|");
-    const when = kind === "evening" ? "tomorrow" : "today";
-    const day = isoDay(list[0].due);
-    if (list.length === 1) {
-      const r = list[0];
-      out.push({ userId, message: {
-        title: `Due ${when}: ${r.assignment_title}`,
-        body: `${r.course_title} — not turned in yet. Tap to open it.`,
-        url: `${SITE}/?assignment=${encodeURIComponent(r.assignment_id)}`,
-        tag: `due-${kind}-${day}`,
-      } });
-    } else {
-      const names = list.map((r) => r.assignment_title);
-      const shown = names.slice(0, 3).join(", ") + (names.length > 3 ? `, and ${names.length - 3} more` : "");
-      out.push({ userId, message: {
-        title: `${list.length} assignments due ${when}`,
-        body: `${shown}. Tap to see them.`,
-        url: `${SITE}/?calendar=${day}`,
-        tag: `due-${kind}-${day}`,
-      } });
-    }
-  }
-  return out;
+// ---------------------------------------------------------------------------
+// Email (Gmail, through the church account). Needs one secret set in
+// Supabase → Edge Functions → Secrets: GMAIL_APP_PASSWORD (a Gmail "app
+// password" for truenorthbaptist1@gmail.com). Without it, email is skipped
+// and Settings → Behind the Scenes says so.
+// ---------------------------------------------------------------------------
+const GMAIL_USER = "truenorthbaptist1@gmail.com";
+const FROM_NAME = "True North Baptist Church Bible Institute";
+
+export type Wire = { read(buf: Uint8Array): Promise<number | null>; write(b: Uint8Array): Promise<number>; close(): void };
+export type Mail = { to: string; subject: string; text: string; html?: string; attachment?: { name: string; type: string; bytes: Uint8Array } };
+
+function b64(bytes: Uint8Array): string {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function wrap76(s: string): string {
+  return s.replace(/.{1,76}/g, "$&\r\n");
+}
+function encodeHeader(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return /^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${b64(enc.encode(s))}?=`;
+}
+function cleanAddress(a: string): string {
+  const v = String(a || "").trim();
+  if (!/^[^\s<>@,;"]+@[^\s<>@,;"]+\.[^\s<>@,;"]+$/.test(v)) throw new Error("bad email address");
+  return v;
 }
 
-export async function runReminders(sql: Sql, fetchImpl = fetch) {
-  const due = await sql`select * from public.claim_attendance_reminders()`;
-  // Assignment reminders (tolerant of a database that hasn't been updated
-  // yet, so class reminders keep working either way).
-  let dueWork: DueRow[] = [];
-  try { dueWork = await sql`select * from public.claim_assignment_reminders()`; }
-  catch (e) { console.warn("assignment reminders:", (e as Error).message || e); }
-  if (!due.length && !dueWork.length) return { sent: 0 };
-  const keys = await getKeys(sql, true);
-  let sent = 0;
-  for (const m of assignmentMessages(dueWork)) {
-    const res = await sendToUser(sql, m.userId, m.message, keys!, fetchImpl);
-    sent += res.delivered;
+export function buildMime(m: Mail, now = new Date()): string {
+  const boundary = "tnbbi-" + crypto.randomUUID();
+  const alt = "tnbbi-alt-" + crypto.randomUUID();
+  const head = [
+    `From: ${encodeHeader(FROM_NAME)} <${GMAIL_USER}>`,
+    `To: <${cleanAddress(m.to)}>`,
+    `Subject: ${encodeHeader(m.subject.replace(/[\r\n]+/g, " ").slice(0, 200))}`,
+    `Date: ${now.toUTCString().replace("GMT", "+0000")}`,
+    `Message-ID: <${crypto.randomUUID()}@tnbbibleinstitute.com>`,
+    "MIME-Version: 1.0",
+  ];
+  const textPart = `Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${wrap76(b64(enc.encode(m.text)))}`;
+  const htmlPart = m.html ? `Content-Type: text/html; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${wrap76(b64(enc.encode(m.html)))}` : "";
+  const body = m.html
+    ? `Content-Type: multipart/alternative; boundary="${alt}"\r\n\r\n--${alt}\r\n${textPart}\r\n--${alt}\r\n${htmlPart}\r\n--${alt}--\r\n`
+    : textPart;
+  if (!m.attachment) return head.join("\r\n") + "\r\n" + body;
+  return head.join("\r\n") + `\r\nContent-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n` +
+    `--${boundary}\r\n${body}\r\n` +
+    `--${boundary}\r\nContent-Type: ${m.attachment.type}; name="${m.attachment.name}"\r\n` +
+    `Content-Disposition: attachment; filename="${m.attachment.name}"\r\nContent-Transfer-Encoding: base64\r\n\r\n` +
+    `${wrap76(b64(m.attachment.bytes))}\r\n--${boundary}--\r\n`;
+}
+
+// A small SMTP conversation (RFC 5321) over an already-encrypted connection.
+export class Smtp {
+  private buf = "";
+  private wire: Wire;
+  constructor(wire: Wire) { this.wire = wire; }
+  private async line(): Promise<string> {
+    const dec = new TextDecoder();
+    for (;;) {
+      const i = this.buf.indexOf("\r\n");
+      if (i >= 0) { const l = this.buf.slice(0, i); this.buf = this.buf.slice(i + 2); return l; }
+      const chunk = new Uint8Array(4096);
+      const n = await this.wire.read(chunk);
+      if (n === null) throw new Error("The mail server closed the connection.");
+      this.buf += dec.decode(chunk.subarray(0, n));
+    }
   }
+  async reply(expect: number[]): Promise<string> {
+    let l = await this.line();
+    let all = l;
+    while (l.length > 3 && l[3] === "-") { l = await this.line(); all += "\n" + l; }
+    const code = Number(l.slice(0, 3));
+    if (!expect.includes(code)) throw new Error(`Mail server said: ${all.slice(0, 200)}`);
+    return all;
+  }
+  async cmd(s: string, expect: number[]) {
+    await this.wire.write(enc.encode(s + "\r\n"));
+    return this.reply(expect);
+  }
+  async open(user: string, pass: string) {
+    await this.reply([220]);
+    await this.cmd("EHLO tnbbibleinstitute.com", [250]);
+    await this.cmd("AUTH PLAIN " + b64(enc.encode(`\u0000${user}\u0000${pass}`)), [235]);
+  }
+  async send(from: string, to: string, mime: string) {
+    await this.cmd(`MAIL FROM:<${from}>`, [250]);
+    await this.cmd(`RCPT TO:<${cleanAddress(to)}>`, [250, 251]);
+    await this.cmd("DATA", [354]);
+    const stuffed = mime.replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");
+    await this.wire.write(enc.encode(stuffed + (stuffed.endsWith("\r\n") ? "" : "\r\n") + ".\r\n"));
+    await this.reply([250]);
+  }
+  async close() {
+    try { await this.cmd("QUIT", [221]); } catch (_) { /* ignore */ }
+    try { this.wire.close(); } catch (_) { /* ignore */ }
+  }
+}
+
+// deno-lint-ignore no-explicit-any
+let connectMail: () => Promise<Wire> = async () => (await (Deno as any).connectTls({ hostname: "smtp.gmail.com", port: 465 })) as Wire;
+export function setMailConnector(fn: () => Promise<Wire>) { connectMail = fn; }
+function mailPassword(): string {
+  try { return (Deno.env.get("GMAIL_APP_PASSWORD") || "").replace(/\s+/g, ""); } catch (_) { return ""; }
+}
+
+// Sends several emails over one connection. Returns how many went.
+export async function sendMails(mails: Mail[]): Promise<number> {
+  if (!mails.length) return 0;
+  const pass = mailPassword();
+  if (!pass) throw new Error("Email isn't set up yet (the GMAIL_APP_PASSWORD secret is missing).");
+  const smtp = new Smtp(await connectMail());
+  let sent = 0;
+  try {
+    await smtp.open(GMAIL_USER, pass);
+    for (const m of mails) {
+      try { await smtp.send(GMAIL_USER, m.to, buildMime(m)); sent++; }
+      catch (e) {
+        console.warn("email to one person failed:", (e as Error).message);
+        if (/closed the connection/.test((e as Error).message)) throw e;
+        try { await smtp.cmd("RSET", [250]); } catch (_) { throw e; }
+      }
+    }
+  } finally {
+    await smtp.close();
+  }
+  return sent;
+}
+
+// ---------------------------------------------------------------------------
+// What notifications look like on a phone and in an email
+// ---------------------------------------------------------------------------
+type Note = { user_id: string; subject: string; link: string; kind: string; email?: string; name?: string; digest?: boolean; created_at?: unknown };
+
+const KIND_TITLE: Record<string, string> = {
+  message: "New message", grade: "Grade posted", due: "Assignment due", cancel: "Class update",
+  announcement: "Announcement", enrollment: "Enrollment", signup: "New sign-up waiting",
+  transcript: "Final grade recorded", welcome: "Welcome!", teacher: "Your course",
+};
+function safeLink(link: string): string {
+  return /^\/(\?[A-Za-z0-9_=&%.:\-|]*)?$/.test(link || "") ? link : "/";
+}
+
+export function groupByUser<T extends { user_id: string }>(rows: T[]): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const r of rows) { if (!m.has(r.user_id)) m.set(r.user_id, []); m.get(r.user_id)!.push(r); }
+  return m;
+}
+
+export function pushMessage(list: Note[]) {
+  if (list.length === 1) {
+    const n = list[0];
+    return { title: KIND_TITLE[n.kind] || "Bible Institute", body: n.subject, url: SITE + safeLink(n.link), tag: `note-${n.kind}` };
+  }
+  const shown = list.slice(0, 3).map((n) => "• " + n.subject).join("\n") + (list.length > 3 ? `\n…and ${list.length - 3} more` : "");
+  const sameLink = list.every((n) => n.link === list[0].link);
+  return { title: `${list.length} new updates`, body: shown, url: SITE + (sameLink ? safeLink(list[0].link) : "/?notifications=1"), tag: "note-many" };
+}
+
+function escHtml(s: string): string {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
+}
+
+export function emailFor(list: Note[], digest: boolean): Mail {
+  const first = (list[0].name || "").trim().split(/\s+/)[0];
+  const subject = digest
+    ? `Your daily summary from the Bible Institute (${list.length} update${list.length === 1 ? "" : "s"})`
+    : list.length === 1 ? list[0].subject : `${list.length} updates from the Bible Institute`;
+  const intro = digest ? "Here's what happened at the Bible Institute since your last summary." : list.length === 1 ? "Here's an update from the Bible Institute." : "Here are a few updates from the Bible Institute.";
+  const rows = list.map((n) => `
+      <tr><td style="padding:14px 0;border-bottom:1px solid #e7e2d6;">
+        <div style="font:600 11px/1.4 Arial,Helvetica,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#9a7a33;">${escHtml(KIND_TITLE[n.kind] || "Update")}</div>
+        <div style="font:15px/1.5 Georgia,'Times New Roman',serif;color:#1a2c45;margin:4px 0 8px;">${escHtml(n.subject)}</div>
+        <a href="${SITE}${safeLink(n.link)}" style="font:600 13px Arial,Helvetica,sans-serif;color:#3d5a78;text-decoration:none;">Open in the Institute &rarr;</a>
+      </td></tr>`).join("");
+  const html = `<!doctype html><html><body style="margin:0;background:#f4f1ea;padding:24px 12px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e3ddcf;">
+    <tr><td style="background:#1a2c45;padding:18px 24px;border-bottom:3px solid #b08d3f;">
+      <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+        <td><img src="${SITE}/brand/tnbbi-logo-color-sm.png" width="44" height="44" alt="" style="display:block;border:0;"></td>
+        <td style="padding-left:12px;font:600 16px Georgia,'Times New Roman',serif;color:#ffffff;">True North Baptist Church<br><span style="font:12px Arial,Helvetica,sans-serif;color:#d8c9a3;">Bible Institute</span></td>
+      </tr></table>
+    </td></tr>
+    <tr><td style="padding:22px 24px 6px;">
+      <p style="font:15px/1.5 Arial,Helvetica,sans-serif;color:#142033;margin:0 0 6px;">${first ? `Hello ${escHtml(first)},` : "Hello,"}</p>
+      <p style="font:15px/1.5 Arial,Helvetica,sans-serif;color:#142033;margin:0;">${intro}</p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;">${rows}</table>
+      <p style="margin:22px 0 8px;"><a href="${SITE}/" style="display:inline-block;background:#1a2c45;color:#ffffff;font:600 14px Arial,Helvetica,sans-serif;text-decoration:none;padding:11px 22px;border-radius:999px;">Go to the Bible Institute</a></p>
+    </td></tr>
+    <tr><td style="padding:14px 24px 22px;font:12px/1.5 Arial,Helvetica,sans-serif;color:#6b7280;">
+      &ldquo;And the things that thou hast heard of me among many witnesses, the same commit thou to faithful men, who shall be able to teach others also.&rdquo; &mdash; 2 Timothy 2:2<br><br>
+      You're receiving this because you have an account at tnbbibleinstitute.com. To get one summary a day instead, or no emails, go to <a href="${SITE}/?profile=notifications" style="color:#3d5a78;">My Profile &rarr; Notifications</a>.
+    </td></tr>
+  </table></td></tr></table></body></html>`;
+  const text = `${first ? `Hello ${first},` : "Hello,"}\n\n${intro}\n\n` +
+    list.map((n) => `• ${n.subject}\n  ${SITE}${safeLink(n.link)}`).join("\n\n") +
+    `\n\nGo to the Bible Institute: ${SITE}/\n\nTo get one summary a day instead, or no emails: ${SITE}/?profile=notifications\n`;
+  return { to: list[0].email || "", subject, text, html };
+}
+
+async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const cs = new CompressionStream("gzip");
+  const out = new Response(new Blob([bytes]).stream().pipeThrough(cs));
+  return new Uint8Array(await out.arrayBuffer());
+}
+
+async function setStatus(sql: Sql, key: string, ok: boolean, detail: string) {
+  try { await sql`select public.set_service_status(${key}, ${ok}, ${detail})`; } catch (_) { /* older database */ }
+}
+
+// ---------------------------------------------------------------------------
+// The every-minute run
+// ---------------------------------------------------------------------------
+async function safely<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
+  try { return await fn(); } catch (e) { console.warn(label + ":", (e as Error).message || e); return null; }
+}
+
+export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new Date()) {
+  const out: Record<string, number> = { sent: 0 };
+  let keys: Keys | null = null;
+  const pushKeys = async () => (keys = keys || await getKeys(sql, true));
+
+  // 1. Teachers: "time to take attendance".
+  const due = await sql`select * from public.claim_attendance_reminders()`;
   for (const r of due) {
     const date = isoDay(r.class_date);
-    const msg = {
+    const res = await sendToUser(sql, r.teacher_id, {
       title: "Time to take attendance",
       body: `${r.course_title} started at ${prettyTime(r.class_time)}. Tap to mark who's here.`,
       url: `${SITE}/?attendance=${encodeURIComponent(r.course_id)}&date=${date}`,
       tag: `attendance-${r.course_id}-${date}`,
-    };
-    const res = await sendToUser(sql, r.teacher_id, msg, keys!, fetchImpl);
-    sent += res.delivered;
+    }, (await pushKeys())!, fetchImpl);
+    out.sent += res.delivered;
   }
-  return { sent, classes: due.length, assignments: dueWork.length };
+  out.classes = due.length;
+
+  // 2. Students: assignment due dates become notifications (sent below).
+  out.assignments = (await safely("assignment reminders", async () =>
+    (await sql`select public.queue_assignment_reminders(${now}) as n`)[0].n)) || 0;
+
+  // 3. Every new notification → phones.
+  const pushes = (await safely("push deliveries", () => sql`select * from public.claim_push_deliveries(${now})`)) as Note[] | null;
+  if (pushes && pushes.length) {
+    for (const [userId, list] of groupByUser(pushes)) {
+      const res = await sendToUser(sql, userId, pushMessage(list), (await pushKeys())!, fetchImpl);
+      out.sent += res.delivered;
+    }
+  }
+
+  // 4. … and email.
+  const emails = (await safely("email deliveries", () => sql`select * from public.claim_email_deliveries(${now})`)) as Note[] | null;
+  if (emails && emails.length) {
+    const mails: Mail[] = [];
+    for (const [, list] of groupByUser(emails)) {
+      const digest = list.some((n) => n.digest);
+      if (list[0].email) mails.push(emailFor(list, digest));
+    }
+    try {
+      const n = await sendMails(mails);
+      out.emails = n;
+      await setStatus(sql, "email", true, `Last sent ${n} email${n === 1 ? "" : "s"} ${now.toISOString()}`);
+    } catch (e) {
+      console.warn("email:", (e as Error).message);
+      await setStatus(sql, "email", false, (e as Error).message);
+    }
+  }
+
+  // 5. Nightly backup (from 2 AM Alaska time), and a weekly copy by email.
+  await safely("nightly backup", async () => {
+    const r = await sql`select public.take_nightly_backup_if_due(${now}) as id`;
+    if (r[0] && r[0].id) { out.backup = Number(r[0].id); await setStatus(sql, "backup", true, `Nightly backup taken ${now.toISOString()}`); }
+  });
+  await safely("weekly backup email", async () => {
+    const r = await sql`select * from public.backup_to_email(${now})`;
+    if (!r.length) return;
+    const b = r[0];
+    const day = new Date(b.taken_at).toISOString().slice(0, 10);
+    const raw = enc.encode(typeof b.data === "string" ? b.data : JSON.stringify(b.data));
+    const gz = await gzip(raw);
+    try {
+      await sendMails([{
+        to: GMAIL_USER,
+        subject: `Weekly backup — Bible Institute site (${day})`,
+        text: `Attached is this week's backup of the Bible Institute site (taken ${day}).\n\n` +
+          `Keep this email: it's an off-site copy of every course, grade, transcript, message, and account on tnbbibleinstitute.com. ` +
+          `(Uploaded files such as course PDFs are stored separately and aren't in this file.)\n\n` +
+          `Nightly backups are also kept for two weeks inside the site (Settings → Backups). To restore from a backup, see SETUP.md in the site's GitHub repository.\n`,
+        attachment: { name: `tnbbi-backup-${day}.json.gz`, type: "application/gzip", bytes: gz },
+      }]);
+      await sql`select public.mark_backup_emailed(${b.id}, ${now})`;
+      await setStatus(sql, "backup_email", true, `Weekly backup emailed ${now.toISOString()} (${Math.round(gz.length / 1024)} KB)`);
+    } catch (e) {
+      await setStatus(sql, "backup_email", false, (e as Error).message);
+    }
+  });
+  return out;
 }
 
 // Who is calling? (Only for ?test=1.) Asks Supabase Auth to vouch for the
@@ -264,12 +507,38 @@ export async function handler(req: Request, sql: Sql, fetchImpl = fetch): Promis
       if (!uid) return json({ error: "Please sign in again." }, 401);
       const keys = await getKeys(sql, true);
       const res = await sendToUser(sql, uid, {
-        title: "Reminders are working",
-        body: "Reminders like this one will arrive on this device.",
+        title: "Notifications are working",
+        body: "Notes from the Bible Institute will arrive on this device like this one.",
         url: `${SITE}/`,
         tag: "tnbbi-test",
       }, keys!, fetchImpl);
       return json(res);
+    }
+    if (url.searchParams.has("mailcheck")) {
+      // Can this function reach Gmail's mail server at all? (No password needed.)
+      try {
+        const smtp = new Smtp(await connectMail());
+        const greeting = await smtp.reply([220]);
+        await smtp.close();
+        return json({ reachable: true, greeting: greeting.slice(0, 80), passwordSet: !!mailPassword() });
+      } catch (e) {
+        return json({ reachable: false, error: (e as Error).message, passwordSet: !!mailPassword() });
+      }
+    }
+    if (url.searchParams.has("testemail")) {
+      const uid = await callerId(req, fetchImpl);
+      if (!uid) return json({ error: "Please sign in again." }, 401);
+      const me = await sql`select email, name from public.profiles where id = ${uid} and status = 'active'`;
+      if (!me.length || !me[0].email) return json({ error: "Your account doesn't have an email address." }, 400);
+      try {
+        await sendMails([emailFor([{ user_id: uid, email: me[0].email, name: me[0].name, kind: "general",
+          subject: "Email notifications are working. You'll get notes like this when something needs your attention.", link: "/" }], false)]);
+        await setStatus(sql, "email", true, `Test email sent ${new Date().toISOString()}`);
+        return json({ sent: 1, to: me[0].email });
+      } catch (e) {
+        await setStatus(sql, "email", false, (e as Error).message);
+        return json({ error: (e as Error).message }, 502);
+      }
     }
     return json(await runReminders(sql, fetchImpl));
   } catch (e) {
