@@ -208,11 +208,65 @@ Students' due-date reminders use the existing **attendance-reminders** function
 (redeploy it with the updated `index.ts`); its every-minute schedule is
 unchanged.
 
+## Email notifications (added Oct 4, 2026)
+
+The site emails people about new messages, grades, announcements, class
+cancellations, due dates, and new sign-ups (each person chooses right away,
+a morning summary, or none, in My Profile → Notifications). It also emails a
+weekly backup to the church's Gmail. Emails are sent from
+truenorthbaptist1@gmail.com by the **attendance-reminders** function, which
+needs one secret:
+
+1. Make a Gmail app password (or reuse the one made for Supabase sign-up
+   emails): sign in to the church Google account → <https://myaccount.google.com/apppasswords>
+   → name it **TNBBI notifications** → **Create**, and copy the 16 letters.
+2. Supabase → **Edge Functions** → **Secrets** → **Add new secret**.
+   Name: `GMAIL_APP_PASSWORD`. Value: the 16 letters (spaces don't matter).
+   **Save**.
+3. On the site: My Profile → Notifications → **Send Me a Test Email**.
+   Settings → Backups & Behind the Scenes shows whether email is working, and
+   why not if it isn't (for example, a mistyped password).
+
+Without the secret, everything else still works (the bell, phone
+notifications, backups kept in the site); emails are simply skipped.
+
+## Backups (added Oct 4, 2026)
+
+- **Nightly**: at 2 AM Alaska time the site takes a complete backup of the
+  database (every account, course, assignment, grade, transcript, message,
+  and post). The last 14 are kept inside the site.
+- **Weekly, off-site**: Sunday morning the newest one is emailed to
+  truenorthbaptist1@gmail.com as an attachment (needs the email secret above).
+  Keep those emails — they're the copy that survives even if the Supabase
+  project were lost.
+- **Any time**: Settings → Backups & Behind the Scenes → **Download a Backup
+  Now** (Admins only). Save copies in the church Google Drive.
+- Uploaded files (course PDFs, turned-in work, photos) live in Supabase
+  Storage and aren't in these backups.
+- The every-minute reminder job and the nightly backup keep the project
+  active, so the free plan shouldn't pause it for inactivity. If it ever does,
+  sign in to Supabase and click **Restore**.
+
+### Restoring from a backup
+
+If something is deleted by mistake (a course, an account, a transcript):
+
+1. Get the backup file: the `.json.gz` attached to a weekly email, or a `.json`
+   from Settings → Download.
+2. On a computer with Python 3, in a copy of this repository:
+   `python3 tools/backup/restore.py tnbbi-backup-2026-10-04.json.gz > restore.sql`
+3. Supabase → **SQL Editor** → paste `restore.sql` → **Run**.
+
+It only puts back rows that are missing — anything that still exists is left
+exactly as it is, and nothing is deleted. The result lists how many rows were
+put back in each table. (A deleted account must sign up again before rows
+belonging to it can come back; those are counted as skipped.)
+
 ## Good to know
 
 - **The test banner.** A gold strip says "Test site" across the top. When you go live, set `testMode: false` in `docs/js/config.js` (edit it right on GitHub).
 - **Free plan pausing.** Supabase may pause a free project after a week with no use. If the site suddenly can't connect, sign in to Supabase and click **Restore**.
-- **Backups.** The free plan doesn't include restorable backups. Before real coursework lives here, either move to a paid Supabase plan (daily backups) or export the tables yourself regularly (Table Editor → each table → Export to CSV).
+- **Backups.** See "Backups" above. (A paid Supabase plan adds its own daily backups on top, if that's ever wanted.)
 - **The Bible text** comes from bible-api.com (public-domain KJV, free, no key). It allows about 15 chapter loads per 30 seconds per internet connection; chapters are remembered by each browser after the first read. If a whole classroom on one church Wi-Fi opens new chapters at once, someone may briefly see "busy — try again." If that becomes a real problem, the fix is loading the KJV into Supabase once.
 - **Strong's tagging** is on the ten featured passages (hand-checked). Full-Bible tagging is a later one-time import of the free STEPBible dataset.
 - **Resource Library links** open the original Google Drive files, so those files need to be shared with students (e.g. "Anyone with the link can view").

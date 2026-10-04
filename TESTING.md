@@ -2,6 +2,8 @@
 
 ## Already verified (before hand-off)
 
+_Oct 4 (second update): notifications by phone and email, backups, transcripts, class cancellations, announcements, course copying, location/online link, text size, Help, and the first-time tour — database check 309/309, service checks 27/27, browser run 0 failures, 0 JS errors._
+
 _Oct 4: class days on students' calendars, phone-calendar links, and students' due-date reminders — database check now 229/229; browser run 0 failures, 0 JS errors._
 
 _Oct 2026 updates: My Profile (photos, contact details) and course teachers (only a course's teacher sees its grades, messages, and discussion). Then (Oct 3): attendance, calendar dialogs, class reminders, the in-page document reader, Submit Work, the approval queue, and the day/night look. The database check is now 187/187; the browser run has 135 checks._
@@ -105,6 +107,26 @@ walks through these with pass/fail boxes.
     ("Due tomorrow: …"); tapping it opens the assignment. Choose *The morning
     it's due* and check 8 AM. A turned-in assignment sends nothing.
 
+20. **Email notifications** (added Oct 4, needs the Gmail secret — SETUP.md) —
+    My Profile → Notifications → *Send Me a Test Email*; it arrives from
+    truenorthbaptist1@gmail.com (check Gmail, Yahoo, and Outlook, and spam).
+    Then have a teacher message a student: the student gets an email within a
+    couple of minutes, and its button opens the conversation.
+21. **Phone notifications for everything** — with phone notifications on, a
+    teacher's message, a grade, and an announcement each arrive on the phone;
+    tapping opens the right page.
+22. **Cancel a class** — on a real phone calendar subscribed to the class,
+    cancel the next class: students get a bell, phone, and email note, and the
+    phone calendar shows "Canceled:" within a few hours.
+23. **Transcripts** — record final grades for a finished course, then open
+    My Transcript as the student and download the PDF on an iPhone and a
+    computer; check it prints cleanly on letter paper.
+24. **First-time tour** — a brand-new student and a brand-new teacher each see
+    the tour once after approval, on a phone and on a computer.
+25. **Backups** — Monday morning, Settings shows last night's backup; the first
+    Sunday after the email secret is set, the weekly backup email arrives with
+    a .json.gz attachment.
+
 ## Recommended pilot
 
 Pick one course and 4–6 willing students (a mix of comfortable and
@@ -118,8 +140,9 @@ Needs PostgreSQL 15+ and Python 3 with Playwright, on Linux or macOS.
 Edit the connection settings at the top of the scripts, then:
 
 ```
-tests/db/run_tests.sh      # database privacy rules
-tests/e2e/run_e2e.sh       # full site in headless Chrome
+tests/db/run_tests.sh         # database privacy rules
+tests/functions/run_tests.sh  # notifications, email, backups, calendar feed (needs Node 22)
+tests/e2e/run_e2e.sh          # full site in headless Chrome
 ```
 
 Run both after any change to `supabase/schema.sql` or the site's code.
