@@ -142,8 +142,9 @@ check(st3[0].ok === false && /Username and Password not accepted/.test(st3[0].de
 setEnv("GMAIL_APP_PASSWORD", "abcd efgh ijkl mnop");
 
 // --- 5. Nightly backup + weekly backup email ------------------------------------
+// (A Sunday at least a week out, so the backup marked emailed above is old by then.)
 clearMail();
-const sunday = new Date(JSON.parse(psql(`select to_json(((public.local_today() + 7 - extract(dow from public.local_today())::int) + time '03:30') at time zone 'America/Anchorage')`)));
+const sunday = new Date(JSON.parse(psql(`select to_json(((public.local_today() + 14 - extract(dow from public.local_today())::int) + time '03:30') at time zone 'America/Anchorage')`)));
 out = await svc.runReminders(sql, fakeFetch, sunday);
 check(out.backup > 0, "the nightly backup is taken", JSON.stringify(out));
 m = mails().filter((x) => /Weekly backup/.test(x.subject));
