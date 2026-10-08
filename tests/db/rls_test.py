@@ -425,10 +425,14 @@ admin(f"""insert into public.courses (id, title, faculty_id, attendance_on, sche
          ('rm3', 'Not Recording', '{phil}', false, 'now', public.local_today() - 7, 4,
           array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') - interval '10 minutes', 'HH24:MI')),
          ('rm4', 'Later Today', '{phil}', true, 'now', public.local_today() - 7, 4,
-          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') + interval '30 minutes', 'HH24:MI'))""")
+          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') + interval '30 minutes', 'HH24:MI')),
+         ('rm5', 'Starts Soon', '{phil}', true, 'now', public.local_today() - 7, 4,
+          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') + interval '4 minutes', 'HH24:MI')),
+         ('rm6', 'Starts in 7 Minutes', '{phil}', true, 'now', public.local_today() - 7, 4,
+          array[to_char(public.local_today(), 'Dy')], to_char((now() at time zone 'America/Anchorage') + interval '7 minutes', 'HH24:MI'))""")
 admin("insert into public.attendance_days (course_id, class_date) values ('rm2', public.local_today())")
-check("At class time, the reminder is claimed for the course's teacher", True,
-      "select string_agg(course_id || '>' || (teacher_id = (select id from public.profiles where email = 'phil@example.com')), ',') from public.claim_attendance_reminders()", None, expect_out="rm1>true")
+check("Reminders are claimed for the teacher once class is 5 minutes away (not 7, not 30)", True,
+      "select string_agg(course_id || '>' || (teacher_id = (select id from public.profiles where email = 'phil@example.com')), ',' order by course_id) from public.claim_attendance_reminders()", None, expect_out="rm1>true,rm5>true")
 check("…exactly once (a second run sends nothing)", True,
       "select count(*) from public.claim_attendance_reminders()", None, expect_out=0)
 admin("delete from public.courses where id like 'rm_'")
