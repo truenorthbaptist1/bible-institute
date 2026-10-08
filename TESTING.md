@@ -64,8 +64,8 @@ these need real people on the real test site:
 9. **Phone reminders** (added Oct 2026) — on a teacher's iPhone: add the site to
    the Home Screen, open it from there, My Profile → Class Reminders → Turn On →
    Send a Test. Repeat on Android (Chrome). Then set a test course's class time a
-   few minutes ahead with attendance on, and confirm the notification arrives and
-   opens that day's attendance.
+   10 minutes ahead with attendance on, and confirm the notification arrives
+   5 minutes before class time and opens that day's attendance.
 10. **Documents in the page** — open a large PDF, a Word .docx, and an iPhone
    photo on a phone; try Save as PDF and Download.
 11. **Approval queue** — sign up with a new email, confirm it, and check that a
