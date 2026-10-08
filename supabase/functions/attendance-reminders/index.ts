@@ -3,7 +3,7 @@
 //
 // The Institute's behind-the-scenes service. Runs every minute (scheduled
 // by supabase/reminders-schedule.sql) and:
-//   • reminds teachers to take attendance when their class starts
+//   • reminds teachers to take attendance 5 minutes before their class starts
 //   • turns assignment due dates into reminders for students (6 PM the
 //     evening before and/or 8 AM the day it's due — their choice)
 //   • delivers every bell notification to people's phones (Web Push) and
@@ -174,6 +174,15 @@ function prettyTime(t: string): string {
   const [h, m] = t.split(":").map(Number);
   const ampm = h >= 12 ? "PM" : "AM";
   return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+// Has a class at "HH:MM" (Alaska time) already begun at this moment?
+function classHasStarted(t: string, now: Date): boolean {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Anchorage", hour: "numeric", minute: "numeric", hourCycle: "h23" })
+    .formatToParts(now);
+  const get = (k: string) => Number(parts.find((p) => p.type === k)?.value || 0);
+  const [h, m] = t.split(":").map(Number);
+  return get("hour") * 60 + get("minute") >= h * 60 + m;
 }
 
 function isoDay(d: unknown): string {
@@ -405,13 +414,16 @@ export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new 
   let keys: Keys | null = null;
   const pushKeys = async () => (keys = keys || await getKeys(sql, true));
 
-  // 1. Teachers: "time to take attendance".
+  // 1. Teachers: "time to take attendance" (5 minutes before class starts).
   const due = await sql`select * from public.claim_attendance_reminders()`;
   for (const r of due) {
     const date = isoDay(r.class_date);
+    const started = classHasStarted(r.class_time, now);
     const res = await sendToUser(sql, r.teacher_id, {
-      title: "Time to take attendance",
-      body: `${r.course_title} started at ${prettyTime(r.class_time)}. Tap to mark who's here.`,
+      title: started ? "Time to take attendance" : "Class starts in 5 minutes",
+      body: started
+        ? `${r.course_title} started at ${prettyTime(r.class_time)}. Tap to mark who's here.`
+        : `${r.course_title} starts at ${prettyTime(r.class_time)}. Tap to take attendance.`,
       url: `${SITE}/?attendance=${encodeURIComponent(r.course_id)}&date=${date}`,
       tag: `attendance-${r.course_id}-${date}`,
     }, (await pushKeys())!, fetchImpl);
