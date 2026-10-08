@@ -742,14 +742,20 @@ check("Nobody changes waiting records directly", False,
       "update public.past_records set grade = 'A' where email = 'grace@example.com'", church)
 check("…or adds them directly", False,
       "insert into public.past_records (student_name, course_title, grade, import_key) values ('X', 'Y', 'A', 'x|y|')", church)
+check("Before anyone signs up, their past courses are already on a transcript under their name", True,
+      "select count(*) || ',' || count(distinct student_ref) || ',' || bool_and(student_id is null) from public.transcript_entries where awaiting_signup", None, expect_out="4,3,true")
+check("…which teachers can see", True, "select count(*) from public.transcript_entries where awaiting_signup", phil, expect_out=4)
+check("…but students can't (not theirs)", True, "select count(*) from public.transcript_entries where awaiting_signup", stu2, expect_out=0)
 grace = mkuser("grace@example.com", "Grace Waiting", approve=False)
 check("A matching sign-up still waiting for approval gets nothing yet", True,
       f"select count(*) from public.transcript_entries where student_ref = '{grace}'", None, expect_out=0)
 check("A teacher approves them", True, f"update public.profiles set status = 'active' where id = '{grace}'", phil)
 check("…and their past courses arrive on their transcript", True,
       f"select string_agg(grade, ',' order by term) from public.transcript_entries where student_ref = '{grace}'", None, expect_out="B+,I")
-check("…which the teacher can't see (not their course)", True,
-      f"select count(*) from public.transcript_entries where student_ref = '{grace}'", phil, expect_out=0)
+check("…and teachers can see them (courses from before the site)", True,
+      f"select count(*) from public.transcript_entries where student_ref = '{grace}'", phil, expect_out=2)
+check("…the same entries moved over, no duplicates", True,
+      "select count(*) || ',' || bool_and(not awaiting_signup) from public.transcript_entries where student_name = 'Grace Waiting'", None, expect_out="2,true")
 check("…and the waiting records are marked as claimed", True,
       f"select count(*) from public.past_records where email = 'grace@example.com' and claimed_by = '{grace}' and transcript_id is not null", None, expect_out=2)
 late = mkuser("late@example.com", "Late Verifier", verified=False)
@@ -776,6 +782,17 @@ check("Records can't be linked to an account still waiting for approval", False,
 check("Faculty who aren't Admins can't remove waiting records", False, f"select public.delete_past_record('{stray}')", phil)
 check("An Admin removes one imported by mistake", True,
       f"select public.delete_past_record('{stray}'); select count(*) from public.past_records where id = '{stray}'", church, expect_out="0")
+check("Nothing is left waiting once everyone has claimed", True,
+      "select count(*) from public.transcript_entries where awaiting_signup", None, expect_out=0)
+sql(f"select public.import_past_records('[{{\"name\": \"Gone Soon\", \"course\": \"Old Class\", \"term\": \"Fall 2022\", \"grade\": \"B\"}}]'::jsonb, true)", church)
+gone = sql("select id from public.past_records where student_name = 'Gone Soon'")[1]
+check("Removing a waiting record also takes it off the early transcript", True,
+      f"select public.delete_past_record('{gone}'); select count(*) from public.transcript_entries where student_name = 'Gone Soon'", church, expect_out="0")
+sql(f"select public.import_past_records('[{{\"name\": \"Kept Off\", \"course\": \"Old Class\", \"term\": \"Fall 2022\", \"grade\": \"B\"}}]'::jsonb, true)", church)
+keptoff = sql("select id from public.transcript_entries where student_name = 'Kept Off'")[1]
+check("An Admin can remove an early entry", True, f"select public.delete_transcript_entry('{keptoff}')", church)
+check("…and it isn't put back later", True,
+      "select public.publish_past_records(); select count(*) from public.transcript_entries where student_name = 'Kept Off'", None, expect_out="0\n0")
 check("Transcripts take plus/minus grades (B+, A-)", True,
       f"select public.save_transcript_entry(null, '{stu2}', 'Manuscript Evidence', 3, '', 'Spring 2025', null, null, 90.48, 'A-', '', '') is not null", church, expect_out="t")
 check("…but not made-up ones", False,

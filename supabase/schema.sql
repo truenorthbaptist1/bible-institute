@@ -406,6 +406,11 @@ create table if not exists public.past_records (
   transcript_id uuid references public.transcript_entries(id) on delete set null
 );
 create index if not exists idx_past_records_email on public.past_records(email) where claimed_at is null;
+-- Past records go onto a transcript right away, before the student has an
+-- account (added Oct 8, afternoon). Such an entry has no student_id yet and
+-- is marked awaiting_signup; published_at says when it was put on.
+alter table public.transcript_entries add column if not exists awaiting_signup boolean not null default false;
+alter table public.past_records add column if not exists published_at timestamptz;
 
 -- Backups: a snapshot of every table, taken nightly (and whenever an Admin
 -- downloads one). Postgres compresses these automatically. Not readable
@@ -1273,8 +1278,39 @@ end $$;
 -- ---------------------------------------------------------------------------
 -- Past records (grades from before the site) — added Oct 8, 2026
 -- ---------------------------------------------------------------------------
--- Moves waiting records onto one person's transcript: every unclaimed
--- record under their email (p_ids null), or the records an Admin picked.
+-- Who a past record belongs to before that person has an account: the same
+-- made-up id for every record with the same email (or, with no email, the
+-- same name), so their courses group together on one transcript.
+create or replace function public.past_person_ref(p_email text, p_name text) returns uuid
+language sql immutable as $$
+  select md5('tnbbi-past:' || case when coalesce(p_email, '') <> '' then lower(p_email)
+                                   else 'name:' || lower(trim(coalesce(p_name, ''))) end)::uuid
+$$;
+
+-- Puts every waiting record on a transcript right away (added Oct 8,
+-- afternoon), under the student's name with no account yet — marked
+-- "awaiting_signup" — so teachers can see past courses before the student
+-- joins the site. Each record is put on once; if an Admin later removes
+-- that entry, it isn't put back. Internal.
+create or replace function public.publish_past_records() returns int
+language plpgsql security definer set search_path = public as $$
+declare r past_records%rowtype; v_tid uuid; v_n int := 0;
+begin
+  for r in select * from past_records where claimed_at is null and published_at is null for update loop
+    insert into transcript_entries (student_id, student_ref, student_name, student_email, course_id, course_title,
+        credits, level, term, start_date, end_date, percent, grade, teacher_name, note, recorded_by, awaiting_signup)
+    values (null, public.past_person_ref(r.email, r.student_name), r.student_name, r.email, null, r.course_title,
+        r.credits, r.level, r.term, r.start_date, r.end_date, r.percent, r.grade, r.teacher_name, r.note, r.imported_by, true)
+    returning id into v_tid;
+    update past_records set transcript_id = v_tid, published_at = now() where id = r.id;
+    v_n := v_n + 1;
+  end loop;
+  return v_n;
+end $$;
+
+-- Hands waiting records to one person: every unclaimed record under their
+-- email (p_ids null), or the records an Admin picked. The transcript entry
+-- that was already showing under their name simply becomes theirs.
 -- Internal: called by the trigger and the Admin functions below.
 create or replace function public.claim_past_records(p_profile uuid, p_ids uuid[] default null)
 returns int
@@ -1288,11 +1324,23 @@ begin
               and (case when p_ids is null then email <> '' and email = lower(s.email) else id = any(p_ids) end)
             order by start_date nulls first, term, course_title
             for update loop
-    -- Already on this transcript (an Admin typed it in by hand)? Point at it.
+    -- Already on this person's transcript (an Admin typed it in by hand)?
+    -- Keep that one and drop the early copy.
     v_tid := null;
     select id into v_tid from transcript_entries
      where student_ref = s.id and lower(course_title) = lower(r.course_title) and term = r.term limit 1;
-    if v_tid is null then
+    if v_tid is not null then
+      if r.transcript_id is not null and r.transcript_id <> v_tid then
+        delete from transcript_entries where id = r.transcript_id and awaiting_signup;
+      end if;
+    elsif r.transcript_id is not null then
+      -- The early entry becomes theirs (keeping any corrections made to it).
+      update transcript_entries set student_id = s.id, student_ref = s.id,
+             student_name = coalesce(nullif(s.name, ''), student_name), student_email = s.email, awaiting_signup = false
+       where id = r.transcript_id and awaiting_signup
+      returning id into v_tid;
+      if v_tid is not null then v_n := v_n + 1; end if;
+    elsif r.published_at is null then
       insert into transcript_entries (student_id, student_ref, student_name, student_email, course_id, course_title,
           credits, level, term, start_date, end_date, percent, grade, teacher_name, note, recorded_by)
       values (s.id, s.id, coalesce(nullif(s.name, ''), r.student_name), s.email, null, r.course_title,
@@ -1300,6 +1348,7 @@ begin
       returning id into v_tid;
       v_n := v_n + 1;
     end if;
+    -- (An early entry an Admin removed stays removed.)
     update past_records set claimed_by = s.id, claimed_at = now(), transcript_id = v_tid where id = r.id;
   end loop;
   if v_n > 0 then
@@ -1408,6 +1457,7 @@ begin
     raise exception 'Nothing was saved: % row(s) have a problem. Fix them and try again.', v_problems;
   end if;
   if p_commit then
+    perform public.publish_past_records();
     for i in 1 .. coalesce(array_length(v_profiles, 1), 0) loop
       v_attached := v_attached + public.claim_past_records(v_profiles[i], null);
     end loop;
@@ -1440,8 +1490,12 @@ begin
   if exists (select 1 from past_records where id = p_id and claimed_at is not null) then
     raise exception 'That record is already on a transcript. Change it there.';
   end if;
+  delete from transcript_entries where awaiting_signup and id = (select transcript_id from past_records where id = p_id);
   delete from past_records where id = p_id;
 end $$;
+
+-- Records imported before early transcripts existed go on now (safe to re-run).
+do $$ begin perform public.publish_past_records(); end $$;
 
 -- ---------------------------------------------------------------------------
 -- Backups
@@ -1940,11 +1994,14 @@ create policy ann_delete on public.announcements for delete to authenticated
   using (public.manages_course(course_id));
 
 -- Transcripts: your own; every entry for Admins; a teacher sees the entries
--- for the courses they teach. Written only through the functions above.
+-- for the courses they teach, and every faculty member sees courses from
+-- before the site (added Oct 8). Written only through the functions above.
 create policy transcript_select on public.transcript_entries for select to authenticated
   using (public.is_active_user() and (
     student_id = auth.uid() or public.is_super_admin()
-    or (course_id is not null and public.teaches_course(course_id))));
+    or (course_id is not null and public.teaches_course(course_id))
+    -- Courses from before the site (no course on the site): every teacher.
+    or (course_id is null and public.is_faculty())));
 -- Past records waiting for their student: Admins only (changed through functions).
 create policy past_records_select on public.past_records for select to authenticated
   using (public.is_active_user() and public.is_super_admin());
@@ -2078,6 +2135,7 @@ revoke execute on function public.record_final_grades(text, jsonb) from public, 
 revoke execute on function public.save_transcript_entry(uuid, uuid, text, numeric, text, text, date, date, numeric, text, text, text) from public, anon;
 revoke execute on function public.delete_transcript_entry(uuid) from public, anon;
 revoke execute on function public.claim_past_records(uuid, uuid[]) from public, anon, authenticated;
+revoke execute on function public.publish_past_records() from public, anon, authenticated;
 revoke execute on function public.import_past_records(jsonb, boolean) from public, anon;
 revoke execute on function public.link_past_records(uuid[], uuid) from public, anon;
 revoke execute on function public.delete_past_record(uuid) from public, anon;

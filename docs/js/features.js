@@ -387,7 +387,8 @@ function transcriptPerson(ref) {
     name: (u && u.name) || (latest && latest.studentName) || "Student",
     email: (u && u.email) || (latest && latest.studentEmail) || "",
     since: u && u.createdAt ? u.createdAt : null,
-    former: !u,
+    former: !u && !entries.some((e) => e.awaitingSignup),
+    notJoined: !u && entries.some((e) => e.awaitingSignup), // courses from before the site; hasn't signed up yet
   };
 }
 // Courses in progress (enrolled, not yet recorded) — for the student's own view and Admins.
@@ -413,7 +414,7 @@ function renderTranscript(main) {
     </div>
     <div class="form-actions" style="margin:0 0 16px;flex-wrap:wrap;">
       <button class="btn btn-gold" id="trPdf">${icon("download")} Download PDF</button>
-      ${canEdit && !p.former ? `<button class="btn btn-ghost" id="trAdd">+ Add a Past Course</button>` : ""}
+      ${canEdit && !p.former && !p.notJoined ? `<button class="btn btn-ghost" id="trAdd">+ Add a Past Course</button>` : ""}
     </div>
     <div class="transcript-sheet">
       <div class="ts-head">
@@ -424,7 +425,7 @@ function renderTranscript(main) {
         </div>
       </div>
       <div class="ts-who">
-        <div><span class="ts-label">Student</span><strong>${esc(p.name)}</strong>${p.former ? ` <span class="pill pill-gray">Former student</span>` : ""}</div>
+        <div><span class="ts-label">Student</span><strong>${esc(p.name)}</strong>${p.former ? ` <span class="pill pill-gray">Former student</span>` : ""}${p.notJoined ? ` <span class="pill pill-gold">Not signed up yet</span>` : ""}</div>
         ${p.email ? `<div><span class="ts-label">Email</span>${esc(p.email)}</div>` : ""}
         ${p.since ? `<div><span class="ts-label">Student since</span>${esc(parseDay(p.since).toLocaleDateString(undefined, { month: "long", year: "numeric" }))}</div>` : ""}
       </div>
@@ -472,13 +473,13 @@ function renderTranscripts(main) {
   if (isAdmin()) users.filter((u) => u.role === "student" && u.status !== "pending" && !refs.has(u.id)).forEach((u) => refs.set(u.id, transcriptPerson(u.id)));
   const q = transcriptsQuery.trim().toLowerCase();
   const people = [...refs.values()].filter((p) => !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q))
-    .sort((a, b) => (a.former - b.former) || a.name.localeCompare(b.name));
+    .sort((a, b) => (a.former - b.former) || lastFirst(a.name).localeCompare(lastFirst(b.name)));
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
       <div class="eyebrow">${staffEyebrow()}</div>
       <h1>Transcripts</h1>
-      <p>${isAdmin() ? "Every student's permanent record — including former students whose accounts were deleted. Open one to review it, correct it, add courses taken before the site, or download it." : "Final grades recorded in the courses you teach."}</p>
+      <p>${isAdmin() ? "Every student's permanent record — including former students whose accounts were deleted, and past students who haven't signed up yet. Open one to review it, correct it, add courses taken before the site, or download it." : "Final grades recorded in the courses you teach, and every student's courses from before the site (including students who haven't signed up yet)."}</p>
     </div>
     <div class="card">
       <div class="card-row" style="gap:10px;flex-wrap:wrap;">
@@ -488,7 +489,7 @@ function renderTranscripts(main) {
       ${people.length === 0 ? `<div class="empty-state"><p>${q ? "No one matches that search." : "No transcripts yet. They appear when a teacher records final grades (Grading → a course → Record Final Grades)."}</p></div>` : `
       <ul class="materials-list" style="margin-top:8px;">
         ${people.map((p) => { const s = transcriptSummary(p.entries); return `<li class="tr-person" data-tr-ref="${p.ref}" role="button" tabindex="0">
-          <div><strong>${esc(p.name)}</strong> ${p.former ? `<span class="pill pill-gray">Former student</span>` : ""}
+          <div><strong>${esc(p.name)}</strong> ${p.former ? `<span class="pill pill-gray">Former student</span>` : ""}${p.notJoined ? `<span class="pill pill-gold">Not signed up yet</span>` : ""}
             <div class="field-hint" style="margin:2px 0 0;">${p.entries.length} course${p.entries.length === 1 ? "" : "s"} · ${fmtCredits(s.earned)} credits${s.gpa === null ? "" : ` · GPA ${s.gpa.toFixed(2)}`}${p.email ? ` · ${esc(p.email)}` : ""}</div></div>
           <span class="btn btn-ghost btn-sm">Open</span>
         </li>`; }).join("")}
@@ -858,7 +859,7 @@ function renderPastRecords(main) {
     <div class="page-header">
       <div class="eyebrow">Admin · Transcripts</div>
       <h1>Past Records</h1>
-      <p>Grades from before the site. Each record waits under the student's email and goes onto their transcript by itself when they sign up, confirm their email, and are approved.</p>
+      <p>Grades from before the site. Each record is on a transcript right away under the student's name (marked <strong>Not signed up yet</strong>), so teachers can see it. When the student signs up, confirms their email, and is approved, that transcript becomes theirs automatically.</p>
     </div>
     <div class="ts-stats" style="margin-bottom:18px;">
       <div><span>${waiting.length}</span>Waiting for their student</div>
@@ -868,7 +869,7 @@ function renderPastRecords(main) {
     <div class="card" id="pastImportCard">${pastImportHtml()}</div>
     <div class="card">
       <h2 class="card-title" style="margin:0 0 4px;">Waiting for their student</h2>
-      <p class="field-hint" style="margin:0 0 12px;">If someone signs up with a different email, or there was no email on file, use <strong>Link to Account</strong> once they're approved.</p>
+      <p class="field-hint" style="margin:0 0 12px;">These already show on Transcripts. If someone signs up with a different email, or there was no email on file, use <strong>Link to Account</strong> once they're approved.</p>
       ${waiting.length ? `<input type="search" id="prSearch" placeholder="Search by name, email or course" value="${esc(pastRecordsQuery)}" style="margin:0 0 6px;">` : ""}
       ${people.length === 0 ? `<div class="empty-state"><p>${q ? "No one matches that search." : waiting.length ? "" : "Nothing waiting. Import past grades above."}</p></div>` : `
       <ul class="materials-list">
@@ -1175,7 +1176,8 @@ function tourSteps() {
     { el: tile("studyBible"), title: "Study Bible", text: "The KJV with Strong's Concordance — and you can insert Scripture straight into anything you write." },
     ...(isAdmin() ? [{ el: tile("transcripts"), title: "Transcripts", text: "Every student's permanent record, including courses from before the site. Download any as a PDF." },
       { el: tile("settings"), title: "Settings", text: "Approve new sign-ups, set each person's level, and check backups." }]
-      : [{ el: tile("settings"), title: "Settings", text: "Approve new sign-ups waiting to join." }]),
+      : [{ el: tile("transcripts"), title: "Transcripts", text: "Final grades from your courses, and every student's courses from before the site." },
+        { el: tile("settings"), title: "Settings", text: "Approve new sign-ups waiting to join." }]),
     { el: "#notifBell", title: "Notifications", text: "Enrollment requests, messages, and new sign-ups show up here." },
     { el: "#myProfileBtn", title: "My Profile", text: "Your photo and details — and under <strong>Notifications</strong>, email and phone alerts, including a reminder 5 minutes before class starts if attendance hasn't been taken." },
     { el: "#helpBtn", title: "Help is always here", text: "Tap <strong>?</strong> for answers to common questions, or to take this tour again. Thank you for teaching others also!" },

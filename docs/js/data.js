@@ -318,6 +318,7 @@ function transcriptFromRow(t) {
     startDate: t.start_date, endDate: t.end_date, percent: t.percent === null || t.percent === undefined ? null : Number(t.percent),
     grade: t.grade, attendancePct: t.attendance_percent === null || t.attendance_percent === undefined ? null : Number(t.attendance_percent),
     teacherName: t.teacher_name || "", note: t.note || "", recordedAt: t.recorded_at,
+    awaitingSignup: !!t.awaiting_signup,
   };
 }
 

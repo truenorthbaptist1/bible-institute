@@ -687,7 +687,7 @@ function wireAuthFormHandlers() {
     gBtn.querySelector("span").textContent = "Opening Google…";
     const reset = () => { gBtn.classList.remove("is-busy"); const t = gBtn.querySelector("span"); if (t) t.textContent = "Continue with Google"; };
     setTimeout(reset, 6000);
-    const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: siteUrl() } });
+    const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: siteUrl(), queryParams: { prompt: "select_account" } } });
     if (error) { reset(); authError = friendlyError(error); renderAuthScreen(); }
   });
 
@@ -1415,7 +1415,7 @@ function renderFacultyHome(main) {
     { key: "messages", i: "mail", label: "Message Inbox", desc: "Messages from your students" },
     { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
     { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and About me" },
-    ...(isAdmin() ? [{ key: "transcripts", i: "scroll", label: "Transcripts", desc: "Every student's permanent record" }] : []),
+    { key: "transcripts", i: "scroll", label: "Transcripts", desc: isAdmin() ? "Every student's permanent record" : "Final grades, and courses from before the site" },
     { key: "settings", i: "gear", label: "Settings", desc: isAdmin() ? "Users, levels, and backups" : "Users and new sign-ups" },
     { key: "help", i: "help", label: "Help & Tour", desc: "How everything works" },
   ];
