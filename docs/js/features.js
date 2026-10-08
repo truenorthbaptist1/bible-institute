@@ -849,7 +849,7 @@ const HELP_FACULTY = [
     ["Then what?", "Archive the course from Courses. (If final grades haven't been recorded, you'll be asked first.)"],
   ]],
   ["Notifications & phone", [
-    ["How will I hear from students?", "The bell shows new messages and enrollment requests. Set up email and phone notifications in <strong>My Profile → Notifications</strong>. Teachers also get a phone reminder when class starts if attendance hasn't been taken."],
+    ["How will I hear from students?", "The bell shows new messages and enrollment requests. Set up email and phone notifications in <strong>My Profile → Notifications</strong>. Teachers also get a phone reminder 5 minutes before class starts if attendance hasn't been taken."],
     ["Phone calendar", "On the <strong>Calendar</strong> page, <strong>Add to My Phone's Calendar</strong> puts your class days and due dates in your phone's calendar."],
   ]],
 ];
@@ -917,7 +917,7 @@ function tourSteps() {
       { el: tile("settings"), title: "Settings", text: "Approve new sign-ups, set each person's level, and check backups." }]
       : [{ el: tile("settings"), title: "Settings", text: "Approve new sign-ups waiting to join." }]),
     { el: "#notifBell", title: "Notifications", text: "Enrollment requests, messages, and new sign-ups show up here." },
-    { el: "#myProfileBtn", title: "My Profile", text: "Your photo and details — and under <strong>Notifications</strong>, email and phone alerts, including a reminder when class starts and attendance hasn't been taken." },
+    { el: "#myProfileBtn", title: "My Profile", text: "Your photo and details — and under <strong>Notifications</strong>, email and phone alerts, including a reminder 5 minutes before class starts if attendance hasn't been taken." },
     { el: "#helpBtn", title: "Help is always here", text: "Tap <strong>?</strong> for answers to common questions, or to take this tour again. Thank you for teaching others also!" },
   ];
 }

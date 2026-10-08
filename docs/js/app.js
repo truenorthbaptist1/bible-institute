@@ -3994,7 +3994,7 @@ function renderAttendanceCard(c) {
 
 // ---------------------------------------------------------------------------
 // Class reminders (phone notifications) — the card on a teacher's My Profile.
-// When a class that records attendance starts, its teacher gets a
+// 5 minutes before a class that records attendance starts, its teacher gets a
 // notification that opens that day's attendance. Each phone (or computer)
 // is turned on separately. iPhones need the site added to the Home Screen
 // first (an Apple rule for web notifications, iOS 16.4 or newer).
@@ -4065,7 +4065,7 @@ function wireDueReminderChooser(wrap) {
 async function renderReminderCard() {
   const wrap = document.getElementById("reminderCard");
   if (!wrap) return;
-  const intro = `<p style="margin:0 0 12px;">Hear about new messages, grades, announcements, class cancellations, and more without having to sign in — on your phone, by email, or both.${role === "student" ? "" : " On your phone you'll also get a reminder when one of your classes starts and attendance hasn't been taken."}</p>
+  const intro = `<p style="margin:0 0 12px;">Hear about new messages, grades, announcements, class cancellations, and more without having to sign in — on your phone, by email, or both.${role === "student" ? "" : " On your phone you'll also get a reminder 5 minutes before each of your classes starts, until attendance is taken."}</p>
     <div class="cal-modal-label" style="margin:0 0 8px;">On this phone or computer</div>`;
 
   if (!pushSupported()) {
