@@ -346,11 +346,13 @@ function openCopyCourseModal(c) {
 // ---------------------------------------------------------------------------
 // Transcripts
 // ---------------------------------------------------------------------------
-const GRADE_POINTS = { A: 4, B: 3, C: 2, D: 1, F: 0 };
+// Plus/minus letters (as on the Institute's grade sheets) were added Oct 8.
+const GRADE_POINTS = { "A+": 4, A: 4, "A-": 3.7, "B+": 3.3, B: 3, "B-": 2.7, "C+": 2.3, C: 2, "C-": 1.7, "D+": 1.3, D: 1, "D-": 0.7, F: 0 };
 const GRADE_CHOICES = [
-  ["A", "A"], ["B", "B"], ["C", "C"], ["D", "D"], ["F", "F"],
+  ...Object.keys(GRADE_POINTS).map((k) => [k, k]),
   ["P", "P — Pass"], ["I", "I — Incomplete"], ["W", "W — Withdrew"], ["AU", "AU — Audit"],
 ];
+function gradeEarnsCredit(g) { return g === "P" || (g in GRADE_POINTS && g !== "F"); }
 const GRADE_MEANING = { P: "Pass", I: "Incomplete", W: "Withdrew", AU: "Audit" };
 let transcriptStudentRef = null; // Admin/teacher viewing someone else's; null = mine
 let transcriptsQuery = "";
@@ -359,7 +361,7 @@ function transcriptSummary(entries) {
   let attempted = 0, earned = 0, gpaCredits = 0, points = 0;
   entries.forEach((e) => {
     if (e.grade !== "AU" && e.grade !== "W") attempted += e.credits;
-    if (["A", "B", "C", "D", "P"].includes(e.grade)) earned += e.credits;
+    if (gradeEarnsCredit(e.grade)) earned += e.credits;
     if (e.grade in GRADE_POINTS) { gpaCredits += e.credits; points += GRADE_POINTS[e.grade] * e.credits; }
   });
   return { attempted, earned, gpa: gpaCredits ? Math.round((points / gpaCredits) * 100) / 100 : null };
@@ -450,7 +452,7 @@ function renderTranscript(main) {
       ${inProgress.length ? `
         <div class="ts-term">In progress</div>
         <ul class="ts-progress">${inProgress.map((c) => `<li>${esc(c.title)} <span class="ts-small">· ${c.credits} credit${c.credits === 1 ? "" : "s"}</span></li>`).join("")}</ul>` : ""}
-      <div class="ts-foot">Grades: A 90–100 · B 80–89 · C 70–79 · D 60–69 · F below 60 · P Pass · I Incomplete · W Withdrew · AU Audit. GPA on a 4.0 scale; P, I, W, and AU don't count toward it.</div>
+      <div class="ts-foot">Grading scale: A+ 97–100 · A 94–96 · A− 90–93 · B+ 87–89 · B 84–86 · B− 80–83 · C+ 77–79 · C 74–76 · C− 70–73 · F below 70 · P Pass · I Incomplete · W Withdrew · AU Audit. GPA on a 4.0 scale (A+/A 4.0, A− 3.7, B+ 3.3, B 3.0, B− 2.7, C+ 2.3, C 2.0, C− 1.7, F 0); P, I, W, and AU don't count toward it. Some earlier courses also used D grades (D+ 1.3, D 1.0, D− 0.7).</div>
     </div>`;
   document.getElementById("backLink").addEventListener("click", () => {
     if (viewingOther) { transcriptStudentRef = null; view = "transcripts"; } else view = "home";
@@ -481,7 +483,7 @@ function renderTranscripts(main) {
     <div class="card">
       <div class="card-row" style="gap:10px;flex-wrap:wrap;">
         <input type="search" id="trSearch" placeholder="Search by name or email" value="${esc(transcriptsQuery)}" style="flex:1;min-width:200px;margin:0;">
-        ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="trAllPdf">${icon("download")} All Transcripts (PDF)</button><button class="btn btn-ghost btn-sm" id="trCsv">${icon("download")} Spreadsheet (CSV)</button>` : ""}
+        ${isAdmin() ? `<button class="btn btn-gold btn-sm" id="trPast">Past Records${pastRecords.some((r) => !r.claimedAt) ? ` <span class="count-chip">${pastRecords.filter((r) => !r.claimedAt).length}</span>` : ""}</button><button class="btn btn-ghost btn-sm" id="trAllPdf">${icon("download")} All Transcripts (PDF)</button><button class="btn btn-ghost btn-sm" id="trCsv">${icon("download")} Spreadsheet (CSV)</button>` : ""}
       </div>
       ${people.length === 0 ? `<div class="empty-state"><p>${q ? "No one matches that search." : "No transcripts yet. They appear when a teacher records final grades (Grading → a course → Record Final Grades)."}</p></div>` : `
       <ul class="materials-list" style="margin-top:8px;">
@@ -508,6 +510,8 @@ function renderTranscripts(main) {
   });
   const csv = document.getElementById("trCsv");
   if (csv) csv.addEventListener("click", downloadTranscriptsCsv);
+  const past = document.getElementById("trPast");
+  if (past) past.addEventListener("click", () => { view = "pastRecords"; renderNav(); renderMain(); });
 }
 
 function openTranscriptEntryModal(entry, person) {
@@ -526,7 +530,7 @@ function openTranscriptEntryModal(entry, person) {
         </div>
         <div class="form-row">
           <div><label for="teGrade">Grade</label><select id="teGrade">${GRADE_CHOICES.map(([k, l]) => `<option value="${k}" ${k === e.grade ? "selected" : ""}>${l}</option>`).join("")}</select></div>
-          <div><label for="tePercent">Score % <span class="field-hint" style="display:inline;margin:0;">(optional)</span></label><input type="number" id="tePercent" min="0" max="100" step="0.1" value="${e.percent === null ? "" : e.percent}"></div>
+          <div><label for="tePercent">Score % <span class="field-hint" style="display:inline;margin:0;">(optional)</span></label><input type="number" id="tePercent" min="0" max="110" step="0.1" value="${e.percent === null ? "" : e.percent}"></div>
         </div>
         <div class="form-row">
           <div><label for="teStart">Started</label><input type="date" id="teStart" value="${e.startDate || ""}"></div>
@@ -587,7 +591,7 @@ function openRecordGradesModal(c, after) {
               const letter = prev ? prev.grade : g.letter || "I";
               return `<tr data-rg-student="${u.id}" data-rg-att="${g.attendance && g.attendance.pct !== null ? g.attendance.pct : ""}">
                 <td><strong>${esc(lastFirst(u.name))}</strong>${prev ? `<div class="ts-small">Recorded ${esc(new Date(prev.recordedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</div>` : ""}</td>
-                <td class="num"><input type="number" class="rg-pct" min="0" max="100" step="0.1" value="${pct === null ? "" : pct}" aria-label="Score for ${esc(u.name)}"></td>
+                <td class="num"><input type="number" class="rg-pct" min="0" max="110" step="0.1" value="${pct === null ? "" : pct}" aria-label="Score for ${esc(u.name)}"></td>
                 <td><select class="rg-grade" aria-label="Grade for ${esc(u.name)}">${GRADE_CHOICES.map(([k, l]) => `<option value="${k}" ${k === letter ? "selected" : ""}>${l}</option>`).join("")}</select></td>
                 <td><input type="text" class="rg-note" maxlength="300" value="${esc(prev ? prev.note : "")}" aria-label="Note for ${esc(u.name)}"></td>
               </tr>`;
@@ -606,7 +610,7 @@ function openRecordGradesModal(c, after) {
   root.querySelectorAll("[data-rg-student]").forEach((tr) => {
     tr.querySelector(".rg-pct").addEventListener("input", (e) => {
       const sel = tr.querySelector(".rg-grade");
-      if (e.target.value !== "" && "ABCDF".includes(sel.value)) sel.value = pctToLetter(Number(e.target.value));
+      if (e.target.value !== "" && /^[A-DF][+-]?$/.test(sel.value)) sel.value = pctToLetter(Number(e.target.value));
     });
   });
   document.getElementById("rgSave").addEventListener("click", () => {
@@ -744,7 +748,7 @@ async function downloadTranscriptPdf(refs) {
     });
     ensure(40);
     doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...MUTED);
-    doc.text(doc.splitTextToSize("Grading scale: A 90-100, B 80-89, C 70-79, D 60-69, F below 60. P Pass, I Incomplete, W Withdrew, AU Audit. Grade point average is on a 4.0 scale; P, I, W, and AU are not included.", W - 2 * M), M, y + 4);
+    doc.text(doc.splitTextToSize("Grading scale: A+ 97-100, A 94-96, A- 90-93, B+ 87-89, B 84-86, B- 80-83, C+ 77-79, C 74-76, C- 70-73, F below 70. P Pass, I Incomplete, W Withdrew, AU Audit. Grade point average on a 4.0 scale (A+/A 4.0, A- 3.7, B+ 3.3, B 3.0, B- 2.7, C+ 2.3, C 2.0, C- 1.7, F 0; earlier D grades D+ 1.3, D 1.0, D- 0.7); P, I, W, and AU are not included.", W - 2 * M), M, y + 4);
     footer(pageNo);
   });
   const one = refs.length === 1 ? transcriptPerson(refs[0]).name : "All Students";
@@ -765,6 +769,260 @@ function saveBlob(blob, name) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Past Records (Admins) — grades from before the site, added Oct 8, 2026.
+// Each record waits under the student's email and moves onto their
+// transcript by itself once they sign up, confirm the email, and are
+// approved. Admins import them from a spreadsheet (CSV) and can link a
+// record to an account by hand.
+// ---------------------------------------------------------------------------
+let pastRecordsQuery = "";
+let pastImport = null; // { fileName, rows, result } while checking a file
+
+const PAST_COLS = {
+  name: ["student", "name", "student name"],
+  email: ["email", "email for the site", "e-mail"],
+  course: ["course", "course title"],
+  term: ["term", "semester"],
+  credits: ["credits", "credit hours"],
+  grade: ["grade", "transcript grade", "letter"],
+  percent: ["score %", "score", "percent", "final %", "final grade %"],
+  teacher: ["instructor", "teacher"],
+  start: ["started", "start", "start date"],
+  end: ["finished", "end", "end date"],
+  level: ["level"],
+  note: ["note", "notes"],
+};
+const PAST_TEMPLATE_HEAD = ["Student", "Email", "Course", "Term", "Credits", "Grade", "Score %", "Instructor", "Started", "Finished", "Level", "Note"];
+
+// A small, forgiving CSV reader (quotes, commas and line breaks inside quotes).
+function parseCsv(text) {
+  const rows = [];
+  let row = [], cell = "", q = false;
+  text = String(text || "").replace(/^﻿/, "");
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; }
+      else cell += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell); rows.push(row); row = []; cell = "";
+    } else cell += ch;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter((r) => r.some((c) => String(c).trim() !== ""));
+}
+// CSV text → [{ name, email, course, ... }]. Throws a plain sentence if the
+// file doesn't have the columns we need.
+function pastRowsFromCsv(text) {
+  const rows = parseCsv(text);
+  if (rows.length < 2) throw new Error("That file has no rows to import.");
+  const head = rows[0].map((h) => String(h).trim().toLowerCase());
+  const idx = {};
+  Object.entries(PAST_COLS).forEach(([k, names]) => { const i = head.findIndex((h) => names.includes(h)); if (i >= 0) idx[k] = i; });
+  const missing = ["name", "course", "grade"].filter((k) => idx[k] === undefined);
+  if (missing.length) throw new Error(`The first row needs these column names: Student, Course, Grade (missing ${missing.map((m) => PAST_COLS[m][0]).join(", ")}). Download the template to see the layout.`);
+  return rows.slice(1).map((r) => {
+    const o = {};
+    Object.keys(PAST_COLS).forEach((k) => { o[k] = idx[k] === undefined ? "" : String(r[idx[k]] ?? "").trim(); });
+    o.percent = o.percent.replace(/%$/, "").trim();
+    return o;
+  });
+}
+
+function pastPeople() {
+  // Waiting records grouped by student (email, or name when there's no email).
+  const groups = new Map();
+  pastRecords.filter((r) => !r.claimedAt).forEach((r) => {
+    const k = r.email || "name:" + r.studentName.toLowerCase();
+    if (!groups.has(k)) groups.set(k, { key: k, name: r.studentName, email: r.email, records: [] });
+    groups.get(k).records.push(r);
+  });
+  return [...groups.values()].sort((a, b) => lastFirst(a.name).localeCompare(lastFirst(b.name)));
+}
+
+function renderPastRecords(main) {
+  if (!isAdmin()) { view = "home"; renderNav(); return renderMain(); }
+  const waiting = pastRecords.filter((r) => !r.claimedAt);
+  const claimed = pastRecords.filter((r) => r.claimedAt);
+  const q = pastRecordsQuery.trim().toLowerCase();
+  const people = pastPeople().filter((p) => !q || p.name.toLowerCase().includes(q) || p.email.includes(q) || p.records.some((r) => r.courseTitle.toLowerCase().includes(q)));
+  const nameOf = (id) => { const u = users.find((x) => x.id === id); return u ? u.name : "a deleted account"; };
+  main.innerHTML = `
+    <button class="back-link" id="backLink">&larr; Back to Transcripts</button>
+    <div class="page-header">
+      <div class="eyebrow">Admin · Transcripts</div>
+      <h1>Past Records</h1>
+      <p>Grades from before the site. Each record waits under the student's email and goes onto their transcript by itself when they sign up, confirm their email, and are approved.</p>
+    </div>
+    <div class="ts-stats" style="margin-bottom:18px;">
+      <div><span>${waiting.length}</span>Waiting for their student</div>
+      <div><span>${pastPeople().length}</span>Student${pastPeople().length === 1 ? "" : "s"} still to sign up</div>
+      <div><span>${claimed.length}</span>Already on transcripts</div>
+    </div>
+    <div class="card" id="pastImportCard">${pastImportHtml()}</div>
+    <div class="card">
+      <h2 class="card-title" style="margin:0 0 4px;">Waiting for their student</h2>
+      <p class="field-hint" style="margin:0 0 12px;">If someone signs up with a different email, or there was no email on file, use <strong>Link to Account</strong> once they're approved.</p>
+      ${waiting.length ? `<input type="search" id="prSearch" placeholder="Search by name, email or course" value="${esc(pastRecordsQuery)}" style="margin:0 0 6px;">` : ""}
+      ${people.length === 0 ? `<div class="empty-state"><p>${q ? "No one matches that search." : waiting.length ? "" : "Nothing waiting. Import past grades above."}</p></div>` : `
+      <ul class="materials-list">
+        ${people.map((p) => `<li>
+          <div style="flex:1;min-width:0;">
+            <strong>${esc(p.name)}</strong> ${p.email ? `<span class="field-hint" style="display:inline;margin:0;">· ${esc(p.email)}</span>` : `<span class="pill pill-gold">No email: link by hand</span>`}
+            <ul class="pr-courses">
+              ${p.records.sort((a, b) => (a.startDate || a.term).localeCompare(b.startDate || b.term)).map((r) => `<li>
+                <span>${esc(r.courseTitle)} <span class="ts-small">· ${esc(r.term || "No term")}</span></span>
+                <span><span class="ts-grade">${esc(r.grade)}</span>${r.percent === null ? "" : ` <span class="ts-small">${Math.round(r.percent * 100) / 100}%</span>`}
+                <button class="btn btn-ghost btn-sm" data-pr-remove="${r.id}" aria-label="Remove ${esc(r.courseTitle)} for ${esc(p.name)}">Remove</button></span>
+              </li>`).join("")}
+            </ul>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-pr-link="${esc(p.key)}">Link to Account</button>
+        </li>`).join("")}
+      </ul>`}
+    </div>
+    ${claimed.length ? `
+    <div class="card">
+      <details>
+        <summary><strong>Already on transcripts (${claimed.length})</strong></summary>
+        <ul class="pr-courses" style="margin-top:10px;">
+          ${[...claimed].sort((a, b) => (b.claimedAt || "").localeCompare(a.claimedAt || "")).map((r) => `<li>
+            <span>${esc(r.studentName)} <span class="ts-small">· ${esc(r.courseTitle)} · ${esc(r.term)}</span></span>
+            <span class="ts-small">→ ${esc(nameOf(r.claimedBy))}, ${esc(new Date(r.claimedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }))}</span>
+          </li>`).join("")}
+        </ul>
+      </details>
+    </div>` : ""}`;
+  document.getElementById("backLink").addEventListener("click", () => { pastImport = null; view = "transcripts"; renderNav(); renderMain(); });
+  wirePastImport(main);
+  const s = document.getElementById("prSearch");
+  if (s) s.addEventListener("input", () => { pastRecordsQuery = s.value; const pos = s.selectionStart; renderPastRecords(main); const n = document.getElementById("prSearch"); n.focus(); n.setSelectionRange(pos, pos); });
+  main.querySelectorAll("[data-pr-remove]").forEach((b) => b.addEventListener("click", () => {
+    const r = pastRecords.find((x) => x.id === b.dataset.prRemove);
+    if (!r || !confirm(`Remove ${r.courseTitle} (${r.term || "no term"}) for ${r.studentName}? It won't go on anyone's transcript.`)) return;
+    run(() => DB.deletePastRecord(r.id), null, { success: "Removed." });
+  }));
+  main.querySelectorAll("[data-pr-link]").forEach((b) => b.addEventListener("click", () => {
+    const p = pastPeople().find((x) => x.key === b.dataset.prLink);
+    if (p) openLinkPastModal(p);
+  }));
+}
+
+function pastImportHtml() {
+  if (!pastImport) return `
+    <h2 class="card-title" style="margin:0 0 4px;">Import past grades</h2>
+    <p class="field-hint" style="margin:0 0 12px;">Use a spreadsheet saved as CSV (in Excel or Google Sheets: File → Save As / Download → CSV), one row per student per course. Columns: <strong>Student, Course, Grade</strong> (required), plus Email, Term, Credits, Score %, Instructor, Started, Finished, Level, Note. Grades: A+ to F, P (Pass), I (Incomplete), W (Withdrew), AU (Audit). Nothing is saved until you've checked the file.</p>
+    <div class="form-actions" style="margin:0;flex-wrap:wrap;">
+      <label class="btn btn-gold" for="prFile" style="margin:0;">${icon("upload")} Choose a CSV File</label>
+      <input type="file" id="prFile" accept=".csv,text/csv" hidden>
+      <button class="btn btn-ghost" id="prTemplate">${icon("download")} Download the Template</button>
+    </div>`;
+  const r = pastImport.result;
+  const label = { new: ["Waits for sign-up", "pill-navy"], attach: ["Goes on now", "pill-green"], same: ["Already imported", "pill-gray"], problem: ["Problem", "pill-red"] };
+  return `
+    <h2 class="card-title" style="margin:0 0 4px;">Check before importing: ${esc(pastImport.fileName)}</h2>
+    <p class="field-hint" style="margin:0 0 10px;">${pastImport.rows.length} row${pastImport.rows.length === 1 ? "" : "s"} read. Nothing has been saved yet.</p>
+    <div class="pr-summary">
+      <span class="pill pill-navy">${r.new} will wait for ${r.new === 1 ? "its student" : "their students"}</span>
+      <span class="pill pill-green">${r.attach} ${r.attach === 1 ? "goes" : "go"} on a transcript now</span>
+      ${r.same ? `<span class="pill pill-gray">${r.same} already imported (skipped)</span>` : ""}
+      ${r.problems ? `<span class="pill pill-red">${r.problems} with a problem</span>` : ""}
+    </div>
+    ${r.problems ? `<p class="pr-problem-note">Fix the rows marked <strong>Problem</strong> in your spreadsheet, save it as CSV again, and choose it again. Nothing is imported while any row has a problem.</p>` : ""}
+    <div class="table-scroll" style="max-height:420px;">
+      <table class="rg-table pr-table">
+        <thead><tr><th>#</th><th>Student</th><th>Course</th><th>Term</th><th class="num">Grade</th><th>What happens</th></tr></thead>
+        <tbody>
+          ${r.rows.map((x) => { const row = pastImport.rows[x.row - 1] || {}; const [t, cls] = label[x.status] || ["", ""]; return `<tr class="${x.status === "problem" ? "pr-bad" : ""}">
+            <td>${x.row + 1}</td>
+            <td><strong>${esc(row.name)}</strong><div class="ts-small">${esc(row.email || "no email")}</div></td>
+            <td>${esc(row.course)}</td><td>${esc(row.term)}</td>
+            <td class="num"><span class="ts-grade">${esc((row.grade || "").toUpperCase())}</span></td>
+            <td><span class="pill ${cls}">${t}</span>${x.message ? `<div class="ts-small">${esc(x.message)}</div>` : ""}</td>
+          </tr>`; }).join("")}
+        </tbody>
+      </table>
+    </div>
+    <div class="form-actions" style="flex-wrap:wrap;">
+      <button class="btn btn-primary" id="prCommit" ${r.problems || !(r.new + r.attach) ? "disabled" : ""}>Import ${r.new + r.attach} Record${r.new + r.attach === 1 ? "" : "s"}</button>
+      <button class="btn btn-ghost" id="prCancel">Choose a Different File</button>
+    </div>`;
+}
+
+function wirePastImport(main) {
+  const card = document.getElementById("pastImportCard");
+  const redraw = () => { card.innerHTML = pastImportHtml(); wirePastImport(main); };
+  const tpl = document.getElementById("prTemplate");
+  if (tpl) tpl.addEventListener("click", () => {
+    const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const example = ["Jane Doe", "jane@example.com", "Hermeneutics I", "Spring 2025", 3, "B+", 88.5, "Pastor Phil McBroom", "2025-01-24", "2025-05-30", "Foundational", ""];
+    saveBlob(new Blob(["﻿" + [PAST_TEMPLATE_HEAD, example].map((r) => r.map(q).join(",")).join("\r\n")], { type: "text/csv" }), "TNBBI past records template.csv");
+  });
+  const file = document.getElementById("prFile");
+  if (file) file.addEventListener("change", async () => {
+    const f = file.files && file.files[0];
+    if (!f) return;
+    let rows;
+    try { rows = pastRowsFromCsv(await f.text()); }
+    catch (e) { toast(e.message || "That file couldn't be read. Save it as CSV and try again."); file.value = ""; return; }
+    run(async () => {
+      const result = await DB.importPastRecords(rows, false);
+      pastImport = { fileName: f.name, rows, result };
+    }, () => redraw(), { reload: false });
+  });
+  const cancel = document.getElementById("prCancel");
+  if (cancel) cancel.addEventListener("click", () => { pastImport = null; redraw(); });
+  const commit = document.getElementById("prCommit");
+  if (commit) commit.addEventListener("click", () => {
+    const r = pastImport.result;
+    if (!confirm(`Import ${r.new + r.attach} past record${r.new + r.attach === 1 ? "" : "s"}?${r.attach ? ` ${r.attach} go straight onto transcripts of people who already have accounts.` : ""}`)) return;
+    let saved;
+    run(async () => { saved = await DB.importPastRecords(pastImport.rows, true); pastImport = null; }, null,
+      { success: "Past records imported." }).then((ok) => {
+      if (ok && saved && saved.attached) toast(`${saved.attached} course${saved.attached === 1 ? " was" : "s were"} added to existing students' transcripts.`, "success");
+    });
+  });
+}
+
+function openLinkPastModal(p) {
+  const accounts = users.filter((u) => u.status === "active").sort((a, b) => lastFirst(a.name).localeCompare(lastFirst(b.name)));
+  const last = (n) => n.trim().split(/\s+/).pop().toLowerCase();
+  const guess = accounts.find((u) => u.name.toLowerCase() === p.name.toLowerCase())
+    || accounts.find((u) => last(u.name) === last(p.name) && u.name.toLowerCase()[0] === p.name.toLowerCase()[0]);
+  const root = document.getElementById("modalRoot");
+  const options = (filter) => accounts.filter((u) => !filter || u.name.toLowerCase().includes(filter) || (u.email || "").toLowerCase().includes(filter))
+    .map((u) => `<option value="${u.id}" ${guess && guess.id === u.id ? "selected" : ""}>${esc(lastFirst(u.name))}${u.email ? ` (${esc(u.email)})` : ""}</option>`).join("");
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="lpTitle" style="max-width:540px;">
+        <h2 id="lpTitle" style="font-size:1.15rem;margin:0 0 6px;">Link ${esc(p.name)}'s past records</h2>
+        <p style="margin:0 0 10px;color:var(--muted-foreground);font-size:.88rem;">${p.records.length === 1 ? "This course goes" : p.records.length + " courses go"} onto the transcript of the account you pick. Only approved accounts are listed.</p>
+        <ul class="pr-courses" style="margin:0 0 12px;">${p.records.map((r) => `<li><span>${esc(r.courseTitle)} <span class="ts-small">· ${esc(r.term)}</span></span><span class="ts-grade">${esc(r.grade)}</span></li>`).join("")}</ul>
+        <label for="lpSearch">Find the account</label>
+        <input type="search" id="lpSearch" placeholder="Type a name or email">
+        <select id="lpPick" size="6" style="width:100%;margin-top:6px;">${options("")}</select>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="lpSave">Put on This Transcript</button>
+          <button class="btn btn-ghost" id="lpClose">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  const pick = document.getElementById("lpPick");
+  document.getElementById("lpSearch").addEventListener("input", (e) => { pick.innerHTML = options(e.target.value.trim().toLowerCase()); });
+  document.getElementById("lpClose").addEventListener("click", closeModal);
+  document.getElementById("lpSave").addEventListener("click", () => {
+    const u = accounts.find((x) => x.id === pick.value);
+    if (!u) { toast("Pick the account first."); pick.focus(); return; }
+    if (!confirm(`Put ${p.records.length} past course${p.records.length === 1 ? "" : "s"} on ${u.name}'s transcript?`)) return;
+    run(async () => { await DB.linkPastRecords(p.records.map((r) => r.id), u.id); closeModal(); }, null,
+      { success: `Added to ${u.name}'s transcript.` });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -816,6 +1074,7 @@ const HELP_STUDENT = [
   ["Classwork", [
     ["How do I turn in an assignment?", "Open <strong>Submit Work</strong> (or tap the assignment on the Calendar or your course page). Attach a file — a PDF, Word document, or a photo of handwritten work — or write it right in the editor, then tap <strong>Turn In</strong>. You can replace it until it's graded."],
     ["Can I save my writing and finish later?", "Yes. When you write in the editor, your draft is saved on that device as you type, and <strong>Save Progress</strong> keeps it with your account."],
+    ["How are letter grades figured?", "The same scale as the Institute's paper grade sheets: A+ 97–100, A 94–96, A− 90–93, B+ 87–89, B 84–86, B− 80–83, C+ 77–79, C 74–76, C− 70–73, and F below 70."],
     ["Where do I see my grades?", "<strong>My Grades</strong> shows each course's running grade and every score and comment. When a course ends, your teacher records the final grade on <strong>My Transcript</strong>, which you can download as a PDF any time."],
     ["What does “Locked” mean?", "Some assignments open on a certain day. Until then they show <strong>Opens</strong> with the date."],
   ]],
@@ -857,6 +1116,7 @@ const HELP_ADMIN = [
   ["For Admins", [
     ["Approving new sign-ups", "New accounts wait under <strong>Settings → Waiting for Approval</strong>. You get a notification when one is waiting."],
     ["Transcripts", "The <strong>Transcripts</strong> tile lists every student, including former students. Open one to review, correct, add courses taken before the site existed, or download a PDF. You can also download all transcripts at once."],
+    ["Past grades from before the site", "Transcripts → <strong>Past Records</strong>. Import the old grade sheets as a CSV file (download the template to see the columns). Each record waits under the student's email and goes onto their transcript by itself once they sign up, confirm their email, and are approved. If someone uses a different email, or none was on file, use <strong>Link to Account</strong> after approving them."],
     ["Backups", "<strong>Settings → Backups</strong> shows the nightly backup and the weekly copy emailed to the church Gmail, and lets you download a backup any time."],
   ]],
 ];

@@ -21,7 +21,7 @@ import gzip, json, sys
 # Parents before children, so references line up.
 ORDER = ["profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments",
          "submissions", "discussion_posts", "messages", "notifications", "bible_highlights",
-         "attendance_days", "attendance", "class_cancellations", "announcements", "transcript_entries"]
+         "attendance_days", "attendance", "class_cancellations", "announcements", "transcript_entries", "past_records"]
 
 
 def load(path):

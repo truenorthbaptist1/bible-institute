@@ -365,6 +365,48 @@ create table if not exists public.transcript_entries (
 );
 create index if not exists idx_transcripts_student on public.transcript_entries(student_ref);
 
+-- Letter grades with plus and minus, as on the Institute's grade sheets
+-- (added Oct 8, 2026), and scores just over 100 from extra credit.
+alter table public.transcript_entries drop constraint if exists transcript_entries_grade_check;
+alter table public.transcript_entries add constraint transcript_entries_grade_check check (grade in
+  ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU'));
+alter table public.transcript_entries drop constraint if exists transcript_entries_percent_check;
+alter table public.transcript_entries add constraint transcript_entries_percent_check
+  check (percent is null or (percent >= 0 and percent <= 110));
+
+-- Past records waiting for their student (added Oct 8, 2026).
+-- Grades from before the site existed, imported by an Admin from the old
+-- grade sheets. Each one waits under the student's email; when someone
+-- with that email confirms it and is approved, the records move onto their
+-- transcript automatically. An Admin can also link a record to an account
+-- by hand (different email, or none on file). Admins only: the website
+-- never shows these to anyone else. A record stays here after it is
+-- claimed (claimed_at / transcript_id) as a trail of where it came from.
+create table if not exists public.past_records (
+  id            uuid primary key default gen_random_uuid(),
+  email         text not null default '' check (email = lower(email) and length(email) <= 200),
+  student_name  text not null check (length(trim(student_name)) between 1 and 120),
+  course_title  text not null check (length(trim(course_title)) between 1 and 160),
+  credits       numeric not null default 0 check (credits >= 0 and credits <= 12),
+  level         text not null default '' check (length(level) <= 40),
+  term          text not null default '' check (length(term) <= 40),
+  start_date    date,
+  end_date      date,
+  percent       numeric check (percent is null or (percent >= 0 and percent <= 110)),
+  grade         text not null check (grade in
+                  ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU')),
+  teacher_name  text not null default '' check (length(teacher_name) <= 120),
+  note          text not null default '' check (length(note) <= 300),
+  -- name + course + term, so importing the same sheet twice adds nothing.
+  import_key    text not null unique,
+  imported_by   uuid references public.profiles(id) on delete set null,
+  imported_at   timestamptz not null default now(),
+  claimed_by    uuid references public.profiles(id) on delete set null,
+  claimed_at    timestamptz,
+  transcript_id uuid references public.transcript_entries(id) on delete set null
+);
+create index if not exists idx_past_records_email on public.past_records(email) where claimed_at is null;
+
 -- Backups: a snapshot of every table, taken nightly (and whenever an Admin
 -- downloads one). Postgres compresses these automatically. Not readable
 -- from the website except through the Admin-only functions below.
@@ -1229,6 +1271,179 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- Past records (grades from before the site) — added Oct 8, 2026
+-- ---------------------------------------------------------------------------
+-- Moves waiting records onto one person's transcript: every unclaimed
+-- record under their email (p_ids null), or the records an Admin picked.
+-- Internal: called by the trigger and the Admin functions below.
+create or replace function public.claim_past_records(p_profile uuid, p_ids uuid[] default null)
+returns int
+language plpgsql security definer set search_path = public as $$
+declare s profiles%rowtype; r past_records%rowtype; v_tid uuid; v_n int := 0;
+begin
+  select * into s from profiles where id = p_profile;
+  if s.id is null then return 0; end if;
+  for r in select * from past_records
+            where claimed_at is null
+              and (case when p_ids is null then email <> '' and email = lower(s.email) else id = any(p_ids) end)
+            order by start_date nulls first, term, course_title
+            for update loop
+    -- Already on this transcript (an Admin typed it in by hand)? Point at it.
+    v_tid := null;
+    select id into v_tid from transcript_entries
+     where student_ref = s.id and lower(course_title) = lower(r.course_title) and term = r.term limit 1;
+    if v_tid is null then
+      insert into transcript_entries (student_id, student_ref, student_name, student_email, course_id, course_title,
+          credits, level, term, start_date, end_date, percent, grade, teacher_name, note, recorded_by)
+      values (s.id, s.id, coalesce(nullif(s.name, ''), r.student_name), s.email, null, r.course_title,
+          r.credits, r.level, r.term, r.start_date, r.end_date, r.percent, r.grade, r.teacher_name, r.note, r.imported_by)
+      returning id into v_tid;
+      v_n := v_n + 1;
+    end if;
+    update past_records set claimed_by = s.id, claimed_at = now(), transcript_id = v_tid where id = r.id;
+  end loop;
+  if v_n > 0 then
+    perform public.notify(s.id, case when v_n = 1 then 'A course you took at the Institute before this site was added to your transcript.'
+        else v_n || ' courses you took at the Institute before this site were added to your transcript.' end,
+        '/?transcript=1', 'transcript');
+  end if;
+  return v_n;
+end $$;
+
+-- A person's records arrive once their email is confirmed AND they're
+-- approved (in either order). Pending or unconfirmed accounts get nothing.
+create or replace function public.claim_past_records_on_activation() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.status = 'active' and new.email_verified_at is not null
+     and not (old.status = 'active' and old.email_verified_at is not null) then
+    perform public.claim_past_records(new.id, null);
+  end if;
+  return new;
+end $$;
+drop trigger if exists claim_past_records_on_activation on public.profiles;
+create trigger claim_past_records_on_activation after update of status, email_verified_at on public.profiles
+  for each row execute function public.claim_past_records_on_activation();
+
+-- Admins: check (p_commit false) or save (p_commit true) a batch of past
+-- records. Each row: { name, email, course, term, credits, level, start,
+-- end, percent, grade, teacher, note }. Returns what happens to each row:
+--   new      — waits for the student to sign up
+--   attach   — the student already has an approved account; goes straight on
+--   same     — already imported (same name, course and term); skipped
+--   problem  — something's wrong with the row (see "message")
+-- Saving is refused while any row has a problem.
+create or replace function public.import_past_records(p_rows jsonb, p_commit boolean default false)
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare e jsonb; i int := 0; v_out jsonb := '[]'::jsonb; v_status text; v_msg text; v_match profiles%rowtype;
+        v_name text; v_email text; v_course text; v_term text; v_grade text; v_pct numeric; v_cred numeric;
+        v_start date; v_end date;
+        v_key text; v_keys text[] := '{}'; v_problems int := 0; v_profiles uuid[] := '{}'; v_attached int := 0;
+        n_new int := 0; n_attach int := 0; n_same int := 0;
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can import past records.'; end if;
+  if jsonb_typeof(p_rows) is distinct from 'array' then raise exception 'Nothing to import.'; end if;
+  if jsonb_array_length(p_rows) > 2000 then raise exception 'Please import at most 2,000 rows at a time.'; end if;
+  for e in select * from jsonb_array_elements(p_rows) loop
+    i := i + 1; v_status := 'new'; v_msg := ''; v_match := null; v_pct := null; v_cred := 0; v_start := null; v_end := null;
+    v_name   := trim(coalesce(e ->> 'name', ''));
+    v_email  := lower(trim(coalesce(e ->> 'email', '')));
+    v_course := trim(coalesce(e ->> 'course', ''));
+    v_term   := trim(coalesce(e ->> 'term', ''));
+    v_grade  := upper(replace(trim(coalesce(e ->> 'grade', '')), ' ', ''));
+    begin
+      v_pct   := nullif(trim(coalesce(e ->> 'percent', '')), '')::numeric;
+      v_cred  := coalesce(nullif(trim(coalesce(e ->> 'credits', '')), '')::numeric, 0);
+      v_start := nullif(trim(coalesce(e ->> 'start', '')), '')::date;
+      v_end   := nullif(trim(coalesce(e ->> 'end', '')), '')::date;
+    exception when others then
+      v_status := 'problem'; v_msg := 'Score and credits must be numbers, and dates must look like 2025-01-24.';
+    end;
+    if v_status <> 'problem' then
+      if v_name = '' then v_status := 'problem'; v_msg := 'Missing the student''s name.';
+      elsif v_course = '' then v_status := 'problem'; v_msg := 'Missing the course.';
+      elsif v_grade not in ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU') then
+        v_status := 'problem'; v_msg := 'Grade must be a letter (A+ to F), P, I, W, or AU.';
+      elsif v_email <> '' and v_email !~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' then
+        v_status := 'problem'; v_msg := 'That email doesn''t look right.';
+      elsif v_pct is not null and (v_pct < 0 or v_pct > 110) then v_status := 'problem'; v_msg := 'Score must be 0 to 110.';
+      elsif v_cred < 0 or v_cred > 12 then v_status := 'problem'; v_msg := 'Credits must be 0 to 12.';
+      elsif length(v_term) > 40 or length(v_name) > 120 or length(v_course) > 160 then
+        v_status := 'problem'; v_msg := 'Name, course, or term is too long.';
+      end if;
+    end if;
+    v_key := lower(v_name) || '|' || lower(v_course) || '|' || lower(v_term);
+    if v_status <> 'problem' then
+      if v_key = any(v_keys) then v_status := 'problem'; v_msg := 'Listed twice in this file.';
+      elsif exists (select 1 from past_records where import_key = v_key) then v_status := 'same'; v_msg := 'Already imported.';
+      end if;
+    end if;
+    v_keys := v_keys || v_key;
+    if v_status = 'new' and v_email <> '' then
+      select * into v_match from profiles where lower(email) = v_email limit 1;
+      if v_match.id is not null then
+        if v_match.status = 'active' and v_match.email_verified_at is not null then
+          v_status := 'attach'; v_msg := 'Goes straight onto ' || v_match.name || '''s transcript.';
+        else
+          v_msg := v_match.name || ' has an account that isn''t approved yet; this attaches once it is.';
+        end if;
+      end if;
+    end if;
+    if v_status = 'problem' then v_problems := v_problems + 1;
+    elsif v_status = 'same' then n_same := n_same + 1;
+    elsif v_status = 'attach' then n_attach := n_attach + 1;
+    else n_new := n_new + 1; end if;
+    v_out := v_out || jsonb_build_object('row', i, 'status', v_status, 'message', v_msg);
+    if p_commit and v_status in ('new', 'attach') then
+      insert into past_records (email, student_name, course_title, credits, level, term, start_date, end_date,
+          percent, grade, teacher_name, note, import_key, imported_by)
+      values (v_email, v_name, v_course, v_cred, left(trim(coalesce(e ->> 'level', '')), 40), v_term, v_start, v_end,
+          v_pct, v_grade, left(trim(coalesce(e ->> 'teacher', '')), 120), left(trim(coalesce(e ->> 'note', '')), 300),
+          v_key, auth.uid());
+      if v_status = 'attach' and not (v_match.id = any(v_profiles)) then v_profiles := v_profiles || v_match.id; end if;
+    end if;
+  end loop;
+  if p_commit and v_problems > 0 then
+    raise exception 'Nothing was saved: % row(s) have a problem. Fix them and try again.', v_problems;
+  end if;
+  if p_commit then
+    for i in 1 .. coalesce(array_length(v_profiles, 1), 0) loop
+      v_attached := v_attached + public.claim_past_records(v_profiles[i], null);
+    end loop;
+  end if;
+  return jsonb_build_object('rows', v_out, 'new', n_new, 'attach', n_attach, 'same', n_same,
+                            'problems', v_problems, 'saved', p_commit, 'attached', v_attached);
+end $$;
+
+-- Admins: put waiting records on a particular person's transcript by hand
+-- (they use another email, or none was on file). The person must be approved.
+create or replace function public.link_past_records(p_ids uuid[], p_profile uuid) returns int
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can link past records.'; end if;
+  if not exists (select 1 from profiles where id = p_profile and status = 'active') then
+    raise exception 'Approve that account first, then link the records.';
+  end if;
+  if exists (select 1 from past_records where id = any(p_ids) and claimed_at is not null) then
+    raise exception 'Some of those records are already on a transcript.';
+  end if;
+  return public.claim_past_records(p_profile, p_ids);
+end $$;
+
+-- Admins: remove a waiting record (imported by mistake). Records already on
+-- a transcript are changed there instead.
+create or replace function public.delete_past_record(p_id uuid) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can remove past records.'; end if;
+  if exists (select 1 from past_records where id = p_id and claimed_at is not null) then
+    raise exception 'That record is already on a transcript. Change it there.';
+  end if;
+  delete from past_records where id = p_id;
+end $$;
+
+-- ---------------------------------------------------------------------------
 -- Backups
 -- ---------------------------------------------------------------------------
 -- Everything worth keeping, as one JSON document. Left out on purpose:
@@ -1240,7 +1455,7 @@ declare v jsonb := '{}'::jsonb; t text; rows jsonb;
 begin
   foreach t in array array['profiles','courses','enrollments','enrollment_requests','materials','assignments',
       'submissions','discussion_posts','messages','notifications','bible_highlights','attendance_days',
-      'attendance','class_cancellations','announcements','transcript_entries'] loop
+      'attendance','class_cancellations','announcements','transcript_entries','past_records'] loop
     execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x', t) into rows;
     v := v || jsonb_build_object(t, rows);
   end loop;
@@ -1586,6 +1801,7 @@ alter table public.calendar_feeds       enable row level security;
 alter table public.class_cancellations  enable row level security;
 alter table public.announcements        enable row level security;
 alter table public.transcript_entries   enable row level security;
+alter table public.past_records         enable row level security;
 alter table public.site_backups         enable row level security;
 alter table public.service_status       enable row level security;
 
@@ -1729,6 +1945,9 @@ create policy transcript_select on public.transcript_entries for select to authe
   using (public.is_active_user() and (
     student_id = auth.uid() or public.is_super_admin()
     or (course_id is not null and public.teaches_course(course_id))));
+-- Past records waiting for their student: Admins only (changed through functions).
+create policy past_records_select on public.past_records for select to authenticated
+  using (public.is_active_user() and public.is_super_admin());
 -- site_backups and service_status: no policies at all = no website access.
 
 -- Bible highlights: yours only.
@@ -1858,6 +2077,10 @@ revoke execute on function public.copy_course(text, text, date) from public, ano
 revoke execute on function public.record_final_grades(text, jsonb) from public, anon;
 revoke execute on function public.save_transcript_entry(uuid, uuid, text, numeric, text, text, date, date, numeric, text, text, text) from public, anon;
 revoke execute on function public.delete_transcript_entry(uuid) from public, anon;
+revoke execute on function public.claim_past_records(uuid, uuid[]) from public, anon, authenticated;
+revoke execute on function public.import_past_records(jsonb, boolean) from public, anon;
+revoke execute on function public.link_past_records(uuid[], uuid) from public, anon;
+revoke execute on function public.delete_past_record(uuid) from public, anon;
 revoke execute on function public.list_backups() from public, anon;
 revoke execute on function public.download_backup(bigint) from public, anon;
 revoke execute on function public.get_service_status() from public, anon;
@@ -1890,6 +2113,9 @@ grant execute on function public.copy_course(text, text, date) to authenticated;
 grant execute on function public.record_final_grades(text, jsonb) to authenticated;
 grant execute on function public.save_transcript_entry(uuid, uuid, text, numeric, text, text, date, date, numeric, text, text, text) to authenticated;
 grant execute on function public.delete_transcript_entry(uuid) to authenticated;
+grant execute on function public.import_past_records(jsonb, boolean) to authenticated;
+grant execute on function public.link_past_records(uuid[], uuid) to authenticated;
+grant execute on function public.delete_past_record(uuid) to authenticated;
 grant execute on function public.list_backups() to authenticated;
 grant execute on function public.download_backup(bigint) to authenticated;
 grant execute on function public.get_service_status() to authenticated;
@@ -1912,6 +2138,6 @@ revoke all on public.push_keys, public.attendance_reminders from authenticated;
 revoke all on public.assignment_reminders, public.calendar_feeds from authenticated;
 -- Cancellations and transcripts change only through their functions;
 -- backups and service health aren't reachable from the website at all.
-revoke insert, update, delete on public.class_cancellations, public.transcript_entries from authenticated;
+revoke insert, update, delete on public.class_cancellations, public.transcript_entries, public.past_records from authenticated;
 revoke update on public.announcements from authenticated;
 revoke all on public.site_backups, public.service_status from authenticated;

@@ -1110,7 +1110,7 @@ function safeHtml(html) {
 // reply — shows up for everyone else without reloading the browser.
 const STALE_MS = 3000;
 const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance"];
-const FACULTY_ONLY_VIEWS = ["transcripts", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome"];
+const FACULTY_ONLY_VIEWS = ["transcripts", "pastRecords", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome"];
 const STUDENT_ONLY_VIEWS = ["courses", "course", "grades", "submit"];
 
 function renderMain() {
@@ -1168,6 +1168,7 @@ function renderView() {
   if (view === "attendanceHome") return renderAttendanceHome(main);
   if (view === "transcript") return Date.now() - dataLoadedAt < 1500 ? renderTranscript(main) : withFreshData(() => renderTranscript(main));
   if (view === "transcripts") return Date.now() - dataLoadedAt < 1500 ? renderTranscripts(main) : withFreshData(() => renderTranscripts(main));
+  if (view === "pastRecords") return Date.now() - dataLoadedAt < 1500 ? renderPastRecords(main) : withFreshData(() => renderPastRecords(main));
   if (view === "help") return renderHelp(main);
   if (view === "settings") return Date.now() - dataLoadedAt < 1500 ? renderSettings(main) : withFreshData(() => renderSettings(main));
 }
@@ -2318,7 +2319,7 @@ function renderMyGrades(main) {
     </div>` : myCourses.map((c) => {
       const grade = computeCourseGrade(c, currentStudentId);
       const rows = [...c.assignments].sort((a, b) => a.due.localeCompare(b.due));
-      const letterCls = grade.letter === "F" ? "pill-gray" : grade.letter === "A" || grade.letter === "B" ? "pill-green" : "pill-navy";
+      const letterCls = letterPillClass(grade.letter);
       rows.forEach((a) => {
         const sub = getSubmission(c, a, currentStudentId);
         if (sub.status === "graded" && sub.feedback) feedbackRows.push({ c, a, sub });
@@ -2525,7 +2526,7 @@ function renderGradeSheet(main) {
                       .join("")
                   )
                   .join("");
-                const letterCls = grade.letter === "F" ? "pill-gray" : grade.letter === "A" || grade.letter === "B" ? "pill-green" : "pill-navy";
+                const letterCls = letterPillClass(grade.letter);
                 return `<tr>
                 <td class="gs-sticky"><strong>${esc(u.name)}</strong></td>
                 ${cells}
@@ -3325,12 +3326,15 @@ function assignmentOutcome(course, a, studentId) {
   return null;
 }
 
+// The Institute's grading scale, as printed on its paper grade sheets
+// (adopted on the site Oct 8, 2026). Below 70 is failing.
+const GRADE_SCALE = [[97, "A+"], [94, "A"], [90, "A-"], [87, "B+"], [84, "B"], [80, "B-"], [77, "C+"], [74, "C"], [70, "C-"]];
 function pctToLetter(pct) {
-  if (pct >= 90) return "A";
-  if (pct >= 80) return "B";
-  if (pct >= 70) return "C";
-  if (pct >= 60) return "D";
-  return "F";
+  const hit = GRADE_SCALE.find(([min]) => pct >= min);
+  return hit ? hit[1] : "F";
+}
+function letterPillClass(letter) {
+  return letter === "F" ? "pill-gray" : /^[AB]/.test(letter || "") ? "pill-green" : "pill-navy";
 }
 
 // A student's current course grade: each category's average (of only

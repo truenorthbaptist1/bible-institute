@@ -21,6 +21,7 @@ const UPLOAD_ACCEPT = ALLOWED_UPLOAD_EXT.map((e) => "." + e).join(",");
 
 let notifications = [];
 let transcripts = []; // transcript entries this person may see (own; a teacher's courses; all for Admins)
+let pastRecords = []; // Admins only: grades from before the site, waiting for (or already on) a transcript
 let bibleHighlightRows = [];
 let dataLoadedAt = 0;
 
@@ -146,7 +147,7 @@ async function fetchOwnProfile(uid) {
 // ---------------------------------------------------------------------------
 async function loadAll() {
   const fac = currentUser.role === "faculty";
-  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks, cancels, anns, trans] = await Promise.all([
+  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks, cancels, anns, trans, past] = await Promise.all([
     selectAll("courses", "*", "title"),
     selectAll("enrollments", "course_id,student_id"),
     selectAll("enrollment_requests", "*", "requested_at"),
@@ -171,6 +172,8 @@ async function loadAll() {
     selectAll("class_cancellations", "*", "class_date").catch(() => []),
     selectAll("announcements", "*", "created_at").catch(() => []),
     selectAll("transcript_entries", "*", "start_date").catch(() => []),
+    // Added Oct 8: past records (Admins only; the database returns nothing to anyone else).
+    currentUser.superAdmin ? selectAll("past_records", "*", "imported_at").catch(() => []) : Promise.resolve([]),
   ]);
 
   // Your role changed since this page loaded: switch to the new role and
@@ -285,6 +288,7 @@ async function loadAll() {
   anns.forEach((a) => byCourse[a.course_id] && byCourse[a.course_id].announcements.push({ id: a.id, authorId: a.author_id, body: a.body, postedAt: a.created_at }));
   Object.values(byCourse).forEach((c) => c.announcements.sort((x, y) => y.postedAt.localeCompare(x.postedAt)));
   transcripts = trans.map(transcriptFromRow);
+  pastRecords = past.map(pastRecordFromRow);
   attDays.forEach((d) => {
     const c = byCourse[d.course_id];
     if (c) c.attDays[d.class_date] = { held: d.held, takenBy: d.taken_by, takenAt: d.taken_at };
@@ -314,6 +318,16 @@ function transcriptFromRow(t) {
     startDate: t.start_date, endDate: t.end_date, percent: t.percent === null || t.percent === undefined ? null : Number(t.percent),
     grade: t.grade, attendancePct: t.attendance_percent === null || t.attendance_percent === undefined ? null : Number(t.attendance_percent),
     teacherName: t.teacher_name || "", note: t.note || "", recordedAt: t.recorded_at,
+  };
+}
+
+function pastRecordFromRow(r) {
+  return {
+    id: r.id, email: r.email || "", studentName: r.student_name, courseTitle: r.course_title, credits: Number(r.credits) || 0,
+    level: r.level || "", term: r.term || "", startDate: r.start_date, endDate: r.end_date,
+    percent: r.percent === null || r.percent === undefined ? null : Number(r.percent), grade: r.grade,
+    teacherName: r.teacher_name || "", note: r.note || "", importedAt: r.imported_at,
+    claimedBy: r.claimed_by, claimedAt: r.claimed_at, transcriptId: r.transcript_id,
   };
 }
 
@@ -558,6 +572,17 @@ const DB = {
   },
   async deleteTranscriptEntry(id) {
     must(await sb.rpc("delete_transcript_entry", { p_id: id }));
+  },
+  // --- Oct 8: past records ----------------------------------------------------
+  // commit false = just check the rows; true = save them.
+  async importPastRecords(rows, commit) {
+    return must(await sb.rpc("import_past_records", { p_rows: rows, p_commit: !!commit }));
+  },
+  async linkPastRecords(ids, profileId) {
+    return must(await sb.rpc("link_past_records", { p_ids: ids, p_profile: profileId }));
+  },
+  async deletePastRecord(id) {
+    must(await sb.rpc("delete_past_record", { p_id: id }));
   },
   async listBackups() {
     return must(await sb.rpc("list_backups"));

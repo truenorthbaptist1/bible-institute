@@ -700,6 +700,89 @@ check("…and corrects it", True,
       f"select public.save_transcript_entry('{hist}', null, 'Bible Doctrines I', 3, 'Foundational', 'Fall 2024', '2024-09-01', '2024-12-15', 91, 'A', 'Bro. Smith', ''); select grade || credits from public.transcript_entries where id = '{hist}'", church, expect_out=f"{hist}\nA3")
 check("The student sees it on their transcript", True, "select count(*) from public.transcript_entries", stu2, expect_out=2)
 
+# --- past records (grades from before the site) ------------------------------------------------
+def rows_json(rows):
+    import json
+    return json.dumps(rows).replace("'", "''")
+PR = [
+    {"name": "Daniel Dotson", "email": "DANIEL@example.com", "course": "Hermeneutics I (2025)", "term": "Spring 2025", "credits": "3", "percent": "102", "grade": "a+"},
+    {"name": "Daniel Dotson", "email": "daniel@example.com", "course": "Church History II", "term": "Spring 2024", "credits": "3", "percent": "69", "grade": "F"},
+    {"name": "Grace Waiting", "email": "grace@example.com", "course": "Church History II", "term": "Spring 2024", "credits": "3", "percent": "88.77", "grade": "B+"},
+    {"name": "Grace Waiting", "email": "grace@example.com", "course": "Hermeneutics I (2025)", "term": "Spring 2025", "credits": "3", "grade": "I"},
+    {"name": "Late Verifier", "email": "late@example.com", "course": "Church History II", "term": "Spring 2024", "credits": "3", "grade": "AU"},
+    {"name": "Lucy Noemail", "email": "", "course": "Church History II", "term": "Spring 2024", "credits": "3", "grade": "AU"},
+]
+BAD = PR + [{"name": "Oops", "email": "x@example.com", "course": "Church History II", "term": "Spring 2024", "grade": "Q"},
+            {"name": "Grace Waiting", "email": "grace@example.com", "course": "Church History II", "term": "Spring 2024", "grade": "B"}]
+check("Faculty who aren't Admins can't import past records", False,
+      f"select public.import_past_records('{rows_json(PR)}'::jsonb, false)", phil)
+check("Students can't either", False, f"select public.import_past_records('{rows_json(PR)}'::jsonb, false)", stu2)
+check("An Admin's preview spots bad grades and rows listed twice, and saves nothing", True,
+      f"select r ->> 'new' || ',' || (r ->> 'attach') || ',' || (r ->> 'problems') || ',' || (select count(*) from public.past_records) from public.import_past_records('{rows_json(BAD)}'::jsonb, false) r",
+      church, expect_out="4,2,2,0")
+check("…and refuses to save while any row has a problem", False,
+      f"select public.import_past_records('{rows_json(BAD)}'::jsonb, true)", church)
+check("…nothing was saved", True, "select count(*) from public.past_records", None, expect_out=0)
+check("An Admin imports the corrected file", True,
+      f"select r ->> 'new' || ',' || (r ->> 'attach') || ',' || (r ->> 'attached') from public.import_past_records('{rows_json(PR)}'::jsonb, true) r",
+      church, expect_out="4,2,2")
+check("…a student who already has an approved account gets them on their transcript right away (A+ and 102% kept)", True,
+      f"select string_agg(grade || ':' || coalesce(percent::text, ''), ',' order by term) from public.transcript_entries where student_id = '{stu3}' and course_id is null",
+      None, expect_out="F:69,A+:102")
+check("…and is told about it", True,
+      f"select count(*) from public.notifications where user_id = '{stu3}' and kind = 'transcript' and subject like '2 courses%'", None, expect_out=1)
+check("…the student sees them on their own transcript", True,
+      "select count(*) from public.transcript_entries where course_id is null", stu3, expect_out=2)
+check("Importing the same file again adds nothing", True,
+      f"select r ->> 'same' || ',' || (r ->> 'new') || ',' || (select count(*) from public.past_records) from public.import_past_records('{rows_json(PR)}'::jsonb, true) r",
+      church, expect_out="6,0,6")
+check("Students can't see waiting records (not even their own)", True, "select count(*) from public.past_records", stu3, expect_out=0)
+check("Faculty who aren't Admins can't either", True, "select count(*) from public.past_records", phil, expect_out=0)
+check("Nobody changes waiting records directly", False,
+      "update public.past_records set grade = 'A' where email = 'grace@example.com'", church)
+check("…or adds them directly", False,
+      "insert into public.past_records (student_name, course_title, grade, import_key) values ('X', 'Y', 'A', 'x|y|')", church)
+grace = mkuser("grace@example.com", "Grace Waiting", approve=False)
+check("A matching sign-up still waiting for approval gets nothing yet", True,
+      f"select count(*) from public.transcript_entries where student_ref = '{grace}'", None, expect_out=0)
+check("A teacher approves them", True, f"update public.profiles set status = 'active' where id = '{grace}'", phil)
+check("…and their past courses arrive on their transcript", True,
+      f"select string_agg(grade, ',' order by term) from public.transcript_entries where student_ref = '{grace}'", None, expect_out="B+,I")
+check("…which the teacher can't see (not their course)", True,
+      f"select count(*) from public.transcript_entries where student_ref = '{grace}'", phil, expect_out=0)
+check("…and the waiting records are marked as claimed", True,
+      f"select count(*) from public.past_records where email = 'grace@example.com' and claimed_by = '{grace}' and transcript_id is not null", None, expect_out=2)
+late = mkuser("late@example.com", "Late Verifier", verified=False)
+check("An approved account that hasn't confirmed its email gets nothing", True,
+      f"select count(*) from public.transcript_entries where student_ref = '{late}'", None, expect_out=0)
+admin(f"update auth.users set email_confirmed_at = now() where id = '{late}'")
+check("…confirming the email brings their past courses", True,
+      f"select string_agg(grade, ',') from public.transcript_entries where student_ref = '{late}'", None, expect_out="AU")
+lucy_id = sql("select id from public.past_records where email = ''")[1]
+lucy = mkuser("lucy.real@example.com", "Lucy Lambert")
+check("A record with no email waits for an Admin to link it", True,
+      f"select count(*) from public.transcript_entries where student_ref = '{lucy}'", None, expect_out=0)
+check("Faculty who aren't Admins can't link records", False, f"select public.link_past_records(array['{lucy_id}']::uuid[], '{lucy}')", phil)
+check("An Admin links it to the right account", True,
+      f"select public.link_past_records(array['{lucy_id}']::uuid[], '{lucy}'); select count(*) from public.transcript_entries where student_ref = '{lucy}'", church, expect_out="1\n1")
+check("…a record already on a transcript can't be linked again", False,
+      f"select public.link_past_records(array['{lucy_id}']::uuid[], '{stu2}')", church)
+check("…or removed from the waiting list", False, f"select public.delete_past_record('{lucy_id}')", church)
+pend = mkuser("pend@example.com", "Still Pending", approve=False)
+admin("insert into public.past_records (student_name, course_title, grade, import_key) values ('Stray Row', 'Old Class', 'A', 'stray|old class|')")
+stray = sql("select id from public.past_records where import_key = 'stray|old class|'")[1]
+check("Records can't be linked to an account still waiting for approval", False,
+      f"select public.link_past_records(array['{stray}']::uuid[], '{pend}')", church)
+check("Faculty who aren't Admins can't remove waiting records", False, f"select public.delete_past_record('{stray}')", phil)
+check("An Admin removes one imported by mistake", True,
+      f"select public.delete_past_record('{stray}'); select count(*) from public.past_records where id = '{stray}'", church, expect_out="0")
+check("Transcripts take plus/minus grades (B+, A-)", True,
+      f"select public.save_transcript_entry(null, '{stu2}', 'Manuscript Evidence', 3, '', 'Spring 2025', null, null, 90.48, 'A-', '', '') is not null", church, expect_out="t")
+check("…but not made-up ones", False,
+      f"select public.save_transcript_entry(null, '{stu2}', 'X', 3, '', '', null, null, 90, 'A++', '', '')", church)
+check("Backups include the waiting records", True,
+      "select (public.download_backup() -> 'tables' ? 'past_records')", church, expect_out="t")
+
 # --- backups ---------------------------------------------------------------------------------
 check("Nobody can read backups directly", False, "select * from public.site_backups", church)
 check("Students can't download backups", False, "select public.download_backup()", stu1)

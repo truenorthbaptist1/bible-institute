@@ -17,7 +17,7 @@ PASSWORDS = {}
 PORT = 8765
 TABLES = {"profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments", "submissions",
           "discussion_posts", "messages", "notifications", "bible_highlights", "attendance_days", "attendance", "push_subscriptions",
-          "class_cancellations", "announcements", "transcript_entries"}
+          "class_cancellations", "announcements", "transcript_entries", "past_records"}
 SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status"}
 IDENT = lambda s: '"' + str(s).replace('"', '') + '"'
 
@@ -107,7 +107,13 @@ def db(req):
 
 def rpc(req):
     fn = req["fn"]
-    args = ", ".join(f"{IDENT(k)} => {lit(v)}" for k, v in req["args"].items())
+    def arg(v):
+        # A list of plain values is a Postgres array (uuid[] etc.); lists of
+        # objects stay JSON — the same way PostgREST passes them.
+        if isinstance(v, list) and all(not isinstance(x, (dict, list)) for x in v):
+            return lit("{" + ",".join('"' + str(x).replace('"', '') + '"' for x in v) + "}")
+        return lit(v)
+    args = ", ".join(f"{IDENT(k)} => {arg(v)}" for k, v in req["args"].items())
     if fn in SETOF_FUNCS:
         sql = f"select coalesce(json_agg(r), '[]'::json) from public.{IDENT(fn)}({args}) r"
         out, err = run_sql(sql, req.get("uid"))
