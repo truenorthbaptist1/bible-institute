@@ -815,8 +815,9 @@ language sql stable security definer set search_path = public as $$
 $$;
 
 -- Used only by the reminder function (never by the website): every class
--- that has just started, takes attendance, has a teacher, and hasn't been
--- taken or reminded yet today. Each is claimed exactly once.
+-- that starts within 5 minutes (or started in the last 2 hours), takes
+-- attendance, has a teacher, and hasn't been taken or reminded yet today.
+-- Each is claimed exactly once, so the reminder arrives 5 minutes early.
 create or replace function public.claim_attendance_reminders()
 returns table (course_id text, course_title text, class_date date, class_time text, teacher_id uuid)
 language sql volatile security definer set search_path = public as $$
@@ -828,7 +829,7 @@ language sql volatile security definer set search_path = public as $$
        and c.sched_time ~ '^[0-9]{1,2}:[0-9]{2}'
        and public.course_teacher(c.id) is not null
        and (n.t)::date in (select public.course_class_dates(c.id))
-       and n.t >= (n.t)::date + c.sched_time::time
+       and n.t >= (n.t)::date + c.sched_time::time - interval '5 minutes'
        and n.t <  (n.t)::date + c.sched_time::time + interval '2 hours'
        and not exists (select 1 from attendance_days ad where ad.course_id = c.id and ad.class_date = (n.t)::date)
   ),
