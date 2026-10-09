@@ -162,6 +162,13 @@ check("Student NOT in the course sees none of its assignments", True,
       "select count(*) from public.assignments where course_id = 'c1'", stu3, expect_out=0)
 check("Student NOT in the course sees none of its materials", True,
       "select count(*) from public.materials", stu3, expect_out=0)
+admin(f"insert into public.materials (course_id, title, storage_path, teacher_only) values ('c1', 'Answer Key.pdf', 'c1/x-Answer-Key.pdf', true)")
+check("Enrolled student does NOT see teacher-only materials", True,
+      "select count(*) from public.materials where course_id = 'c1' and title = 'Answer Key.pdf'", stu1, expect_out=0)
+check("…but still sees the class materials", True,
+      "select count(*) from public.materials where course_id = 'c1' and title = 'Syllabus.pdf'", stu1, expect_out=1)
+check("Students can't make a material teacher-only or visible", True,
+      "update public.materials set teacher_only = false where course_id = 'c1' returning id", stu1, expect_out="")
 check("Student turns in work; server sets the date (no back-dating)", True,
       f"insert into public.submissions (assignment_id, student_id, status, file_name, submitted_at) values ('{aid}', '{stu1}', 'submitted', 'mine.pdf', '2026-08-01') returning submitted_at = public.local_today()", stu1, expect_out="t")
 check("Student cannot grade their own work", False,
@@ -244,11 +251,13 @@ check("Student uploads into their own submission folder", True,
       f"insert into storage.objects (bucket_id, name) values ('submissions', 'c1/{aid}/{stu1}/essay.pdf')", stu1)
 check("Student cannot upload into a classmate's folder", False,
       f"insert into storage.objects (bucket_id, name) values ('submissions', 'c1/{aid}/{stu2}/essay.pdf')", stu1)
-admin(f"insert into storage.objects (bucket_id, name) values ('submissions', 'c1/{aid}/{stu2}/theirs.pdf'), ('materials', 'c1/x-Syllabus.pdf')")
+admin(f"insert into storage.objects (bucket_id, name) values ('submissions', 'c1/{aid}/{stu2}/theirs.pdf'), ('materials', 'c1/x-Syllabus.pdf'), ('materials', 'c1/x-Answer-Key.pdf')")
 check("Student cannot open a classmate's uploaded file", True,
       "select count(*) from storage.objects where bucket_id = 'submissions'", stu1, expect_out=1)
-check("Enrolled student can open course materials", True,
-      "select count(*) from storage.objects where bucket_id = 'materials'", stu1, expect_out=1)
+check("Enrolled student can open course materials (not the teacher-only file)", True,
+      "select string_agg(name, ',') from storage.objects where bucket_id = 'materials'", stu1, expect_out="c1/x-Syllabus.pdf")
+check("Admins and faculty can open the teacher-only file", True,
+      "select count(*) from storage.objects where bucket_id = 'materials' and name = 'c1/x-Answer-Key.pdf'", church, expect_out=1)
 check("Outsider cannot open course materials", True,
       "select count(*) from storage.objects where bucket_id = 'materials'", stu3, expect_out=0)
 check("Students cannot upload course materials", False,
@@ -782,6 +791,13 @@ check("Records can't be linked to an account still waiting for approval", False,
 check("Faculty who aren't Admins can't remove waiting records", False, f"select public.delete_past_record('{stray}')", phil)
 check("An Admin removes one imported by mistake", True,
       f"select public.delete_past_record('{stray}'); select count(*) from public.past_records where id = '{stray}'", church, expect_out="0")
+old = mkuser("old.account@example.com", "Old Account")
+admin(f"update public.profiles set email_verified_at = null where id = '{old}'")  # made before the site tracked confirmation
+sql(f"select public.import_past_records('[{{\"name\": \"Old Account\", \"email\": \"old.account@example.com\", \"course\": \"Old Class\", \"term\": \"Fall 2022\", \"grade\": \"A\"}}]'::jsonb, true)", church)
+check("An older account (confirmed before the site tracked it) doesn't get its records at first", True,
+      f"select count(*) from public.transcript_entries where student_id = '{old}'", None, expect_out=0)
+check("…the update fills in its confirmation and the records attach", True,
+      f"select public.backfill_email_verified() >= 1; select count(*) || ',' || bool_and(not awaiting_signup) from public.transcript_entries where student_id = '{old}'", None, expect_out="t\n1,true")
 check("Nothing is left waiting once everyone has claimed", True,
       "select count(*) from public.transcript_entries where awaiting_signup", None, expect_out=0)
 sql(f"select public.import_past_records('[{{\"name\": \"Gone Soon\", \"course\": \"Old Class\", \"term\": \"Fall 2022\", \"grade\": \"B\"}}]'::jsonb, true)", church)
@@ -813,6 +829,148 @@ check("The nightly backup runs once a night from 2 AM", True,
 check("Admins see the list of backups", True, "select count(*) >= 1 from public.list_backups() where kind = 'nightly'", church, expect_out="t")
 check("The website can't take or email backups itself", False, "select * from public.backup_to_email()", church)
 check("Only Admins see service health", False, "select * from public.get_service_status()", phil)
+
+# --- hybrid & online courses (Oct 9) -------------------------------------------
+rv = mkuser("rhoda@example.com", "Rhoda Recorded")
+lv = mkuser("levi@example.com", "Levi Live")
+cl = mkuser("clara@example.com", "Clara Classroom")
+outsider = mkuser("otto@example.com", "Otto Outsider")
+ALL_DAYS = "array['Mon','Tue','Wed','Thu','Fri','Sat','Sun']"
+admin(f"""insert into public.courses (id, title, faculty_id, sched_mode, sched_start, sched_weeks, sched_days, sched_time, attendance_on, attendance_weight, format, playlist_id)
+          values ('hy', 'Hybrid Hermeneutics', '{phil}', 'scheduled', public.local_today() - 20, 8, {ALL_DAYS}, '19:00', true, 10, 'hybrid', 'PLabc123');
+          insert into public.enrollments (course_id, student_id) values ('hy', '{rv}'), ('hy', '{lv}'), ('hy', '{cl}');
+          insert into public.courses (id, title, faculty_id, archived) values ('pastc', 'Past Course', '{phil}', true);""")
+check("Students can't change their own enrollment row directly", False,
+      f"update public.enrollments set track = 'live' where course_id = 'hy' and student_id = '{rv}'", rv)
+check("A student chooses to watch the recordings", True, f"select public.set_my_track('hy', 'recorded')", rv)
+check("A student chooses to attend live", True, f"select public.set_my_track('hy', 'live')", lv)
+check("…but can't pick 'online' in an in-person-only course", False, f"select public.set_my_track('c1', 'live')", stu2)
+check("A student can't change a classmate's track", False, f"select public.set_student_track('hy', '{cl}', 'live')", rv)
+check("The teacher can change a student's track", True,
+      f"select public.set_student_track('hy', '{cl}', 'classroom'); select track from public.enrollments where course_id = 'hy' and student_id = '{cl}'", phil, expect_out="classroom")
+
+# lectures
+check("Students can't add lectures", False, "insert into public.lessons (course_id, video_id) values ('hy', 'abcdefghijk')", rv)
+L1 = check("The teacher adds a lecture by link", True,
+      "insert into public.lessons (course_id, video_id, title, position, duration_seconds, from_playlist) values ('hy', 'OLDvideo001', 'Lecture 1 (last year)', 1, 3600, false) returning id", phil).splitlines()[0]
+L2 = admin("insert into public.lessons (course_id, video_id, title, position, duration_seconds, recorded_on, added_at, from_playlist) values ('hy', 'NEWvideo002', 'Lecture from ten days ago', 2, 3600, public.local_today() - 10, now() - interval '2 days', false) returning id").splitlines()[0]
+LH = admin("insert into public.lessons (course_id, video_id, title, position, hidden, from_playlist) values ('hy', 'HIDvideo003', 'Hidden one', 3, true, false) returning id").splitlines()[0]
+check("Enrolled students see the course's lectures (not hidden ones)", True,
+      "select count(*) from public.lessons where course_id = 'hy'", rv, expect_out=2)
+check("Students not in the course don't see its lectures", True,
+      "select count(*) from public.lessons where course_id = 'hy'", outsider, expect_out=0)
+check("New recordings land on the class day they were recorded; reused ones fill class days in order", True,
+      f"select (select class_date from public.lesson_schedule('hy') where lesson_id = '{L2}') = public.local_today() - 10 and (select class_date from public.lesson_schedule('hy') where lesson_id = '{L1}') = public.local_today() - 20", phil, expect_out="t")
+PL = admin("insert into public.lessons (course_id, video_id, title, duration_seconds) values ('pastc', 'PASTvid0001', 'Archived lecture', 1800) returning id").splitlines()[0]
+check("Any active student can watch past courses' lectures (Lecture Archive)", True,
+      "select count(*) from public.lessons where course_id = 'pastc'", outsider, expect_out=1)
+check("…but watching there earns no credit", True,
+      f"select public.record_lesson_progress('{PL}', repeat('1', 200), 1800) ->> 'counted'", outsider, expect_out="false")
+
+# watching
+check("Watching is recorded for an enrolled student", True,
+      f"select public.record_lesson_progress('{L2}', repeat('1', 2) || repeat('0', 198), 3600) ->> 'counted'", rv, expect_out="true")
+check("…but jumping to 'watched it all' in seconds isn't believed", True,
+      f"select public.record_lesson_progress('{L2}', repeat('1', 200), 3600) ->> 'pct'", rv, expect_out="1.0")
+admin(f"update public.lesson_views set first_at = now() - interval '2 hours' where lesson_id = '{L2}' and student_id = '{rv}'")
+check("Watching 95% of the lecture completes it", True,
+      f"select public.record_lesson_progress('{L2}', repeat('1', 192) || repeat('0', 8), 3600) ->> 'completed'", rv, expect_out="true")
+check("Bad progress reports are refused", False, f"select public.record_lesson_progress('{L2}', 'xyz', 3600)", rv)
+check("Students can't write watching records directly", False,
+      f"update public.lesson_views set pct = 100 where student_id = '{lv}'", lv)
+check("Students see only their own watching records", True, "select count(*) from public.lesson_views", lv, expect_out=0)
+check("The teacher sees the class's watching records", True, "select count(*) from public.lesson_views", phil, expect_out=1)
+check("Other faculty don't (teacher only, like grades)", True, "select count(*) from public.lesson_views", church, expect_out=0)
+
+# online attendance
+check("Watched within the week → Present, filled in automatically", True,
+      f"select status || ',' || auto || ',' || note from public.attendance where course_id = 'hy' and student_id = '{rv}' and class_date = public.local_today() - 10", rv, expect_out="present,true,Watched the recording")
+admin("select public.settle_online_attendance()")
+check("A class day with no recording posted → Excused for online students", True,
+      f"select status from public.attendance where course_id = 'hy' and student_id = '{lv}' and class_date = public.local_today() - 15", lv, expect_out="excused")
+check("Not watched yet, week not over → nothing marked", True,
+      f"select count(*) from public.attendance where course_id = 'hy' and student_id = '{lv}' and class_date = public.local_today() - 10", lv, expect_out=0)
+check("Classroom students aren't marked automatically", True,
+      f"select count(*) from public.attendance where course_id = 'hy' and student_id = '{cl}'", cl, expect_out=0)
+check("Auto-filled days don't count as the teacher having taken attendance", True,
+      "select bool_or(teacher_taken) from public.attendance_days where course_id = 'hy' and class_date = public.local_today() - 15", phil, expect_out="f")
+check("Teacher takes attendance: Clara absent", True,
+      f"""select public.save_attendance('hy', public.local_today() - 10, true, '{{"{cl}": "absent"}}'::jsonb)""", phil)
+check("…online students' automatic marks are kept", True,
+      f"select status || ',' || auto from public.attendance where course_id = 'hy' and student_id = '{rv}' and class_date = public.local_today() - 10", phil, expect_out="present,true")
+admin(f"insert into public.lesson_views (lesson_id, student_id, seen, pct, first_at, completed_at) values ('{L2}', '{cl}', repeat('1', 200)::bit(200), 100, now() - interval '2 hours', now())")
+admin("select public.settle_online_attendance('hy')")
+check("Clara watched the recording → her absence is made up", True,
+      f"select status || ',' || note from public.attendance where course_id = 'hy' and student_id = '{cl}' and class_date = public.local_today() - 10", cl, expect_out="present,Made up — watched the recording")
+admin(f"update public.lessons set added_at = now() - interval '30 days' where id = '{L1}'")
+admin("select public.settle_online_attendance('hy')")
+check("Week passed without watching → Absent", True,
+      f"select status || ',' || note from public.attendance where course_id = 'hy' and student_id = '{lv}' and class_date = public.local_today() - 20", lv, expect_out="absent,Not watched within a week")
+
+# live
+check("Live check-ins don't count when class isn't on", True, "select public.record_live_minute('hy') ->> 'counted'", lv, expect_out="false")
+admin("update public.courses set sched_time = to_char((now() at time zone 'America/Anchorage') - interval '5 minutes', 'HH24:MI') where id = 'hy'")
+check("During class, a live viewer's minute is counted", True, "select public.record_live_minute('hy') ->> 'minutes'", lv, expect_out="1")
+check("…at most once a minute", True, "select public.record_live_minute('hy') ->> 'minutes'", lv, expect_out="1")
+check("Outsiders can't check in", True, "select public.record_live_minute('hy') ->> 'counted'", outsider, expect_out="false")
+admin(f"update public.live_presence set minutes = 67, last_beat = now() - interval '2 minutes' where student_id = '{lv}'")
+check("75% of the class watched live → Present", True,
+      f"select public.record_live_minute('hy') \\g /dev/null\nselect status || ',' || note from public.attendance where course_id = 'hy' and student_id = '{lv}' and class_date = public.local_today()", lv, expect_out="present,Watched the class live")
+
+# live chat
+check("Enrolled students post in the live chat", True, "insert into public.live_chat (course_id, body) values ('hy', 'Which verse was that?')", lv)
+check("Outsiders can't post", False, "insert into public.live_chat (course_id, body) values ('hy', 'hi')", outsider)
+check("Outsiders can't read it", True, "select count(*) from public.live_chat", outsider, expect_out=0)
+check("Can't post as someone else", False, f"insert into public.live_chat (course_id, author_id, body) values ('hy', '{rv}', 'fake')", lv)
+check("The teacher reads the chat", True, "select count(*) from public.live_chat where course_id = 'hy'", phil, expect_out=1)
+
+# playlist syncing (service only)
+check("Faculty can't feed playlist data in themselves", False, "select public.sync_course_lessons('hy', 'PLabc123', '[]'::jsonb)", phil)
+check("Students can't ask for a playlist check", False, "select public.request_playlist_sync('hy')", rv)
+check("The teacher can", True, "select public.request_playlist_sync('hy')", phil)
+check("The service sees the course is due for a check", True, "select count(*) from public.courses_due_for_sync() where course_id = 'hy'", None, expect_out=1)
+admin("""select public.sync_course_lessons('hy', 'PLabc123', '[{"video_id": "PLAYvid0001", "title": "Lecture A", "position": 0, "duration": 3000, "status": "ok", "in_playlist": true}]'::jsonb)""")
+check("First reading of a playlist is quiet (no flood of notices)", True,
+      "select count(*) from public.notifications where kind = 'lecture'", None, expect_out=0)
+admin("""select public.sync_course_lessons('hy', 'PLabc123', '[{"video_id": "PLAYvid0001", "title": "Lecture A", "position": 0, "duration": 3000, "status": "ok", "in_playlist": true},
+        {"video_id": "PLAYvid0002", "title": "Lecture B", "position": 1, "duration": 3000, "status": "ok", "in_playlist": true},
+        {"video_id": "LIVEvid0003", "title": "Tonight", "position": 2, "status": "live", "in_playlist": true}]'::jsonb)""")
+check("A new lecture notifies the online students (not classroom ones)", True,
+      f"select string_agg(p.name, ',' order by p.name) from public.notifications n join public.profiles p on p.id = n.user_id where n.kind = 'lecture'", None, expect_out="Levi Live,Rhoda Recorded")
+check("A stream going live notifies the live students", True,
+      f"select string_agg(p.name, ',') from public.notifications n join public.profiles p on p.id = n.user_id where n.kind = 'live'", None, expect_out="Levi Live")
+admin("""select public.sync_course_lessons('hy', 'PLabc123', '[{"video_id": "PLAYvid0002", "title": "Lecture B", "position": 1, "duration": 3000, "status": "ok", "in_playlist": true}]'::jsonb)""")
+check("Taken out of the playlist → taken off the course", True,
+      "select count(*) from public.lessons where course_id = 'hy' and video_id in ('PLAYvid0001', 'LIVEvid0003') and status = 'removed'", None, expect_out=2)
+check("Teacher-added lectures stay", True, f"select status from public.lessons where id = '{L1}'", None, expect_out="ok")
+check("Students can't read playlist status", True, "select count(*) from public.playlist_sync", rv, expect_out=0)
+
+# copying a course keeps its lectures
+newc = check("Copy the course for a new term", True, "select public.copy_course('hy', 'Hybrid Hermeneutics II', public.local_today() + 60)", phil)
+check("…its playlist and lectures come along", True,
+      f"select c.playlist_id || ',' || c.format || ',' || (select count(*) from public.lessons l where l.course_id = c.id) from public.courses c where c.id = '{newc}'", phil, expect_out="PLabc123,hybrid,4")
+
+# self-paced
+admin(f"""insert into public.courses (id, title, faculty_id, sched_mode, sched_start, sched_weeks, sched_days, sched_time, attendance_on, format, pace)
+          values ('sp', 'Self-Paced Bibliology', '{phil}', 'scheduled', public.local_today() - 100, 4, array['Mon'], '19:00', true, 'online', 'self')""")
+check("Self-paced courses take enrollment requests after they've started", True, "select public.course_open_for_request('sp')", rv, expect_out="t")
+admin(f"insert into public.enrollments (course_id, student_id, start_on) values ('sp', '{rv}', public.local_today() - 3)")
+SA = admin("insert into public.assignments (course_id, title, due, submit_anytime, open_date) values ('sp', 'Week 2 paper', public.local_today() - 90, false, public.local_today() - 93) returning id").splitlines()[0]
+check("A self-paced student's assignment opens counting from their own start", False,
+      f"insert into public.submissions (assignment_id, student_id, status) values ('{SA}', '{rv}', 'in_progress')", rv)
+check("A self-paced student can only be 'recorded'", False, "select public.set_my_track('sp', 'live')", rv)
+SL = admin("insert into public.lessons (course_id, video_id, title, position, duration_seconds) values ('sp', 'SELFvid0001', 'Lesson 1', 1, 1200) returning id").splitlines()[0]
+admin(f"insert into public.lesson_views (lesson_id, student_id, seen, pct, first_at, completed_at) values ('{SL}', '{rv}', repeat('1', 200)::bit(200), 100, now() - interval '1 hour', now())")
+admin("select public.settle_online_attendance('sp')")
+check("Self-paced: watched before their semester ends → Present", True,
+      f"select status from public.attendance where course_id = 'sp' and student_id = '{rv}'", rv, expect_out="present")
+admin(f"update public.enrollments set start_on = public.local_today() - 60 where course_id = 'sp' and student_id = '{rv}'")
+admin(f"delete from public.lesson_views where lesson_id = '{SL}'")
+admin("select public.settle_online_attendance('sp')")
+check("Self-paced: semester over without watching → Absent", True,
+      f"select status || ',' || note from public.attendance where course_id = 'sp' and student_id = '{rv}'", rv, expect_out="absent,Not watched before the course ended")
+check("Only the teacher sets a self-paced student's start date", False,
+      f"select public.set_student_start('sp', '{rv}', public.local_today())", rv)
 
 # --- archive & delete ----------------------------------------------------------------------
 admin("update public.courses set archived = true where id = 'c1'")
