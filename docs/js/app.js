@@ -988,6 +988,7 @@ async function signOut(message) {
   clearViewTimers();
   closeModal();
   try { await sb.auth.signOut(); } catch (e) { /* already signed out */ }
+  setTheme("light"); // the next sign-in starts in day view
   currentUser = null;
   sessionUserId = null;
   courses = [];
@@ -1252,17 +1253,19 @@ const TILE_HUE = {
   settings: "gray", attendanceHome: "green", transcript: "wine", transcripts: "wine", help: "teal",
 };
 
-// Day / night: follows the device until someone picks; their pick is kept
-// on this device.
+// Day / night: every sign-in starts in day view. Someone can switch to night
+// view once signed in; that choice lasts for this visit (this tab, even across
+// a refresh) and is cleared when they sign out or sign in again.
 const THEME_KEY = "tnbbi-theme";
 function currentTheme() {
-  const set = document.documentElement.dataset.theme;
-  if (set === "light" || set === "dark") return set;
-  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
 }
 function setTheme(t) {
+  t = t === "dark" ? "dark" : "light";
   document.documentElement.dataset.theme = t;
-  try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* private browsing */ }
+  try {
+    if (t === "dark") sessionStorage.setItem(THEME_KEY, t); else sessionStorage.removeItem(THEME_KEY);
+  } catch (e) { /* private browsing */ }
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute("content", t === "dark" ? "#101b2c" : "#1f3a5f");
 }
@@ -5581,6 +5584,8 @@ function boot() {
         return;
       }
       if (session && (event === "INITIAL_SESSION" || event === "SIGNED_IN" || event === "PASSWORD_RECOVERY")) {
+        // A real sign-in (not a restored visit or a token refresh) starts in day view.
+        if (!currentUser && event !== "INITIAL_SESSION") setTheme("light");
         settled = true;
         startSession(session, { force: event === "PASSWORD_RECOVERY", restored: event === "INITIAL_SESSION" && !/access_token|[?&]code=|type=recovery/.test(location.href) });
         return;

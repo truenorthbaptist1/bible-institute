@@ -1,6 +1,6 @@
 // ============================================================================
 // Features added Oct 4, 2026:
-//   • Text size (A A) switch            • Help page + first-time guided tour
+//   • Text size (A A) switch            • First-time guided tour (Help: js/help.js)
 //   • Notifications by phone and email • Class cancellations
 //   • Course announcements             • Class location / online link
 //   • Copy a course for a new term     • Transcripts (with PDF)
@@ -1083,155 +1083,104 @@ async function renderBackupsCard() {
   if (bl) bl.addEventListener("click", () => dl(last.id, String(last.taken_at).slice(0, 10)));
 }
 
-// ---------------------------------------------------------------------------
-// Help page
-// ---------------------------------------------------------------------------
-const HELP_STUDENT = [
-  ["Attending online", [
-    ["Can I take a class from far away?", "Yes, when the class is <strong>Hybrid</strong> or <strong>Online</strong>. Open the course and choose how you'll attend: in the classroom, <strong>live online</strong> (watch the class here as it happens), or <strong>recorded lectures</strong> (watch each one after it's posted). You can change it later."],
-    ["How is my attendance counted online?", "Live: watch at least 75% of the class on the course's <strong>Watch Live</strong> page — keep that page open and playing (watching in the YouTube app doesn't count). Recorded: watch 95% of the lecture within 7 days of it being posted. Only the parts you actually play count; skipping ahead doesn't."],
-    ["I missed a class in person. Can I make it up?", "Yes. Watch that class's recording within 7 days and your absence is changed to present automatically."],
-    ["How do I ask a question during a live class?", "Use the <strong>Class chat</strong> under the live stream. Your teacher sees it during class and can answer there."],
-    ["My internet is slow. Can I still watch?", "Yes — a phone works fine. Tap ⚙ in the video player and choose a lower quality. Your progress is saved as you go, even if your connection drops."],
-    ["What's the Lecture Archive?", "In the <strong>Resource Library</strong>: recorded lectures from past courses, open to every student for study. Watching there doesn't count toward any course."],
-  ]],
-  ["Getting started", [
-    ["What's on my Dashboard?", "Each tile opens one part of the Institute: My Courses (your classes and ones you can sign up for), Calendar, Study Bible, My Grades, My Transcript, Send Message, Submit Work, Discussion Board, Resource Library, and My Profile."],
-    ["How do I sign up for a class?", "Open <strong>My Courses</strong>. Classes you can join are under <strong>Available</strong> — tap <strong>Request Enrollment</strong>. Your teacher approves it, and you'll get a notification. (If the class has already started, ask your teacher to add you.)"],
-    ["How do I make the text bigger?", "Tap the <strong>Aa</strong> button at the top of the page. Each tap makes the text a little larger, then back to normal. The moon/sun button switches to night mode."],
-  ]],
-  ["Classwork", [
-    ["How do I turn in an assignment?", "Open <strong>Submit Work</strong> (or tap the assignment on the Calendar or your course page). Attach a file — a PDF, Word document, or a photo of handwritten work — or write it right in the editor, then tap <strong>Turn In</strong>. You can replace it until it's graded."],
-    ["Can I save my writing and finish later?", "Yes. When you write in the editor, your draft is saved on that device as you type, and <strong>Save Progress</strong> keeps it with your account."],
-    ["How are letter grades figured?", "The same scale as the Institute's paper grade sheets: A+ 97–100, A 94–96, A− 90–93, B+ 87–89, B 84–86, B− 80–83, C+ 77–79, C 74–76, C− 70–73, and F below 70."],
-    ["Where do I see my grades?", "<strong>My Grades</strong> shows each course's running grade and every score and comment. When a course ends, your teacher records the final grade on <strong>My Transcript</strong>, which you can download as a PDF any time."],
-    ["What does “Locked” mean?", "Some assignments open on a certain day. Until then they show <strong>Opens</strong> with the date."],
-  ]],
-  ["Staying in the loop", [
-    ["How will I know when something happens?", "The bell at the top shows new messages, grades, announcements, and class cancellations. You can also get them <strong>by email</strong> and <strong>on your phone</strong> — set that up under <strong>My Profile → Notifications</strong>."],
-    ["Can I get reminders before things are due?", "Yes — in <strong>My Profile → Notifications</strong>, choose to be reminded the evening before, the morning it's due, or both. You're only reminded about work you haven't turned in."],
-    ["Can my class schedule show in my phone's calendar?", "Yes. On the <strong>Calendar</strong> page, tap <strong>Add to My Phone's Calendar</strong> and follow the steps for iPhone or Android. Class days, due dates, and cancellations then appear in your phone's own calendar and stay up to date."],
-    ["Phone notifications on iPhone", "Apple requires the site to be on your Home Screen first: in Safari tap <strong>Share</strong> → <strong>Add to Home Screen</strong>, open the <strong>TNBBI</strong> icon, sign in, then turn notifications on in My Profile."],
-  ]],
-  ["Your account", [
-    ["I forgot my password.", "On the sign-in page, tap <strong>Forgot password?</strong> and we'll email you a link to set a new one."],
-    ["Who can see my profile?", "Classmates see your name, photo, home church, and About me. Only you and the faculty see your phone number and address."],
-    ["Who do I ask for help?", "Send your teacher a message from <strong>Send Message</strong>, or contact the church office at truenorthbaptist1@gmail.com."],
-  ]],
-];
-const HELP_FACULTY = [
-  ["Hybrid & online courses", [
-    ["How do I set up a hybrid or online course?", "In <strong>Add a Course</strong> (or <strong>Edit Course Details</strong>), choose <strong>Hybrid</strong> or <strong>Online</strong>, paste the course's YouTube <strong>playlist link</strong>, and set the class length. Online courses can also be <strong>Self-paced</strong>: every lecture open at once, and each student has one semester from the day they start."],
-    ["How do lectures get onto the site?", "Your recording person uploads each class to the course's YouTube playlist as <strong>Unlisted</strong> (not Private), with embedding allowed. The site checks the playlist every 30 minutes (every 2 minutes around class time), adds the new lecture, and tells online students. Setting the video's <em>Recording date</em> in YouTube Studio puts it on the right class day; you can also change the day on the Manage page."],
-    ["How does the live class work?", "Stream the class to a YouTube Live event that's Unlisted and in the course's playlist — the site finds it by itself. Students watch on the course's Watch Live page and ask questions in the Class chat. Open <strong>Open the Live Class</strong> on the Manage page to read the chat and see who's watching. When the stream ends, the recording stays in the playlist for everyone else."],
-    ["Do I take attendance for online students?", "No — it fills itself in: 75% of the class watched live on the site, or 95% of the recording within 7 days. On the Take Attendance screen they're listed separately. A classroom student you mark Absent who later watches the recording is changed to Present automatically."],
-    ["Can I use a better recording of a lecture?", "Yes. On the Manage page, tap <strong>Replace</strong> beside the lecture and paste the new video's link. It keeps its place and class day. Copying a course for a new term brings its playlist and lectures along."],
-  ]],
-  ["Your courses", [
-    ["How do I keep an answer key from students?", "On the course's Manage page, under <strong>Course Materials</strong>, check <strong>Teachers only</strong> beside the document (or check it before adding new ones). Faculty and Admins can still open it; students never see it. Uncheck it to share it with the class."],
-    ["Where do I manage a course?", "<strong>Courses</strong> → tap the course. Its page has the teacher, schedule, location and online link, roster, enrollment requests, attendance, announcements, class cancellations, materials, and assignments."],
-    ["How do I add assignments?", "On the course page, <strong>+ Add Assignment</strong>. Give it a due date, points, and a grade weight; use the weekly option for a recurring series (like weekly quizzes). You can also lock it until a date."],
-    ["How do I reuse a course next term?", "On the course page, <strong>Copy for a New Term</strong>. It copies the details, schedule pattern, files, and assignments with due dates moved to the new start date — without any students or grades."],
-    ["Where does the class meet?", "<strong>Edit Course Details</strong> has a place for the room or address and an online meeting link. Students see them on their course page and calendars."],
-  ]],
-  ["During the term", [
-    ["How do I take attendance?", "When class time is near, a <strong>Take Attendance</strong> button appears on the Courses tile. You can also tap a class day on the Calendar. Turn attendance on (and set its share of the grade) in Edit Course Details."],
-    ["How do I cancel a class (weather, illness)?", "On the course page under <strong>Class Days</strong>, tap <strong>Cancel Class</strong> on that day (or tap the day on the Calendar). Every student is told right away by bell, phone, and email, and the day is marked canceled on all calendars."],
-    ["How do I tell the whole class something?", "On the course page under <strong>Announcements</strong>, write it and tap <strong>Post &amp; Notify Students</strong>."],
-    ["Where do I grade?", "<strong>Grading</strong> → a course opens the grade sheet. Tap any cell to grade, or open an assignment's submissions to grade one at a time. Turned-in files open right in the page."],
-  ]],
-  ["End of the course", [
-    ["How do final grades reach transcripts?", "On the course's grade sheet, tap <strong>Record Final Grades</strong>. Grades are filled in from the grade sheet; adjust any, then record. They go on each student's permanent transcript, which survives archiving and even account deletion."],
-    ["Then what?", "Archive the course from Courses. (If final grades haven't been recorded, you'll be asked first.)"],
-  ]],
-  ["Notifications & phone", [
-    ["How will I hear from students?", "The bell shows new messages and enrollment requests. Set up email and phone notifications in <strong>My Profile → Notifications</strong>. Teachers also get a phone reminder 5 minutes before class starts if attendance hasn't been taken."],
-    ["Phone calendar", "On the <strong>Calendar</strong> page, <strong>Add to My Phone's Calendar</strong> puts your class days and due dates in your phone's calendar."],
-  ]],
-];
-const HELP_ADMIN = [
-  ["For Admins", [
-    ["Approving new sign-ups", "New accounts wait under <strong>Settings → Waiting for Approval</strong>. You get a notification when one is waiting."],
-    ["Transcripts", "The <strong>Transcripts</strong> tile lists every student, including former students. Open one to review, correct, add courses taken before the site existed, or download a PDF. You can also download all transcripts at once."],
-    ["Past grades from before the site", "Transcripts → <strong>Past Records</strong>. Import the old grade sheets as a CSV file (download the template to see the columns). Each record waits under the student's email and goes onto their transcript by itself once they sign up, confirm their email, and are approved. If someone uses a different email, or none was on file, use <strong>Link to Account</strong> after approving them."],
-    ["Backups", "<strong>Settings → Backups</strong> shows the nightly backup and the weekly copy emailed to the church Gmail, and lets you download a backup any time."],
-  ]],
-];
-function renderHelp(main) {
-  const sections = role === "student" ? HELP_STUDENT : HELP_FACULTY.concat(isAdmin() ? HELP_ADMIN : []);
-  main.innerHTML = `
-    <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
-    <div class="page-header">
-      <div class="eyebrow">Help</div>
-      <h1>How to Use the Institute</h1>
-      <p>Short answers to common questions. Tap a question to open it.</p>
-    </div>
-    <div class="card help-tour-card">
-      <div class="icon-badge hue-gold">${icon("help")}</div>
-      <div style="flex:1;min-width:0;"><strong>Take the tour</strong><div class="field-hint" style="margin:2px 0 0;">A quick, step-by-step look at each part of your dashboard.</div></div>
-      <button class="btn btn-gold btn-sm" id="helpTour">Start the Tour</button>
-    </div>
-    ${sections.map(([title, items]) => `
-      <div class="section-title"><h2>${esc(title)}</h2></div>
-      <div class="card help-list">
-        ${items.map(([q, a]) => `<details class="help-item"><summary>${esc(q)}</summary><div class="help-answer">${a}</div></details>`).join("")}
-      </div>`).join("")}
-    <p style="color:var(--muted-foreground);font-size:.85rem;text-align:center;margin-top:18px;">Still stuck? ${role === "student" ? "Send your teacher a message, or w" : "W"}rite to the church office at <a href="mailto:truenorthbaptist1@gmail.com">truenorthbaptist1@gmail.com</a>.</p>`;
-  document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
-  document.getElementById("helpTour").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); startTour(true); });
-}
+// The Help page lives in js/help.js.
 
 // ---------------------------------------------------------------------------
 // First-time guided tour: one box at a time, pointing at each feature.
 // ---------------------------------------------------------------------------
-function tourSteps() {
+// Small pictures shown inside some tour boxes, to show what a feature looks
+// like before you go find it.
+function tourArt(kind) {
+  const bar = (pct) => `<span class="ta-bar"><span style="width:${pct}%"></span></span>`;
+  const rows = (list) => list.map(([a, b, c]) => `<div class="ta-row">${a}<span class="ta-grow">${b}</span>${c || ""}</div>`).join("");
+  const arts = {
+    tabs: `<div class="ta-tabs"><span class="on">Overview</span><span>Lectures</span><span>Materials</span><span>Assignments</span></div>`,
+    manageTabs: `<div class="ta-tabs"><span class="on">Overview</span><span>Students</span><span>Lectures</span><span>Materials</span><span>Assignments</span></div>`,
+    attend: `<div class="ta-choices"><span>${icon("users")}Classroom</span><span class="on">${icon("video")}Live online</span><span>${icon("video")}Recorded</span></div>`,
+    lectures: rows([[icon("check"), "Lesson 1 · The Inspiration of Scripture", bar(100)], [icon("video"), "Lesson 2 · The Preservation of Scripture", `<span class="ta-pill">Up next</span>`], [icon("video"), "Lesson 3 · The Canon", bar(0)]]),
+    materials: rows([[icon("note"), "Syllabus", `<span class="ta-count">1</span>`], [icon("note"), "Quizzes", `<span class="ta-count">12</span>`], [icon("note"), "Study Questions", `<span class="ta-count">10</span>`], [icon("lock"), "Quiz 1 Answer Key", `<span class="ta-pill ta-pill-gray">Teachers only</span>`]]),
+    weekly: rows([[icon("calendar"), "Week 1 · Quiz 1", `<span class="ta-count">Sep 8</span>`], [icon("calendar"), "Week 2 · Quiz 2", `<span class="ta-count">Sep 15</span>`], [icon("calendar"), "Week 3 · Quiz 3", `<span class="ta-count">Sep 22</span>`]]),
+    phone: `<div class="ta-choices"><span>${icon("calendar")}Phone calendar</span><span>${icon("bell")}Reminders</span><span>${icon("mail")}Email</span></div>`,
+    writing: `<div class="ta-doc"><div class="ta-toolbar"><b>B</b><i>I</i><span>¶</span><span>📖 Scripture</span></div><p>For the word of God is quick, and powerful, and sharper than any twoedged sword… <em>(Hebrews 4:12)</em></p></div>`,
+    search: `<div class="ta-search">${icon("search")}<span>How do I turn in my homework?</span></div>`,
+  };
+  return arts[kind] ? `<div class="tour-art" aria-hidden="true">${arts[kind]}</div>` : "";
+}
+
+// Steps marked isNew also make up the short "What's new" tour that people
+// who already took the full tour are shown once.
+const WHATS_NEW_SINCE = "2026-10-09T12:00:00Z"; // raise when adding new isNew steps
+function tourSteps(mode) {
   const first = (currentUser.name || "").trim().split(/\s+/)[0];
   const tile = (k) => `.tile[data-goto="${k}"]`;
-  if (role === "student") return [
-    { title: `Welcome${first ? ", " + first : ""}!`, text: "This short tour shows you around the True North Baptist Church Bible Institute. Tap <strong>Next</strong> to go step by step, or <strong>Skip</strong> any time — you can take it again from Help." },
-    { el: tile("courses"), title: "My Courses", text: "Your classes live here. Open one for its materials, assignments, and announcements. Classes you can join are listed too — tap <strong>Request Enrollment</strong>." },
-    { el: tile("calendar"), title: "Calendar", text: "Every class day and due date in one place. Tap a day to see what's due. You can also add it all to your phone's own calendar." },
-    { el: tile("submit"), title: "Submit Work", text: "Turn in assignments by attaching a file (or a photo of handwritten work) or by writing right here in the editor." },
+  const hi = `Welcome${first ? ", " + first : ""}!`;
+  let steps;
+  if (role === "student") steps = [
+    { title: hi, text: "This short tour shows you around the True North Baptist Church Bible Institute. Tap <strong>Next</strong> to go step by step, or <strong>Skip</strong> any time — you can take it again from Help." },
+    { el: tile("courses"), title: "My Courses", text: "Your classes live here. Classes you can join are listed too — tap <strong>Request Enrollment</strong>." },
+    { isNew: true, art: "tabs", title: "Inside each course", text: "A course opens into tabs: <strong>Overview</strong> (teacher, schedule, where it meets, announcements), <strong>Lectures</strong>, <strong>Materials</strong>, and <strong>Assignments</strong>." },
+    { isNew: true, art: "materials", title: "Materials, in order", text: "Handouts are grouped — Syllabus, Quizzes, Study Questions, Lessons and more — listed week by week, and searchable. Tap any one to read it right in the page." },
+    { isNew: true, art: "attend", title: "Attend from anywhere", text: "In hybrid and online courses, choose how you'll attend: in the classroom, <strong>live online</strong>, or by <strong>recorded lecture</strong>. Online attendance is counted for you — and if you miss class, watching the recording within 7 days makes it up." },
+    { isNew: true, art: "lectures", title: "Lectures in series order", text: "The Lectures tab lists each class first to last. A bar shows how much you've watched, and <strong>Up next</strong> marks where to pick up." },
+    { el: tile("calendar"), isNew: true, title: "Calendar", text: "Every class day and due date in one place. Tap a day to see what's due — and tap <strong>Add to My Phone's Calendar</strong> to keep it all in your phone." },
+    { el: tile("submit"), title: "Submit Work", text: "Turn in assignments by attaching a file (or a photo of handwritten work). Each assignment's worksheet or quiz is attached right to it — weekly quizzes come out one week at a time." },
+    { isNew: true, art: "writing", title: "Write it right here", text: "No word processor at home? Write your paper in the site. Tap <strong>📖 Scripture</strong> to drop in any KJV passage, and your draft is saved as you type." },
     { el: tile("grades"), title: "My Grades", text: "Your running grade in each course, with every score and your teacher's comments." },
-    { el: tile("transcript"), title: "My Transcript", text: "Your permanent record of finished courses. Download it as a PDF any time." },
-    { el: tile("studyBible"), title: "Study Bible", text: "The King James Bible with Strong's Concordance. Tap any word to study the original Hebrew or Greek." },
+    { el: tile("transcript"), title: "My Transcript", text: "Your permanent record of finished courses — including ones taken before the site. Download it as a PDF any time." },
+    { el: tile("studyBible"), title: "Study Bible", text: "The whole King James Bible with Strong's Concordance. Tap any word to study the original Hebrew or Greek; search, highlight, and follow cross references." },
     { el: tile("messages"), title: "Send Message", text: "A private conversation with your teacher." },
     { el: tile("discussion"), title: "Discussion Board", text: "Talk through the lessons with your classmates." },
+    { el: tile("resourceLibrary"), isNew: true, title: "Resource Library", text: "Books and studies from the church library and Drive — and the <strong>Lecture Archive</strong> of past courses' recorded classes, open for study." },
     { el: "#notifBell", title: "Notifications", text: "New messages, grades, announcements, and class cancellations show up here." },
-    { el: "#myProfileBtn", title: "My Profile", text: "Add your photo and contact details — and under <strong>Notifications</strong>, choose to get updates by email and on your phone, and reminders before things are due." },
-    { el: "#textSizeToggle", title: "Bigger text", text: "Tap <strong>Aa</strong> to make the text larger. The moon button beside it switches to night mode." },
-    { el: "#helpBtn", title: "Help is always here", text: "Tap <strong>?</strong> for short answers to common questions, or to take this tour again. May the Lord bless your studies!" },
+    { el: "#myProfileBtn", isNew: true, art: "phone", title: "My Profile", text: "Add your photo and details. Under <strong>Notifications</strong>, get updates by email and on your phone, and reminders before work is due." },
+    { el: "#textSizeToggle", isNew: true, title: "Easy on the eyes", text: "Tap <strong>Aa</strong> for larger text. The moon beside it switches to night view; the site always starts in day view when you sign in." },
+    { el: "#helpBtn", isNew: true, art: "search", title: "Help is always here", text: "Tap <strong>?</strong> and ask in your own words — the best answers come up as you type. You can take this tour again there too. May the Lord bless your studies!" },
   ];
-  return [
-    { title: `Welcome${first ? ", " + first : ""}!`, text: "This short tour shows you the teacher's side of the Institute. Tap <strong>Next</strong> to go step by step, or <strong>Skip</strong> any time — you can take it again from Help." },
-    { el: tile("catalogue"), title: "Courses", text: "Every course. Open one you teach to set its schedule, location, roster, assignments, and materials — and to post announcements, cancel a class, or copy it for next term. At class time, <strong>Take Attendance</strong> appears right on this tile." },
-    { el: tile("calendar"), title: "Calendar", text: "Your class days and due dates. Tap a day to see who has turned work in, take attendance, or cancel that class." },
-    { el: tile("grading"), title: "Grading", text: "Each course's grade sheet. At the end of a course, <strong>Record Final Grades</strong> puts them on students' permanent transcripts." },
+  else steps = [
+    { title: hi, text: "This short tour shows you the teacher's side of the Institute. Tap <strong>Next</strong> to go step by step, or <strong>Skip</strong> any time — you can take it again from Help." },
+    { el: tile("catalogue"), title: "Courses", text: "Every course. Open one you teach to run it. At class time, <strong>Take Attendance</strong> appears right on this tile." },
+    { isNew: true, art: "manageTabs", title: "Running a course", text: "A course opens into tabs: <strong>Overview</strong> (details, schedule, announcements, cancel a class), <strong>Students</strong> (roster and requests), <strong>Lectures</strong>, <strong>Materials</strong>, and <strong>Assignments</strong>. <strong>Copy for a New Term</strong> brings it all forward next time." },
+    { isNew: true, art: "materials", title: "Course materials", text: "Add many documents at once; they group and sort themselves by name. Check <strong>Teachers only</strong> on answer keys — students never see them." },
+    { isNew: true, art: "weekly", title: "Assignments with their documents", text: "Attach a worksheet or quiz to each assignment. Set up a weekly series and the quizzes are handed out one per week, in order." },
+    { isNew: true, art: "lectures", title: "Lectures & live classes", text: "For hybrid and online courses, paste the YouTube playlist link. New recordings appear on their own, in lesson order, and online students are told. Live classes and online attendance take care of themselves." },
+    { el: tile("calendar"), title: "Calendar", text: "Your class days and due dates. Tap a day to see who has turned work in, take attendance, or cancel that class. Add it to your phone's calendar too." },
+    { el: tile("grading"), title: "Grading", text: "Each course's grade sheet; turned-in files open right in the page. At the end of a course, <strong>Record Final Grades</strong> puts them on students' permanent transcripts." },
     { el: tile("messages"), title: "Message Inbox", text: "Private messages from your students." },
     { el: tile("discussion"), title: "Discussion Board", text: "Lead your classes' discussions." },
-    { el: tile("studyBible"), title: "Study Bible", text: "The KJV with Strong's Concordance — and you can insert Scripture straight into anything you write." },
-    ...(isAdmin() ? [{ el: tile("transcripts"), title: "Transcripts", text: "Every student's permanent record, including courses from before the site. Download any as a PDF." },
-      { el: tile("settings"), title: "Settings", text: "Approve new sign-ups, set each person's level, and check backups." }]
-      : [{ el: tile("transcripts"), title: "Transcripts", text: "Final grades from your courses, and every student's courses from before the site." },
+    { el: tile("studyBible"), title: "Study Bible", text: "The KJV with Strong's Concordance — and the <strong>📖 Scripture</strong> button inserts any passage straight into what you write." },
+    { el: tile("resourceLibrary"), isNew: true, title: "Resource Library", text: "The church library and Drive by topic or course, plus the <strong>Lecture Archive</strong> of past courses' recordings." },
+    ...(isAdmin() ? [{ el: tile("transcripts"), isNew: true, title: "Transcripts", text: "Every student's permanent record — including courses from before the site, brought in under <strong>Past Records</strong>. Download any as a PDF." },
+      { el: tile("settings"), title: "Settings", text: "Approve new sign-ups, set each person's level, and check the nightly backups." }]
+      : [{ el: tile("transcripts"), isNew: true, title: "Transcripts", text: "Final grades from your courses, and every student's courses from before the site." },
         { el: tile("settings"), title: "Settings", text: "Approve new sign-ups waiting to join." }]),
     { el: "#notifBell", title: "Notifications", text: "Enrollment requests, messages, and new sign-ups show up here." },
-    { el: "#myProfileBtn", title: "My Profile", text: "Your photo and details — and under <strong>Notifications</strong>, email and phone alerts, including a reminder 5 minutes before class starts if attendance hasn't been taken." },
-    { el: "#helpBtn", title: "Help is always here", text: "Tap <strong>?</strong> for answers to common questions, or to take this tour again. Thank you for teaching others also!" },
+    { el: "#myProfileBtn", art: "phone", title: "My Profile", text: "Your photo and details — and under <strong>Notifications</strong>, email and phone alerts, including a reminder 5 minutes before class if attendance hasn't been taken." },
+    { el: "#textSizeToggle", isNew: true, title: "Easy on the eyes", text: "<strong>Aa</strong> enlarges the text. The moon switches to night view; the site always starts in day view when you sign in." },
+    { el: "#helpBtn", isNew: true, art: "search", title: "Help is always here", text: "Tap <strong>?</strong> and ask in your own words — the best answers come up as you type, with a full guide for teachers. Thank you for teaching others also!" },
   ];
+  if (mode !== "new") return steps;
+  return [{ title: `What's new${first ? ", " + first : ""}`, text: "We've added a good deal to the Institute site. Here's a quick look — tap <strong>Next</strong>, or <strong>Skip</strong> any time. You can see it again from Help." }]
+    .concat(steps.filter((st) => st.isNew).map((st) => Object.assign({}, st, { isNew: false })));
 }
 let tourState = null;
 function maybeStartTour() {
   if (window.TNBBI_TEST_NO_TOUR || tourState || !currentUser) return;
   const me = users.find((u) => u.id === currentUser.id);
-  if (!me || me.status !== "active" || me.tourSeenAt) return;
-  try { if (localStorage.getItem("tnbbi-tour-done:" + currentUser.id)) return; } catch (e) { /* ignore */ }
+  if (!me || me.status !== "active") return;
   if (view !== "home") return;
-  setTimeout(() => startTour(false), 500);
+  let doneHere = false, newHere = false;
+  try {
+    doneHere = !!localStorage.getItem("tnbbi-tour-done:" + currentUser.id);
+    newHere = localStorage.getItem("tnbbi-whatsnew:" + currentUser.id) === WHATS_NEW_SINCE;
+  } catch (e) { /* ignore */ }
+  if (!me.tourSeenAt && !doneHere) { setTimeout(() => startTour(false), 500); return; }
+  // Took the tour before this round of updates? Show what's new, once.
+  if (me.tourSeenAt && me.tourSeenAt < WHATS_NEW_SINCE && !newHere) setTimeout(() => startTour(false, "new"), 500);
 }
-function startTour(replay) {
+function startTour(replay, mode) {
   endTour(false);
-  const steps = tourSteps().filter((s) => !s.el || document.querySelector(s.el));
-  tourState = { steps, i: 0, replay };
+  const steps = tourSteps(mode).filter((s) => !s.el || document.querySelector(s.el));
+  tourState = { steps, i: 0, replay, mode };
   document.addEventListener("keydown", tourKeys);
   window.addEventListener("resize", drawTour);
   drawTour();
@@ -1257,9 +1206,13 @@ function endTour(markSeen) {
   const was = tourState;
   tourState = null;
   if (markSeen && was && currentUser) {
-    try { localStorage.setItem("tnbbi-tour-done:" + currentUser.id, "1"); } catch (e) { /* ignore */ }
+    try {
+      localStorage.setItem("tnbbi-tour-done:" + currentUser.id, "1");
+      localStorage.setItem("tnbbi-whatsnew:" + currentUser.id, WHATS_NEW_SINCE);
+    } catch (e) { /* ignore */ }
+    // Either tour counts as having seen everything up to now.
     const me = users.find((u) => u.id === currentUser.id);
-    if (me && !me.tourSeenAt) { me.tourSeenAt = new Date().toISOString(); DB.markTourSeen().catch(() => {}); }
+    if (me && (!me.tourSeenAt || me.tourSeenAt < WHATS_NEW_SINCE)) { me.tourSeenAt = new Date().toISOString(); DB.markTourSeen().catch(() => {}); }
   }
 }
 function drawTour() {
@@ -1276,21 +1229,22 @@ function drawTour() {
     <div class="tour-shade ${r ? "" : "tour-shade-full"}"></div>
     ${r ? `<div class="tour-spot" style="top:${r.top - pad}px;left:${r.left - pad}px;width:${r.width + pad * 2}px;height:${r.height + pad * 2}px;"></div>` : ""}
     <div class="tour-card" role="dialog" aria-modal="true" aria-labelledby="tourTitle" aria-describedby="tourText">
-      <div class="tour-count">${tourState.i + 1} of ${tourState.steps.length}</div>
+      <div class="tour-count">${tourState.mode === "new" ? "What's new · " : ""}${tourState.i + 1} of ${tourState.steps.length}${step.isNew ? ` <span class="tour-new">New</span>` : ""}</div>
       <h3 id="tourTitle">${esc(step.title)}</h3>
+      ${step.art ? tourArt(step.art) : ""}
       <p id="tourText">${step.text}</p>
       <div class="tour-actions">
         <button class="btn btn-ghost btn-sm" id="tourSkip">${last ? "Close" : "Skip tour"}</button>
         <span style="flex:1"></span>
         ${tourState.i > 0 ? `<button class="btn btn-ghost btn-sm" id="tourBack">Back</button>` : ""}
-        <button class="btn btn-gold btn-sm" id="tourNext">${last ? "Finish" : tourState.i === 0 ? "Show Me Around" : "Next"}</button>
+        <button class="btn btn-gold btn-sm" id="tourNext">${last ? "Finish" : tourState.i === 0 ? (tourState.mode === "new" ? "Show Me" : "Show Me Around") : "Next"}</button>
       </div>
     </div>`;
   const card = root.querySelector(".tour-card");
   // Place the card below the highlighted item if there's room, else above;
   // centered when there's nothing to point at.
   const vw = window.innerWidth, vh = window.innerHeight;
-  const cw = Math.min(360, vw - 24);
+  const cw = Math.min(step.art ? 400 : 360, vw - 24);
   card.style.width = cw + "px";
   const ch = card.offsetHeight;
   if (!r) { card.style.left = Math.round((vw - cw) / 2) + "px"; card.style.top = Math.round(Math.max(16, (vh - ch) / 2)) + "px"; }
