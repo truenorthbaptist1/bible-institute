@@ -173,6 +173,61 @@ check(res.status === 200 && body.to === "phil@example.com" && mails().length ===
 const mc = await (await svc.handler(new Request("https://x/functions/v1/attendance-reminders?mailcheck=1", { method: "POST" }), sql, fakeFetch)).json();
 check(mc.reachable === true && /^220/.test(mc.greeting) && mc.passwordSet === true, "the mail-server check reports it can reach the server", JSON.stringify(mc));
 
+// --- 8. Lecture videos from a YouTube playlist ----------------------------------
+check(svc.isoDuration("PT1H2M3S") === 3723 && svc.isoDuration("PT45M") === 2700 && svc.isoDuration("P0D") === 0, "YouTube video lengths are read correctly");
+psql(`insert into public.courses (id, title, faculty_id, sched_mode, sched_start, sched_weeks, sched_days, sched_time, format, playlist_id)
+        values ('yt', 'Online Bibliology', '${phil}', 'scheduled', public.local_today() - 7, 8, array['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], '19:00', 'online', 'PLgood');
+      insert into public.enrollments (course_id, student_id, track) values ('yt', '${blake}', 'recorded');
+      delete from public.notifications;`);
+let ytVideos = [
+  { id: "vidAAAA0001", title: "Lecture 1 — Inspiration", dur: "PT52M10S", rec: null, pub: "2026-09-01T03:00:00Z", live: "none" },
+];
+const ytCalls = [];
+const ytFetch = async (url, opts) => {
+  const u = new URL(String(url));
+  if (u.hostname !== "yt.test") return fakeFetch(url, opts);
+  ytCalls.push(u.pathname + "?" + u.searchParams.toString());
+  if (u.searchParams.get("key") !== "test-key") return new Response(JSON.stringify({ error: { message: "API key not valid.", errors: [{ reason: "keyInvalid" }] } }), { status: 400 });
+  if (u.pathname.endsWith("/playlistItems")) {
+    if (u.searchParams.get("playlistId") !== "PLgood") return new Response(JSON.stringify({ error: { message: "not found", errors: [{ reason: "playlistNotFound" }] } }), { status: 404 });
+    return new Response(JSON.stringify({ items: ytVideos.map((v, i) => ({ snippet: { title: v.title, position: i }, contentDetails: { videoId: v.id } })) }));
+  }
+  if (u.pathname.endsWith("/videos")) {
+    const ids = u.searchParams.get("id").split(",");
+    return new Response(JSON.stringify({ items: ytVideos.filter((v) => ids.includes(v.id) && v.priv !== true).map((v) => ({
+      id: v.id, snippet: { title: v.title, publishedAt: v.pub, liveBroadcastContent: v.live },
+      contentDetails: { duration: v.dur }, status: { privacyStatus: "unlisted", embeddable: true },
+      ...(v.rec ? { recordingDetails: { recordingDate: v.rec } } : {}) })) }));
+  }
+  return new Response("{}", { status: 404 });
+};
+setEnv("YOUTUBE_API_BASE", "https://yt.test/youtube/v3");
+setEnv("YOUTUBE_API_KEY", undefined);
+out = await svc.runReminders(sql, ytFetch, new Date());
+let ps = JSON.parse(psql(`select json_agg(s) from public.playlist_sync s where course_id = 'yt'`));
+check(ps && ps[0].ok === false && /YOUTUBE_API_KEY/.test(ps[0].error), "without a YouTube key, the course shows a clear message", JSON.stringify(ps));
+setEnv("YOUTUBE_API_KEY", "test-key");
+psql(`select public.sync_course_lessons('yt', 'PLgood', '[]'::jsonb, 'reset'); update public.playlist_sync set synced_at = now() - interval '1 hour', ok = false where course_id = 'yt'`);
+out = await svc.runReminders(sql, ytFetch, new Date());
+let ls = JSON.parse(psql(`select json_agg(l order by position) from public.lessons l where course_id = 'yt'`));
+check(ls && ls.length === 1 && ls[0].duration_seconds === 3130 && ls[0].status === "ok", "the playlist's video becomes a lecture, with its length", JSON.stringify(ls));
+check(psql(`select count(*) from public.notifications where kind = 'lecture'`) === "0", "…quietly, on the first reading");
+ytVideos.push({ id: "vidBBBB0002", title: "Lecture 2 — Preservation", dur: "PT1H", rec: "2026-10-01T00:00:00Z", pub: "2026-10-02T03:00:00Z", live: "none" });
+psql(`update public.playlist_sync set synced_at = now() - interval '31 minutes' where course_id = 'yt'`);
+out = await svc.runReminders(sql, ytFetch, new Date());
+ls = JSON.parse(psql(`select json_agg(l order by position) from public.lessons l where course_id = 'yt'`));
+check(ls.length === 2 && ls[1].recorded_on === "2026-10-01", "a newly uploaded video is added (with its recording date)", JSON.stringify(ls.map((l) => [l.video_id, l.recorded_on])));
+const n = JSON.parse(psql(`select json_agg(n) from public.notifications n where kind = 'lecture'`));
+check(n && n.length === 1 && n[0].user_id === blake && /Lecture 2/.test(n[0].subject) && /^\/\?lesson=/.test(n[0].link), "…and the online student is told", JSON.stringify(n));
+const calls = ytCalls.length;
+out = await svc.runReminders(sql, ytFetch, new Date());
+check(ytCalls.length === calls, "the playlist isn't re-read every minute");
+psql(`update public.courses set playlist_id = 'PLwrong' where id = 'yt'`);
+out = await svc.runReminders(sql, ytFetch, new Date());
+ps = JSON.parse(psql(`select json_agg(s) from public.playlist_sync s where course_id = 'yt'`));
+check(ps[0].ok === false && /can't find this playlist/.test(ps[0].error), "a wrong or Private playlist is reported clearly", ps[0].error);
+setEnv("YOUTUBE_API_BASE", undefined);
+
 const passed = results.filter(Boolean).length;
 console.log(`\n${passed}/${results.length} service checks passed`);
 process.exit(passed === results.length ? 0 : 1);
