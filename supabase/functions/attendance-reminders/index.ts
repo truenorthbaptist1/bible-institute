@@ -488,15 +488,15 @@ export async function syncPlaylists(sql: Sql, fetchImpl: typeof fetch, now: Date
   let added = 0;
   for (const c of due) {
     if (!youtubeKey()) {
-      await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, ${"[]"}::jsonb, ${"Lecture videos aren't connected yet: the YouTube key (Supabase secret YOUTUBE_API_KEY) hasn't been added."})`;
+      await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, '[]'::jsonb, ${"Lecture videos aren't connected yet: the YouTube key (Supabase secret YOUTUBE_API_KEY) hasn't been added."})`;
       continue;
     }
     try {
       const items = await readPlaylist(c.playlist_id, c.extra_ids || [], fetchImpl);
-      const r = await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, ${JSON.stringify(items)}::jsonb) as n`;
+      const r = await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, ${sql.json(items)}) as n`;
       added += Number(r[0] && r[0].n) || 0;
     } catch (e) {
-      await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, ${"[]"}::jsonb, ${(e as Error).message})`;
+      await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, '[]'::jsonb, ${(e as Error).message})`;
     }
   }
   return { checked: due.length, added };
