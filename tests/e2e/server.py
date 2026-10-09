@@ -18,7 +18,7 @@ PORT = 8765
 TABLES = {"profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments", "submissions",
           "discussion_posts", "messages", "notifications", "bible_highlights", "attendance_days", "attendance", "push_subscriptions",
           "class_cancellations", "announcements", "transcript_entries", "past_records",
-          "lessons", "lesson_views", "live_presence", "live_chat", "playlist_sync"}
+          "lessons", "lesson_views", "live_presence", "live_chat", "playlist_sync", "assignment_materials"}
 SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status", "visible_lesson_dates"}
 IDENT = lambda s: '"' + str(s).replace('"', '') + '"'
 

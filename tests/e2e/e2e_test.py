@@ -35,6 +35,45 @@ window.jspdf = { jsPDF: function () { return {
 CONFIG = """window.TNBBI_CONFIG = { supabaseUrl: "http://localhost/fake", supabaseAnonKey: "test-key", testMode: true, bootstrapAdminEmail: "truenorthbaptist1@gmail.com" };"""
 
 
+# Course pages are split into tabs (Oct 9). When a step works on something
+# inside a tab that isn't showing, open that tab first — the way a person
+# would — so each step doesn't have to.
+from playwright.sync_api import Page as _Page
+_REVEAL = """(sel) => { let el; try { el = document.querySelector(sel); } catch (e) { return false; }
+  if (!el) return false; const p = el.closest('.tab-panel'); if (!p || !p.hidden) return false;
+  const b = document.querySelector('.course-tab[data-tab="' + p.dataset.panel + '"]'); if (b) b.click(); return !!b; }"""
+def _reveal(page, selector):
+    try: page.evaluate(_REVEAL, selector)
+    except Exception: pass
+def _wrap(name):
+    orig = getattr(_Page, name)
+    def f(self, selector, *a, **k):
+        _reveal(self, selector)
+        if name == "wait_for_selector":
+            try: return orig(self, selector, *a, **{**k, "timeout": 2500})
+            except Exception:
+                _reveal(self, selector)
+        return orig(self, selector, *a, **k)
+    setattr(_Page, name, f)
+for _n in ("click", "fill", "check", "uncheck", "set_input_files", "select_option", "dblclick", "wait_for_selector", "is_checked", "inner_text", "text_content"):
+    _wrap(_n)
+
+from playwright.sync_api import Locator as _Locator
+_REVEAL_EL = """(el) => { const p = el.closest('.tab-panel'); if (!p || !p.hidden) return false;
+  const b = document.querySelector('.course-tab[data-tab="' + p.dataset.panel + '"]'); if (b) b.click(); return !!b; }"""
+def _wrap_loc(name):
+    orig = getattr(_Locator, name)
+    def f(self, *a, **k):
+        try: self.first.evaluate(_REVEAL_EL, timeout=3000)
+        except Exception: pass
+        return orig(self, *a, **k)
+    setattr(_Locator, name, f)
+for _n in ("click", "fill", "check", "uncheck", "set_input_files", "select_option", "is_checked", "inner_text"):
+    _wrap_loc(_n)
+
+def tab(page, name):
+    page.click(f'.course-tab[data-tab="{name}"]')
+
 failures, errors = [], []
 TODAY = datetime.date.today()
 def d(days): return (TODAY + datetime.timedelta(days=days)).isoformat()
@@ -201,18 +240,18 @@ with sync_playwright() as p:
     check("2 students enrolled" in body(admin), "two students added to the roster")
     admin.set_input_files("#mgAddFile", files=[{"name": "Hermeneutics Syllabus.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4 syllabus"}])
     settle(admin)
-    check("Hermeneutics Syllabus.pdf" in admin.inner_text("#mgMaterialsList"), "syllabus uploaded to course materials")
+    check("Hermeneutics Syllabus" in admin.inner_text("#mgMaterialsList"), "syllabus uploaded to course materials")
     admin.check("#mgAddTeacherOnly")
     admin.set_input_files("#mgAddFile", files=[{"name": "Final Exam Answer Key.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4 key"}])
     settle(admin)
-    key_row = admin.locator("#mgMaterialsList li", has_text="Final Exam Answer Key.pdf")
+    key_row = admin.locator("#mgMaterialsList li", has_text="Final Exam Answer Key")
     check(key_row.locator(".pill-teacher").count() == 1 and key_row.locator("[data-teacher-only]").is_checked(), "answer key added as Teachers only")
-    syl_row = admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf")
+    syl_row = admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus")
     check(not syl_row.locator("[data-teacher-only]").is_checked(), "the syllabus stays visible to the class")
     syl_row.locator("[data-teacher-only]").check(); settle(admin)
-    check(admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf").locator(".pill-teacher").count() == 1, "checking the box makes a document teachers-only")
-    admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf").locator("[data-teacher-only]").uncheck(); settle(admin)
-    check(admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf").locator(".pill-teacher").count() == 0, "unchecking shares it with the class again")
+    check(admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus").locator(".pill-teacher").count() == 1, "checking the box makes a document teachers-only")
+    admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus").locator("[data-teacher-only]").uncheck(); settle(admin)
+    check(admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus").locator(".pill-teacher").count() == 0, "unchecking shares it with the class again")
     admin.uncheck("#mgAddTeacherOnly")
     admin.set_input_files("#mgAddFile", files=[{"name": "virus.exe", "mimeType": "application/octet-stream", "buffer": b"MZ"}])
     admin.wait_for_selector(".toast-error");
@@ -238,7 +277,7 @@ with sync_playwright() as p:
     tile(blake, "My Courses")
     check("Hermeneutics I" in body(blake), "Blake sees Hermeneutics I under Enrolled")
     blake.locator(".tile h3", has_text="Hermeneutics I").click(); settle(blake)
-    check("Hermeneutics Syllabus.pdf" in body(blake), "Blake sees the uploaded syllabus")
+    check("Hermeneutics Syllabus" in body(blake), "Blake sees the uploaded syllabus")
     check("Answer Key" not in body(blake), "Blake does NOT see the teachers-only answer key")
     blake.locator("[data-open-material]").first.click()
     blake.wait_for_selector(".doc-viewer")
@@ -247,7 +286,7 @@ with sync_playwright() as p:
     blake.screenshot(path=f"{SHOTS}/05b-document-reader.png")
     blake.click("#matClose")
     check(blake.locator(".doc-viewer").count() == 0, "closing the reader returns to the course")
-    blake.locator("li", has_text="Reading Reflection").locator("button").click()
+    blake.locator("li", has_text="Reading Reflection").locator("[data-assignment]").first.click()
     blake.wait_for_selector("input[name=submitMethod][value=editor]")
     blake.check("input[name=submitMethod][value=editor]")
     blake.wait_for_selector(".rte-page")
@@ -288,9 +327,9 @@ with sync_playwright() as p:
     blake.screenshot(path=f"{SHOTS}/05c-word-processor.png", full_page=False)
     blake.evaluate("document.querySelector('.rte-page').innerHTML += '<img src=x onerror=\"window.__xss=1\"><script>window.__xss=2</script><a href=\"javascript:alert(1)\">x</a><p style=\"color:red;position:fixed\" onclick=\"x()\">styled</p>'")
     blake.click("#submitTurnIn"); settle(blake)
-    check("submitted" in blake.inner_text("#main").lower(), "written work turned in → Submitted")
+    check("submitted" in blake.text_content("#main").lower(), "written work turned in → Submitted")
     # locked quiz
-    blake.locator("li", has_text="Weekly Quiz — Week 1").locator("button").click()
+    blake.locator("li", has_text="Weekly Quiz — Week 1").locator("[data-assignment]").first.click()
     blake.wait_for_selector(".modal")
     check("Not open yet" in blake.inner_text(".modal"), "locked quiz shows 'Not open yet'")
     blake.keyboard.press("Escape")
@@ -710,7 +749,7 @@ with sync_playwright() as p:
     admin.fill("#cpName", "Interpretation Copy (Spring)"); admin.fill("#cpStart", d(150))
     admin.click("#cpGo"); settle(admin)
     check("Interpretation Copy (Spring)" in admin.inner_text(".page-header"), "Copy for a New Term makes the new course and opens it")
-    check(admin.locator("#mgAssignmentsList > li:not(.weight-total):not(.privacy-note)").count() == n_asg and "0 students enrolled" in body(admin), "…with the same assignments and no students")
+    check(admin.locator("#mgAssignmentsList > li:not(.weight-total):not(.privacy-note)").count() == n_asg and "0 students enrolled" in admin.text_content("body"), "…with the same assignments and no students")
     check(admin.locator("#mgMaterialsList li", has_text="Open").count() >= 1 or admin.locator("#mgMaterialsList [data-open-material]").count() >= 1, "…and its files copied")
     admin.screenshot(path=f"{SHOTS}/13j-copied-course.png", full_page=True)
     # Backups
@@ -868,9 +907,14 @@ with sync_playwright() as p:
     check(blake.locator("#watchLive").count() == 1, "class is in session: a Watch Live button appears")
     blake.screenshot(path=f"{SHOTS}/12j-student-course.png", full_page=True)
     blake.locator("[data-track=recorded]").click(); settle(blake)
+    check(blake.locator(".course-tab[data-tab=lectures]").count() == 1, "the course has a Lectures tab")
+    check(blake.locator(".overview-card .lecture-next").count() == 1, "the Overview shows the next lecture to watch")
+    tab(blake, "lectures")
     check("You watch the recorded lectures" in body(blake) and blake.locator("#attendChoose").count() == 0, "Blake picks recorded lectures")
-    check(blake.locator(".lecture-row").count() == 2, "both posted lectures are listed (the live one is under Watch Live)")
-    blake.locator(".lecture-row", has_text="Romans 3").locator("button").click(); settle(blake)
+    check(blake.locator("#panel-lectures .lecture-row").count() == 2, "both posted lectures are listed (the live one is under Watch Live)")
+    titles = blake.locator("#panel-lectures .lecture-row strong").all_inner_texts()
+    check(titles == sorted(titles, key=lambda t: int(re.search(r"\d+", t).group()) if re.search(r"\d+", t) else 0), f"lectures are listed first-to-last ({titles})")
+    blake.locator("#panel-lectures .lecture-row", has_text="Romans 3").locator("button").click(); settle(blake)
     blake.wait_for_selector(".fake-yt")
     check(blake.locator("[data-video=ROMvid00002]").count() == 1 and "0% watched" in blake.inner_text("#watchText"), "the lecture opens in the site's player")
     blake.evaluate("window.__yt.last.playVideo()")
@@ -881,7 +925,8 @@ with sync_playwright() as p:
           "…and counts Blake present for that class day, automatically")
     blake.screenshot(path=f"{SHOTS}/12j-lecture.png", full_page=True)
     blake.click("#backLink"); settle(blake)
-    check("✓ Watched" in blake.inner_text(".lecture-row >> nth=0"), "back on the course, the lecture shows ✓ Watched")
+    tab(blake, "lectures")
+    check("✓ Watched" in blake.locator("#panel-lectures .lecture-row", has_text="Romans 3").inner_text(), "back on the course, the lecture shows ✓ Watched")
 
     # Amber, on a phone, attends live and asks a question
     amberp = new_page(browser, "amber-phone", mobile=True)
@@ -1045,6 +1090,71 @@ with sync_playwright() as p:
           "a role changed while someone has the site open is picked up on their next page change")
     ruth.context.close()
 
+    print("13b. Course documents: grouped, sorted, searchable, and handed out week by week")
+    psql(f"insert into public.enrollments (course_id, student_id) values ('c6', '{blake_id}') on conflict do nothing")
+    nav(admin, "Dashboard"); tile(admin, "Courses")
+    admin.locator(".tile h3", has_text="Church History").first.click(); settle(admin)
+    check(admin.locator(".course-tab").count() == 5, "the Manage page is split into tabs")
+    tab(admin, "materials")
+    pdf = lambda name: {"name": name, "mimeType": "application/pdf", "buffer": b"%PDF-1.4 " + name.encode()}
+    files = [pdf(f"Church History Quiz {n}.pdf") for n in (10, 2, 1, 3, 11, 12)]
+    files += [{"name": "Church History Quiz 1.docx", "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "buffer": b"PK fake"},
+              pdf("Church History 1 Syllabus.pdf"), pdf("Week 1 Study Questions.pdf"), pdf("Writing Evaluation Form.pdf")]
+    admin.set_input_files("#mgAddFile", files=files); settle(admin)
+    groups = admin.locator("#mgMaterialsList .docs-group .docs-group-name").all_inner_texts()
+    check(groups[:1] == ["Syllabus & Course Info"] and "Quizzes" in groups and "Study Questions & Worksheets" in groups and "Guides & Forms" in groups,
+          f"documents are grouped by kind ({groups})")
+    for g in admin.locator("#mgMaterialsList .docs-group:not([open]) summary").all(): g.click()
+    quiz_names = admin.locator("#mgMaterialsList .docs-group[data-group=quiz] .doc-name").all_inner_texts()
+    check(quiz_names == [f"Church History Quiz {n}" for n in (1, 2, 3, 10, 11, 12)], f"…sorted 1, 2, 3, 10 — not 1, 10, 2 ({quiz_names})")
+    q1 = admin.locator("#mgMaterialsList .doc-row", has_text="Church History Quiz 1").filter(has_not_text="Quiz 10").first
+    check(q1.locator(".doc-open button").all_inner_texts() == ["PDF", "Word"], "the Word and PDF copies of one document share a row")
+    admin.fill("#mgMaterialsList .docs-search", "quiz 1")
+    check(admin.locator("#mgMaterialsList .doc-row:not([hidden])").count() == 4, "searching 'quiz 1' finds Quiz 1, 10, 11 and 12")
+    admin.fill("#mgMaterialsList .docs-search", "")
+    admin.screenshot(path=f"{SHOTS}/13b-materials-grouped.png", full_page=True)
+
+    tab(admin, "assignments"); admin.click("#mgAddAssignment"); admin.wait_for_selector("#asgTitle")
+    admin.check("input[name=asgType][value=recurring]")
+    admin.fill("#asgTitle", "Church History Quiz"); admin.fill("#asgDue", d(3)); admin.fill("#asgWeight", "0")
+    admin.fill("#asgWeeks", "4"); admin.dispatch_event("#asgWeeks", "change")
+    admin.click("[data-pick-toggle]"); admin.fill("[data-pick-search]", "quiz")
+    admin.click('[data-pick-all="quiz"]')
+    weeks = [admin.locator(f'[data-wp-week="{i}"] option:checked').inner_text() for i in range(4)]
+    check(weeks == ["Church History Quiz 1", "Church History Quiz 2", "Church History Quiz 3", "Church History Quiz 10"], f"a weekly quiz hands out the quizzes in order ({weeks})")
+    check("2 documents don't have a week" in admin.inner_text("#asgWeekPlan"), "…and says which quizzes don't fit")
+    admin.set_input_files("[data-pick-upload]", files=[pdf("Church History Quiz 13.pdf")])
+    admin.click("[data-wp-fit]")
+    check(admin.input_value("#asgWeeks") == "7" and admin.locator('[data-wp-week="6"] option:checked').inner_text() == "Church History Quiz 13",
+          "a quiz uploaded from the computer joins in order; 'Make it 7 weeks' fits them all")
+    admin.screenshot(path=f"{SHOTS}/13b-weekly-quiz-documents.png", full_page=False)
+    admin.click("#asgSave"); settle(admin)
+    plan = psql("""select string_agg(t, ';' order by due) from (select a.due, string_agg(m.title, ',' order by m.title) t
+                   from public.assignments a left join public.assignment_materials am on am.assignment_id = a.id
+                   left join public.materials m on m.id = am.material_id
+                   where a.course_id = 'c6' and a.series_label = 'Church History Quiz' group by a.id, a.due) x""")
+    check(plan == ";".join(["Church History Quiz 1.docx,Church History Quiz 1.pdf"] + [f"Church History Quiz {n}.pdf" for n in (2, 3, 10, 11, 12, 13)]),
+          "saved: week 1 → Quiz 1 (PDF and Word), week 2 → Quiz 2 … week 7 → Quiz 13")
+    check(psql("select count(*) from public.materials where course_id = 'c6' and title = 'Church History Quiz 13.pdf'") == "1", "…and the uploaded quiz is in Course Materials too")
+    check("Documents on every week" in admin.inner_text("#mgAssignmentsList"), "the assignment list shows every week has its document")
+    admin.locator("#mgAssignmentsList [data-series-docs]").click(); admin.wait_for_selector("#adPlan .week-plan")
+    check(admin.locator('#adPlan [data-wp-week="6"] option:checked').inner_text() == "Church History Quiz 13", "Documents reopens with each week's quiz")
+    admin.click("#adCancel")
+
+    blake.reload(); blake.wait_for_selector("#main .page-header", timeout=20000); settle(blake)
+    nav(blake, "Dashboard"); tile(blake, "My Courses")
+    blake.locator(".tile h3", has_text="Church History").first.click(); settle(blake)
+    check([t.split()[0] for t in blake.locator(".course-tab").all_inner_texts()] == ["Overview", "Materials", "Assignments"], "a student's course page has Overview · Materials · Assignments tabs")
+    tab(blake, "assignments")
+    chips = blake.locator("#panel-assignments .series-next .doc-chip").all_inner_texts()
+    check(len(chips) == 2 and all("Church History Quiz 1" in c for c in chips), f"the week's quiz is right on the assignment, as PDF and Word ({chips})")
+    blake.locator("#panel-assignments .series-next [data-assignment]").click(); blake.wait_for_selector(".modal")
+    check(blake.locator(".modal .doc-chip").count() == 2, "…and in the turn-in window")
+    blake.click("#submitCancel" if blake.locator("#submitCancel").count() else "#submitClose")
+    tab(blake, "materials")
+    check(blake.locator("#panel-materials .docs-search").count() == 1 and blake.locator("#panel-materials .docs-group").count() >= 3, "students get the same grouped, searchable materials")
+    blake.screenshot(path=f"{SHOTS}/13b-student-assignments.png", full_page=True)
+
     print("14. Archive and delete a course")
     nav(admin, "Dashboard"); tile(admin, "Courses")
     admin.click("#catAddCourse"); admin.wait_for_selector("#cbName")
@@ -1095,7 +1205,7 @@ with sync_playwright() as p:
     phone.screenshot(path=f"{SHOTS}/12-phone-profile.png", full_page=True)
 
     print("15b. Updates reach people without a hard refresh")
-    check(len(admin.evaluate("Object.keys(window.TNBBI_VERSIONS || {})")) == 10, "every site file was version-checked on load")
+    check(len(admin.evaluate("Object.keys(window.TNBBI_VERSIONS || {})")) == 11, "every site file was version-checked on load")
     check(admin.locator(".site-update-bar").count() == 0, "no update notice when nothing changed")
     admin.evaluate("checkForSiteUpdate(true)"); admin.wait_for_timeout(500)
     check(admin.locator(".site-update-bar").count() == 0, "…still none after a check")
