@@ -82,11 +82,24 @@ function openSiteLink(link) {
   }
   if (q.get("notifications")) { go("home"); notifPanelOpen = true; renderNotifBell(); return true; }
   if (q.get("help")) { go("help"); return true; }
+  // Lectures (Oct 9): a new lecture, or "class is live now".
+  if (q.get("lesson")) {
+    const c = courses.find((x) => x.lessons.some((l) => l.id === q.get("lesson")));
+    if (!c) { toast("That lecture isn't available."); go("home"); return true; }
+    openLecture(c.id, q.get("lesson"), role === "student" ? "course" : "manage");
+    return true;
+  }
+  if (q.get("live")) {
+    const c = courses.find((x) => x.id === q.get("live"));
+    if (!c) { toast("That course couldn't be found."); go("home"); return true; }
+    openLiveClass(c.id, role === "student" ? "course" : "manage");
+    return true;
+  }
   return false;
 }
 // Read the link the page was opened with (kept through sign-in).
 const EXTRA_LINK_KEY = "tnbbi-open-link";
-const EXTRA_LINK_PARAMS = ["course", "thread", "student", "settings", "transcript", "profile", "notifications", "help"];
+const EXTRA_LINK_PARAMS = ["course", "thread", "student", "settings", "transcript", "profile", "notifications", "help", "lesson", "live"];
 (function rememberIncomingLink() {
   try {
     const q = new URLSearchParams(location.search);
@@ -366,7 +379,14 @@ function transcriptSummary(entries) {
   });
   return { attempted, earned, gpa: gpaCredits ? Math.round((points / gpaCredits) * 100) / 100 : null };
 }
-function termSortKey(e) { return e.startDate || e.endDate || "0000"; }
+// Sort by date; for past courses without dates, by the term's name ("Spring 2024").
+function termSortKey(e) {
+  if (e.startDate || e.endDate) return e.startDate || e.endDate;
+  const m = /(winter|spring|summer|fall|autumn)\D*(\d{4})/i.exec(e.term || "");
+  if (m) return `${m[2]}-${{ winter: "01", spring: "02", summer: "06", fall: "09", autumn: "09" }[m[1].toLowerCase()]}-00`;
+  const y = /(\d{4})/.exec(e.term || "");
+  return y ? `${y[1]}-00-00` : "0000";
+}
 function groupByTerm(entries) {
   const groups = [];
   const byTerm = new Map();
@@ -1067,6 +1087,14 @@ async function renderBackupsCard() {
 // Help page
 // ---------------------------------------------------------------------------
 const HELP_STUDENT = [
+  ["Attending online", [
+    ["Can I take a class from far away?", "Yes, when the class is <strong>Hybrid</strong> or <strong>Online</strong>. Open the course and choose how you'll attend: in the classroom, <strong>live online</strong> (watch the class here as it happens), or <strong>recorded lectures</strong> (watch each one after it's posted). You can change it later."],
+    ["How is my attendance counted online?", "Live: watch at least 75% of the class on the course's <strong>Watch Live</strong> page — keep that page open and playing (watching in the YouTube app doesn't count). Recorded: watch 95% of the lecture within 7 days of it being posted. Only the parts you actually play count; skipping ahead doesn't."],
+    ["I missed a class in person. Can I make it up?", "Yes. Watch that class's recording within 7 days and your absence is changed to present automatically."],
+    ["How do I ask a question during a live class?", "Use the <strong>Class chat</strong> under the live stream. Your teacher sees it during class and can answer there."],
+    ["My internet is slow. Can I still watch?", "Yes — a phone works fine. Tap ⚙ in the video player and choose a lower quality. Your progress is saved as you go, even if your connection drops."],
+    ["What's the Lecture Archive?", "In the <strong>Resource Library</strong>: recorded lectures from past courses, open to every student for study. Watching there doesn't count toward any course."],
+  ]],
   ["Getting started", [
     ["What's on my Dashboard?", "Each tile opens one part of the Institute: My Courses (your classes and ones you can sign up for), Calendar, Study Bible, My Grades, My Transcript, Send Message, Submit Work, Discussion Board, Resource Library, and My Profile."],
     ["How do I sign up for a class?", "Open <strong>My Courses</strong>. Classes you can join are under <strong>Available</strong> — tap <strong>Request Enrollment</strong>. Your teacher approves it, and you'll get a notification. (If the class has already started, ask your teacher to add you.)"],
@@ -1092,7 +1120,15 @@ const HELP_STUDENT = [
   ]],
 ];
 const HELP_FACULTY = [
+  ["Hybrid & online courses", [
+    ["How do I set up a hybrid or online course?", "In <strong>Add a Course</strong> (or <strong>Edit Course Details</strong>), choose <strong>Hybrid</strong> or <strong>Online</strong>, paste the course's YouTube <strong>playlist link</strong>, and set the class length. Online courses can also be <strong>Self-paced</strong>: every lecture open at once, and each student has one semester from the day they start."],
+    ["How do lectures get onto the site?", "Your recording person uploads each class to the course's YouTube playlist as <strong>Unlisted</strong> (not Private), with embedding allowed. The site checks the playlist every 30 minutes (every 2 minutes around class time), adds the new lecture, and tells online students. Setting the video's <em>Recording date</em> in YouTube Studio puts it on the right class day; you can also change the day on the Manage page."],
+    ["How does the live class work?", "Stream the class to a YouTube Live event that's Unlisted and in the course's playlist — the site finds it by itself. Students watch on the course's Watch Live page and ask questions in the Class chat. Open <strong>Open the Live Class</strong> on the Manage page to read the chat and see who's watching. When the stream ends, the recording stays in the playlist for everyone else."],
+    ["Do I take attendance for online students?", "No — it fills itself in: 75% of the class watched live on the site, or 95% of the recording within 7 days. On the Take Attendance screen they're listed separately. A classroom student you mark Absent who later watches the recording is changed to Present automatically."],
+    ["Can I use a better recording of a lecture?", "Yes. On the Manage page, tap <strong>Replace</strong> beside the lecture and paste the new video's link. It keeps its place and class day. Copying a course for a new term brings its playlist and lectures along."],
+  ]],
   ["Your courses", [
+    ["How do I keep an answer key from students?", "On the course's Manage page, under <strong>Course Materials</strong>, check <strong>Teachers only</strong> beside the document (or check it before adding new ones). Faculty and Admins can still open it; students never see it. Uncheck it to share it with the class."],
     ["Where do I manage a course?", "<strong>Courses</strong> → tap the course. Its page has the teacher, schedule, location and online link, roster, enrollment requests, attendance, announcements, class cancellations, materials, and assignments."],
     ["How do I add assignments?", "On the course page, <strong>+ Add Assignment</strong>. Give it a due date, points, and a grade weight; use the weekly option for a recurring series (like weekly quizzes). You can also lock it until a date."],
     ["How do I reuse a course next term?", "On the course page, <strong>Copy for a New Term</strong>. It copies the details, schedule pattern, files, and assignments with due dates moved to the new start date — without any students or grades."],

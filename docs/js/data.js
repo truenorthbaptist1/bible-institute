@@ -147,9 +147,10 @@ async function fetchOwnProfile(uid) {
 // ---------------------------------------------------------------------------
 async function loadAll() {
   const fac = currentUser.role === "faculty";
-  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks, cancels, anns, trans, past] = await Promise.all([
+  const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks, cancels, anns, trans, past,
+         lessonRows, lessonDates, viewRows, syncRows] = await Promise.all([
     selectAll("courses", "*", "title"),
-    selectAll("enrollments", "course_id,student_id"),
+    selectAll("enrollments", "*"),
     selectAll("enrollment_requests", "*", "requested_at"),
     selectAll("materials", "*", "created_at"),
     selectAll("assignments", "*", "due"),
@@ -167,13 +168,19 @@ async function loadAll() {
     // (Tolerant for the few minutes between a site update and its database
     // update, so the rest of the site keeps working either way.)
     selectAll("attendance_days", "*", "class_date").catch(() => []),
-    selectAll("attendance", "course_id,class_date,student_id,status").catch(() => []),
+    selectAll("attendance", "*").catch(() => []),
     // Added Oct 4 (tolerant the same way).
     selectAll("class_cancellations", "*", "class_date").catch(() => []),
     selectAll("announcements", "*", "created_at").catch(() => []),
     selectAll("transcript_entries", "*", "start_date").catch(() => []),
     // Added Oct 8: past records (Admins only; the database returns nothing to anyone else).
     currentUser.superAdmin ? selectAll("past_records", "*", "imported_at").catch(() => []) : Promise.resolve([]),
+    // Added Oct 9: lecture videos, the class day each belongs to, how much
+    // of each has been watched, and playlist status (faculty).
+    selectAll("lessons", "*", "position").catch(() => []),
+    sb.rpc("visible_lesson_dates").then(must).catch(() => []),
+    selectAll("lesson_views", "lesson_id,student_id,pct,completed_at,last_at").catch(() => []),
+    fac ? selectAll("playlist_sync", "*").catch(() => []) : Promise.resolve([]),
   ]);
 
   // Your role changed since this page loaded: switch to the new role and
@@ -223,6 +230,17 @@ async function loadAll() {
       attMarks: {},  // date → { studentId: status }
       location: r.location || "",
       meetingUrl: r.meeting_url || "",
+      // Hybrid & online (Oct 9)
+      format: r.format || "in_person",     // in_person | hybrid | online
+      pace: r.pace || "calendar",          // calendar | self
+      playlistId: r.playlist_id || "",
+      liveVideoId: r.live_video_id || "",
+      classMinutes: Number(r.class_minutes) || 90,
+      enrollment: {},  // studentId → { track, trackChosen, startOn }
+      lessons: [],
+      sync: null,
+      autoDays: {},    // class days the site filled in (online students)
+      attNotes: {},    // date → { studentId: { auto, note } }
       cancellations: {}, // date → reason
       announcements: [],
       materials: [],
@@ -236,12 +254,18 @@ async function loadAll() {
     return c;
   });
 
-  enr.forEach((e) => byCourse[e.course_id] && byCourse[e.course_id].studentIds.push(e.student_id));
+  enr.forEach((e) => {
+    const c = byCourse[e.course_id];
+    if (!c) return;
+    c.studentIds.push(e.student_id);
+    c.enrollment[e.student_id] = { track: e.track || "classroom", trackChosen: !!e.track_chosen, startOn: e.start_on || null };
+  });
   reqs.forEach((r) => byCourse[r.course_id] && byCourse[r.course_id].enrollmentRequests.push({
     id: r.id, studentId: r.student_id, requestedAt: r.requested_at, status: "pending",
   }));
   mats.forEach((m) => byCourse[m.course_id] && byCourse[m.course_id].materials.push({
     id: m.id, type: m.type || "material", title: m.title, storagePath: m.storage_path, mimeType: m.mime_type, size: m.size_bytes,
+    teacherOnly: !!m.teacher_only,
   }));
 
   const byAssignment = {};
@@ -291,12 +315,56 @@ async function loadAll() {
   pastRecords = past.map(pastRecordFromRow);
   attDays.forEach((d) => {
     const c = byCourse[d.course_id];
-    if (c) c.attDays[d.class_date] = { held: d.held, takenBy: d.taken_by, takenAt: d.taken_at };
+    if (!c) return;
+    // Days the site filled in by itself (online students) aren't the
+    // teacher having taken attendance.
+    if (d.teacher_taken === false) c.autoDays[d.class_date] = { held: d.held };
+    else c.attDays[d.class_date] = { held: d.held, takenBy: d.taken_by, takenAt: d.taken_at };
   });
   attMarks.forEach((m) => {
     const c = byCourse[m.course_id];
-    if (c) (c.attMarks[m.class_date] = c.attMarks[m.class_date] || {})[m.student_id] = m.status;
+    if (!c) return;
+    (c.attMarks[m.class_date] = c.attMarks[m.class_date] || {})[m.student_id] = m.status;
+    if (m.auto || m.note) (c.attNotes[m.class_date] = c.attNotes[m.class_date] || {})[m.student_id] = { auto: !!m.auto, note: m.note || "" };
   });
+
+  // Lectures
+  const dateOf = {};
+  lessonDates.forEach((x) => { dateOf[x.lesson_id] = x.class_date; });
+  const lessonById = {};
+  lessonRows.forEach((l) => {
+    const c = byCourse[l.course_id];
+    if (!c) return;
+    const obj = {
+      id: l.id, courseId: l.course_id, videoId: l.video_id, title: l.title || "", position: l.position,
+      duration: l.duration_seconds || null, publishedAt: l.published_at, recordedOn: l.recorded_on, status: l.status,
+      fromPlaylist: l.from_playlist, replaces: l.replaces || "", hidden: !!l.hidden, fixedDate: l.class_date || null,
+      classDate: dateOf[l.id] || null, addedAt: l.added_at, views: {},
+    };
+    lessonById[l.id] = obj;
+    c.lessons.push(obj);
+  });
+  viewRows.forEach((v) => {
+    const l = lessonById[v.lesson_id];
+    if (l) l.views[v.student_id] = { pct: Number(v.pct) || 0, completedAt: v.completed_at, lastAt: v.last_at };
+  });
+  Object.values(byCourse).forEach((c) => c.lessons.sort((a, b) =>
+    (a.classDate || "9999").localeCompare(b.classDate || "9999") || a.position - b.position || String(a.addedAt).localeCompare(String(b.addedAt))));
+  syncRows.forEach((r) => { if (byCourse[r.course_id]) byCourse[r.course_id].sync = { playlistId: r.playlist_id, syncedAt: r.synced_at, requestedAt: r.requested_at, ok: r.ok, error: r.error || "", count: r.video_count }; });
+
+  // Self-paced courses: a student's due dates count from the day they
+  // started. Shift them here so every student screen shows their own dates.
+  if (!fac) {
+    Object.values(byCourse).forEach((c) => {
+      const shift = selfPacedShift(c, currentUser.id);
+      if (!shift) return;
+      c.assignments.forEach((a) => {
+        a.courseDue = a.due;
+        a.due = addDaysISO(a.due, shift);
+        if (a.openDate) a.openDate = addDaysISO(a.openDate, shift);
+      });
+    });
+  }
   bibleHighlightRows = hls;
   dataLoadedAt = Date.now();
 }
@@ -374,13 +442,17 @@ const DB = {
   },
 
   // --- materials -----------------------------------------------------------
-  async addMaterials(courseId, files) {
+  // teacherOnly: hidden from students (answer keys, teacher notes).
+  async addMaterials(courseId, files, teacherOnly = false) {
     files.forEach((f) => checkUpload(f, MATERIAL_MAX_BYTES));
     for (const f of files) {
       const path = `${courseId}/${newId()}-${safeFileName(f.name)}`;
       must(await sb.storage.from("materials").upload(path, f, { contentType: f.type || undefined, upsert: false }));
-      must(await sb.from("materials").insert({ course_id: courseId, type: "material", title: f.name, storage_path: path, mime_type: f.type || null, size_bytes: f.size }));
+      must(await sb.from("materials").insert({ course_id: courseId, type: "material", title: f.name, storage_path: path, mime_type: f.type || null, size_bytes: f.size, teacher_only: !!teacherOnly }));
     }
+  },
+  async setMaterialTeacherOnly(m, teacherOnly) {
+    must(await sb.from("materials").update({ teacher_only: !!teacherOnly }).eq("id", m.id));
   },
   async removeMaterial(m) {
     must(await sb.from("materials").delete().eq("id", m.id));
@@ -507,6 +579,63 @@ const DB = {
     must(await sb.rpc("delete_user", { p_user: id }));
   },
 
+  // --- lectures & the live class (Oct 9) ------------------------------------
+  async requestPlaylistSync(courseId) {
+    must(await sb.rpc("request_playlist_sync", { p_course: courseId }));
+  },
+  async addLesson(course, videoId, title) {
+    const pos = course.lessons.reduce((m, l) => Math.max(m, l.position || 0), 0) + 1;
+    must(await sb.from("lessons").insert({ course_id: course.id, video_id: videoId, title: title || "", position: pos, from_playlist: false }));
+  },
+  async updateLesson(id, patch) {
+    must(await sb.from("lessons").update(patch).eq("id", id));
+  },
+  async deleteLesson(id) {
+    must(await sb.from("lessons").delete().eq("id", id));
+  },
+  // Re-read one course's lectures (the live page looks for the stream).
+  async refreshCourseLessons(course) {
+    const rows = must(await sb.from("lessons").select("*").eq("course_id", course.id).order("position"));
+    rows.forEach((r) => {
+      const l = course.lessons.find((x) => x.id === r.id);
+      if (l) Object.assign(l, { status: r.status, title: r.title || l.title, hidden: !!r.hidden, videoId: r.video_id });
+      else course.lessons.push({ id: r.id, courseId: r.course_id, videoId: r.video_id, title: r.title || "", position: r.position,
+        duration: r.duration_seconds || null, status: r.status, fromPlaylist: r.from_playlist, replaces: r.replaces || "", hidden: !!r.hidden,
+        fixedDate: r.class_date || null, classDate: r.class_date || null, addedAt: r.added_at, views: {} });
+    });
+  },
+  async recordLessonProgress(lessonId, seen, duration) {
+    return must(await sb.rpc("record_lesson_progress", { p_lesson: lessonId, p_seen: seen, p_duration: duration || null }));
+  },
+  async recordLiveMinute(courseId) {
+    return must(await sb.rpc("record_live_minute", { p_course: courseId }));
+  },
+  async liveWatchers(courseId) {
+    return must(await sb.from("live_presence").select("student_id,minutes,last_beat").eq("course_id", courseId).eq("class_date", alaskaToday()));
+  },
+  async setMyTrack(courseId, track) {
+    must(await sb.rpc("set_my_track", { p_course: courseId, p_track: track }));
+  },
+  async setStudentTrack(courseId, studentId, track) {
+    must(await sb.rpc("set_student_track", { p_course: courseId, p_student: studentId, p_track: track }));
+  },
+  async setStudentStart(courseId, studentId, start) {
+    must(await sb.rpc("set_student_start", { p_course: courseId, p_student: studentId, p_start: start }));
+  },
+  // The class chat: today's messages (newer than `since`, if given).
+  async liveChat(courseId, since) {
+    let q = sb.from("live_chat").select("id,author_id,body,created_at").eq("course_id", courseId)
+      .gte("created_at", new Date(Date.now() - 8 * 3600000).toISOString()).order("created_at").limit(300);
+    if (since) q = q.gt("created_at", since);
+    return must(await q);
+  },
+  async postLiveChat(courseId, body) {
+    must(await sb.from("live_chat").insert({ course_id: courseId, author_id: currentUser.id, body }));
+  },
+  async deleteLiveChat(id) {
+    must(await sb.from("live_chat").delete().eq("id", id));
+  },
+
   // --- attendance --------------------------------------------------------
   async saveAttendance(courseId, date, held, marks) {
     must(await sb.rpc("save_attendance", { p_course: courseId, p_date: date, p_held: held, p_marks: marks }));
@@ -552,9 +681,9 @@ const DB = {
         if (m.storagePath) {
           const path = `${id}/${newId()}-${safeFileName(m.title)}`;
           must(await sb.storage.from("materials").copy(m.storagePath, path));
-          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, storage_path: path, mime_type: m.mimeType || null, size_bytes: m.size || null }));
+          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, storage_path: path, mime_type: m.mimeType || null, size_bytes: m.size || null, teacher_only: !!m.teacherOnly }));
         } else {
-          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title }));
+          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, teacher_only: !!m.teacherOnly }));
         }
       } catch (e) { console.warn("copy file:", e); filesFailed++; }
     }

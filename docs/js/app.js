@@ -137,7 +137,9 @@ function getSubmission(course, assignment, studentId) {
 // already accepts any value 0..points, on-time or not). This just surfaces
 // the fact so it's not missed while grading.
 function isLateSubmission(assignment, sub) {
-  return !!(sub && sub.submittedAt && assignment.due && sub.submittedAt > assignment.due);
+  const c = sub && courses.find((x) => x.id === assignment.courseId);
+  const due = c ? dueFor(c, assignment, sub.studentId) : assignment.due;
+  return !!(sub && sub.submittedAt && due && sub.submittedAt > due);
 }
 
 function userName(id) {
@@ -1109,7 +1111,7 @@ function safeHtml(html) {
 // loaded), so what one person changes — a new enrollment, a grade, a
 // reply — shows up for everyone else without reloading the browser.
 const STALE_MS = 3000;
-const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance"];
+const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance", "lecture", "live"];
 const FACULTY_ONLY_VIEWS = ["transcripts", "pastRecords", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome"];
 const STUDENT_ONLY_VIEWS = ["courses", "course", "grades", "submit"];
 
@@ -1128,6 +1130,9 @@ function renderMain() {
 function renderView() {
   const main = document.getElementById("main");
   if (!currentUser) return;
+  // Leaving a lecture or the live class stops its player (and saves progress).
+  if (view !== "lecture" && typeof stopLecture === "function") stopLecture();
+  if (view !== "live" && typeof stopLive === "function") stopLive();
   // A page whose course was deleted or archived elsewhere, or a page this
   // role can't use, falls back to the dashboard instead of breaking.
   if ((COURSE_VIEWS.includes(view) && !courses.some((c) => c.id === activeCourseId))
@@ -1150,6 +1155,9 @@ function renderView() {
   if (view === "home") return role === "student" ? renderDashboard(main) : renderFacultyHome(main);
   if (view === "courses") return renderCourses(main);
   if (view === "course") return renderCourse(main);
+  if (view === "lecture") return renderLecture(main);
+  if (view === "live") return renderLiveClass(main);
+  if (view === "lectureArchive") return renderLectureArchive(main);
   if (view === "manage") return renderManage(main);
   if (view === "library" || view === "resourceLibrary") return renderResourceLibrary(main);
   if (view === "calendar") return renderCalendar(main);
@@ -1227,7 +1235,7 @@ function attendanceDueNow() {
   const today = todayStr();
   const now = new Date();
   return courses.filter((c) => {
-    if (c.archived || !c.att.on || !classDates(c).includes(today)) return false;
+    if (c.archived || !takesClassroomAttendance(c) || !classDates(c).includes(today)) return false;
     const t = courseTeacher(c);
     if (!t || t.id !== currentUser.id) return false;
     const m = /^(\d{1,2}):(\d{2})/.exec(c.schedule.time || "");
@@ -1502,6 +1510,7 @@ function openAddCourseModal() {
         <div class="field-hint">Attach a syllabus, PDF textbook, or other reference materials (up to 50 MB each). You can add or remove these later from the course's Manage page.</div>
         <div id="builderFileChips" class="chip-row"></div>
 
+        ${formatSettingsHtml("cb", null)}
         ${attSettingsHtml("cb", null)}
         ${role === "faculty" ? `<p class="field-hint" style="margin-top:14px;">You'll be this course's teacher. ${currentUser.superAdmin ? "You can assign someone else from its Manage page." : "You can hand it to another faculty member from its Manage page until it starts."}</p>` : ""}
         <div class="form-actions">
@@ -1520,6 +1529,7 @@ function openAddCourseModal() {
     renderBuilderFileChips();
   });
   wireAttSettings("cb");
+  wireFormatSettings("cb");
   document.getElementById("cbSave").addEventListener("click", () => {
     const nameInput = document.getElementById("cbName");
     const name = nameInput.value.trim();
@@ -1532,9 +1542,15 @@ function openAddCourseModal() {
     const level = document.getElementById("cbLevel").value;
     const files = builderFiles.slice();
     const att = readAttSettings("cb");
+    let fmt;
+    try { fmt = readFormatSettings("cb"); } catch (e) { toast(e.message); if (e.field) document.getElementById(e.field).focus(); return; }
     let uploadError = null;
     run(async () => {
       const id = await DB.createCourse({ title: name, description: desc || "No description yet.", credits, level, facultyId: currentFacultyId(), att });
+      if (fmt.format !== "in_person" || fmt.playlist_id) {
+        await DB.updateCourse(id, fmt);
+        if (fmt.playlist_id) await DB.requestPlaylistSync(id).catch(() => {});
+      }
       if (files.length) {
         try { await DB.addMaterials(id, files); } catch (err) { uploadError = err; }
       }
@@ -1667,12 +1683,13 @@ function renderCourse(main) {
       ${whereHtml(c)}
     </div>
     ${courseAnnouncementsHtml(c)}
+    ${courseAttendHtml(c)}
     <div class="section-title"><h2>Course Materials</h2></div>
     <div class="card">
       <ul class="materials-list">
         ${c.materials.length === 0 ? `<li style="border:none;color:var(--muted-foreground);">No documents attached yet.</li>` : c.materials.map((m) => `<li>
           <div>
-            <span class="type-badge">${TYPE_LABEL[m.type]}</span>
+            <span class="type-badge">${TYPE_LABEL[m.type]}</span>${m.teacherOnly ? ` <span class="pill pill-teacher">Teachers only</span>` : ""}
             <div><strong>${esc(m.title)}</strong></div>
             ${m.content ? `<div style="color:var(--muted-foreground);font-size:.9rem;margin-top:4px;">${esc(m.content)}</div>` : ''}
           </div>
@@ -1707,6 +1724,7 @@ function renderCourse(main) {
   main.querySelectorAll("[data-assignment]").forEach((btn) => {
     btn.addEventListener("click", () => openSubmitModal(c, c.assignments.find((a) => a.id === btn.dataset.assignment), currentStudentId));
   });
+  wireCourseAttend(c, main);
 }
 
 // Student-side "turn in an assignment" modal — attach a file, write it
@@ -1943,7 +1961,7 @@ function calendarRowsByDate() {
 function calendarClassesByDate() {
   const out = {};
   const mine = role === "student"
-    ? courses.filter((c) => !c.archived && c.studentIds.includes(currentStudentId))
+    ? courses.filter((c) => !c.archived && c.pace !== "self" && c.studentIds.includes(currentStudentId))
     : courses.filter((c) => !c.archived && iTeach(c));
   mine.forEach((c) => {
     classDates(c).forEach((d) => {
@@ -2220,7 +2238,7 @@ function renderCalendar(main) {
           <span class="cal-day-num">${d.getDate()}</span>
           ${rows.length ? `<span class="cal-dot ${calendarDotClass(rows, today)}" title="${rows.length} due"></span>` : ""}
           ${(canceledByDate[ds] || []).length ? `<span class="cal-class cal-class-canceled" title="${esc(canceledByDate[ds].map((c) => `${c.title} canceled`).join(", "))}"><span class="cal-class-text">Canceled</span></span>` : ""}
-          ${classes.length ? `<span class="cal-class ${role !== "student" && classes.some((c) => c.att.on && ds <= today && !c.attDays[ds]) ? "cal-class-todo" : ""}" title="${esc(classes.map((c) => `${c.title} ${fmtTime(c.schedule.time) || ""}`).join(", "))}"><span class="cal-class-text">${classes.length > 1 ? `${classes.length} classes` : esc(fmtTime(classes[0].schedule.time) || "Class")}</span></span>` : ""}
+          ${classes.length ? `<span class="cal-class ${role !== "student" && classes.some((c) => takesClassroomAttendance(c) && ds <= today && !c.attDays[ds]) ? "cal-class-todo" : ""}" title="${esc(classes.map((c) => `${c.title} ${fmtTime(c.schedule.time) || ""}`).join(", "))}"><span class="cal-class-text">${classes.length > 1 ? `${classes.length} classes` : esc(fmtTime(classes[0].schedule.time) || "Class")}</span></span>` : ""}
         </button>`;
       }).join("")}
     </div>
@@ -2518,7 +2536,7 @@ function renderGradeSheet(main) {
                         if (sub.status === "submitted") {
                           return `<td><button class="cell-grade cell-turnedin" data-cell="${c.id}|${a.id}|${u.id}">Needs grading${lateDot}</button></td>`;
                         }
-                        if (a.due < todayStr()) {
+                        if (dueFor(c, a, u.id) < todayStr()) {
                           return `<td><span class="cell-status cell-missing">Missing</span></td>`;
                         }
                         return `<td><span class="cell-status cell-notdue">—</span></td>`;
@@ -3115,6 +3133,9 @@ function renderManage(main) {
       </p>
     </div>
 
+    <div class="section-title"><h2>Lectures &amp; Live Class</h2></div>
+    <div class="card" id="mgLecturesCard"></div>
+
     <div class="section-title"><h2>Class Days</h2></div>
     <div class="card" id="mgCancelCard"></div>
 
@@ -3134,10 +3155,12 @@ function renderManage(main) {
 
     <div class="section-title"><h2>Course Materials</h2></div>
     <div class="card">
+      <p class="field-hint" style="margin-top:0;">Everything here is for the whole class unless you check <strong>Teachers only</strong> — use that for answer keys and teaching notes. Teachers-only documents are seen by faculty and Admins, never by students.</p>
       <ul class="materials-list" id="mgMaterialsList"></ul>
       <label for="mgAddFile" style="margin-top:16px;">Add a Document</label>
+      <label class="check-row" for="mgAddTeacherOnly"><input type="checkbox" id="mgAddTeacherOnly" /> Teachers only — students won't see the documents I add</label>
       <input type="file" id="mgAddFile" multiple accept="${UPLOAD_ACCEPT}" />
-      <div class="field-hint">PDF, Word, PowerPoint, text, images, or audio — up to 50 MB each. Only students enrolled in this course can open them.</div>
+      <div class="field-hint">PDF, Word, PowerPoint, text, images, or audio — up to 50 MB each. Only students enrolled in this course can open the class documents.</div>
     </div>
 
     <div class="section-title"><h2>Assignments</h2><button class="btn btn-gold btn-sm" id="mgAddAssignment">+ Add Assignment</button></div>
@@ -3183,6 +3206,7 @@ function renderManage(main) {
   renderAttendanceCard(c);
   renderEnrollmentRequests(c);
   renderRosterList(c);
+  renderLecturesCard(c);
   renderMaterialsList(c);
   renderAssignmentsList(c);
 
@@ -3190,7 +3214,9 @@ function renderManage(main) {
     const files = Array.from(e.target.files);
     e.target.value = "";
     if (!files.length) return;
-    run(() => DB.addMaterials(c.id, files), null, { success: files.length === 1 ? `"${files[0].name}" was added.` : `${files.length} documents were added.` });
+    const teacherOnly = document.getElementById("mgAddTeacherOnly").checked;
+    const who = teacherOnly ? " (teachers only)" : "";
+    run(() => DB.addMaterials(c.id, files, teacherOnly), null, { success: files.length === 1 ? `"${files[0].name}" was added${who}.` : `${files.length} documents were added${who}.` });
   });
 }
 
@@ -3220,6 +3246,7 @@ function openEditCourseModal(course) {
           </div>
         </div>
         ${locationFieldsHtml("ec", course)}
+        ${formatSettingsHtml("ec", course)}
         ${attSettingsHtml("ec", course.att)}
         <div class="form-actions">
           <button class="btn btn-primary" id="ecSave">Save Changes</button>
@@ -3229,6 +3256,7 @@ function openEditCourseModal(course) {
     </div>`;
   document.getElementById("ecCancel").addEventListener("click", closeModal);
   wireAttSettings("ec");
+  wireFormatSettings("ec");
   document.getElementById("ecSave").addEventListener("click", () => {
     const nameInput = document.getElementById("ecName");
     const name = nameInput.value.trim();
@@ -3243,7 +3271,16 @@ function openEditCourseModal(course) {
     Object.assign(patch, { attendance_on: att.on, attendance_weight: att.weight, attendance_late_credit: att.lateCredit });
     try { Object.assign(patch, readLocationFields("ec")); }
     catch (e) { toast(e.message); document.getElementById("ecMeetingUrl").focus(); return; }
-    run(async () => { await DB.updateCourse(course.id, patch); closeModal(); }, null, { success: "Course details saved." });
+    try { Object.assign(patch, readFormatSettings("ec")); }
+    catch (e) { toast(e.message); if (e.field) document.getElementById(e.field).focus(); return; }
+    const playlistChanged = patch.playlist_id !== course.playlistId;
+    if (playlistChanged && course.playlistId && course.lessons.some((l) => l.fromPlaylist && l.status !== "removed")
+        && !confirm(patch.playlist_id ? "Switch this course to the new playlist? Lectures from the old playlist will be taken off the course (students' progress on them is kept)." : "Remove the playlist? Its lectures will be taken off the course.")) return;
+    run(async () => {
+      await DB.updateCourse(course.id, patch);
+      if (playlistChanged || patch.live_video_id !== course.liveVideoId) await DB.requestPlaylistSync(course.id).catch(() => {});
+      closeModal();
+    }, null, { success: "Course details saved." });
   });
 }
 
@@ -3322,7 +3359,7 @@ function assignmentCategories(course) {
 function assignmentOutcome(course, a, studentId) {
   const sub = getSubmission(course, a, studentId);
   if (sub.status === "graded") return (sub.score ?? 0) / (a.points || 1);
-  if (a.due < todayStr() && sub.status !== "submitted") return 0;
+  if (dueFor(course, a, studentId) < todayStr() && sub.status !== "submitted") return 0;
   return null;
 }
 
@@ -3726,8 +3763,10 @@ function studentAttendance(c, studentId) {
   const counts = { present: 0, late: 0, absent: 0, excused: 0 };
   const rows = [];
   let credit = 0, counted = 0;
-  Object.keys(c.attDays || {}).sort().forEach((ds) => {
-    const day = c.attDays[ds];
+  // Days the teacher took, plus days the site filled in for online students.
+  const allDays = Object.assign({}, c.autoDays || {}, c.attDays || {});
+  Object.keys(allDays).sort().forEach((ds) => {
+    const day = allDays[ds];
     if (!day.held) return;
     const st = (c.attMarks[ds] || {})[studentId];
     if (!st) return; // wasn't on the roster that day
@@ -3746,7 +3785,7 @@ function untakenDays(c) {
   return classDates(c).filter((d) => d <= today && !(c.attDays || {})[d]);
 }
 function myAttendanceCourses() {
-  return courses.filter((c) => !c.archived && c.att.on && iTeach(c));
+  return courses.filter((c) => !c.archived && takesClassroomAttendance(c) && iTeach(c));
 }
 function attendanceTodayCount() {
   const today = todayStr();
@@ -3844,7 +3883,10 @@ function renderAttendance(main) {
   if (!dates.includes(attendanceDate)) dates.push(attendanceDate), dates.sort();
   const date = attendanceDate;
   const day = c.attDays[date];
-  const roster = rosterByLastName(c);
+  // Online students are counted from what they watched (listed below, read-only).
+  const fullRoster = rosterByLastName(c);
+  const roster = fullRoster.filter((u) => !isOnlineStudent(c, u.id));
+  const onlineRoster = fullRoster.filter((u) => isOnlineStudent(c, u.id));
   if (!attDraft || attDraft.courseId !== c.id || attDraft.date !== date) {
     const saved = c.attMarks[date] || {};
     attDraft = { courseId: c.id, date, held: day ? day.held : true, marks: {} };
@@ -3874,7 +3916,7 @@ function renderAttendance(main) {
 
     ${!attDraft.held ? `
     <div class="card empty-state"><p>No class was held on ${fmtDay(date, { weekday: "long", month: "long", day: "numeric" })}. It won't count for or against anyone.</p></div>` :
-    roster.length === 0 ? `<div class="card empty-state"><p>No students are enrolled yet.</p></div>` : `
+    roster.length === 0 ? (onlineRoster.length ? onlineAttendanceHtml(c, date, onlineRoster) : `<div class="card empty-state"><p>No students are enrolled yet.</p></div>`) : `
     <div class="att-summary">
       ${ATT_STATUSES.map((s) => `<span class="att-count att-count-${s}"><strong>${counts[s]}</strong> ${ATT_LABEL[s]}</span>`).join("")}
       <button class="btn btn-ghost btn-sm" id="attAllPresent" style="margin-left:auto;">Mark everyone present</button>
@@ -3882,12 +3924,13 @@ function renderAttendance(main) {
     <div class="card att-roster">
       ${roster.map((u) => `
         <div class="att-row" data-student="${u.id}">
-          <div class="att-who">${avatarHtml(u, 34)}<span>${esc(lastFirst(u.name))}</span></div>
+          <div class="att-who">${avatarHtml(u, 34)}<span>${esc(lastFirst(u.name))}${((c.attNotes[date] || {})[u.id] || {}).auto ? `<small class="att-madeup">${esc(c.attNotes[date][u.id].note)}</small>` : ""}</span></div>
           <div class="att-marks" role="radiogroup" aria-label="Attendance for ${esc(u.name)}">
             ${ATT_STATUSES.map((s) => `<button type="button" role="radio" aria-checked="${attDraft.marks[u.id] === s}" class="att-mark att-mark-${s} ${attDraft.marks[u.id] === s ? "on" : ""}" data-mark="${s}" title="${ATT_LABEL[s]}"><span class="att-full">${ATT_LABEL[s]}</span><span class="att-short">${ATT_LABEL[s][0]}</span></button>`).join("")}
           </div>
         </div>`).join("")}
-    </div>`}
+    </div>
+    ${onlineAttendanceHtml(c, date, onlineRoster)}`}
     <div class="att-savebar">
       <button class="btn btn-primary" id="attSave">${day ? "Save Changes" : "Save Attendance"}</button>
       ${day ? `<button class="btn btn-ghost btn-sm" id="attClear">Clear this day</button>` : ""}
@@ -3980,6 +4023,13 @@ function renderAttendanceCard(c) {
   const summary = `<p style="margin:0 0 12px;">${c.att.weight ? `Attendance is <strong>${c.att.weight}%</strong> of the final grade` : "Attendance is recorded but <strong>not graded</strong>"} · a Late counts as <strong>${c.att.lateCredit}%</strong>.</p>`;
   if (!iTeach(c)) {
     wrap.innerHTML = `${summary}<div class="privacy-note">${icon("lock")}<span>Attendance records are visible only to this course's teacher.</span></div>`;
+    return;
+  }
+  if (!takesClassroomAttendance(c)) {
+    const rows = rosterByLastName(c).map((u) => ({ u, a: studentAttendance(c, u.id) }));
+    wrap.innerHTML = `${summary}
+      <p class="field-hint" style="margin:0 0 10px;">Everyone in this course attends online, so attendance fills itself in: ${c.pace === "self" ? `each lecture watched ${WATCH_SHARE}% before the student's semester ends` : `${Math.round(LIVE_SHARE * 100)}% of the class watched live, or ${WATCH_SHARE}% of the recording within ${WATCH_DAYS} days`}.</p>
+      ${rows.length ? `<ul class="materials-list">${rows.map(({ u, a }) => `<li><div><strong>${esc(u.name)}</strong><div class="field-hint" style="margin:2px 0 0;">${a.counts.present} present · ${a.counts.absent} absent${a.counts.excused ? ` · ${a.counts.excused} excused` : ""}</div></div><span class="pill ${a.pct === null ? "pill-gray" : a.pct >= 80 ? "pill-green" : "pill-gold"}">${a.pct === null ? "—" : a.pct + "%"}</span></li>`).join("")}</ul>` : `<p class="field-hint">No students yet.</p>`}`;
     return;
   }
   const today = todayStr();
@@ -4316,6 +4366,7 @@ function renderRosterList(c) {
           <div class="u-name">${esc(u.name)}</div>
           <div class="u-email">${esc(u.email)}</div>
         </div>
+        ${rosterAttendHtml(c, u)}
         <button class="btn btn-ghost btn-sm" data-remove-student="${u.id}">Remove</button>
       </div>`
       )
@@ -4334,6 +4385,7 @@ function renderRosterList(c) {
     });
   });
   document.getElementById("mgAddStudent").addEventListener("click", () => openAddStudentModal(c));
+  wireRosterAttend(c, wrap);
 }
 
 // The "+ Add Student" picker — only lists active students not already on
@@ -4648,7 +4700,8 @@ function renderMaterialsList(c) {
     .map(
       (m) => `
     <li>
-      <div><span class="type-badge">${TYPE_LABEL[m.type] || "Material"}</span><div><strong>${esc(m.title)}</strong></div></div>
+      <div><span class="type-badge">${TYPE_LABEL[m.type] || "Material"}</span>${m.teacherOnly ? ` <span class="pill pill-teacher">Teachers only</span>` : ""}<div><strong>${esc(m.title)}</strong></div>
+        <label class="check-row check-row-sm"><input type="checkbox" data-teacher-only="${m.id}" ${m.teacherOnly ? "checked" : ""} /> Teachers only</label></div>
       <div style="display:flex;gap:6px;flex-shrink:0;">
         <button class="btn btn-ghost btn-sm" data-open-material="${m.id}">Open</button>
         <button class="btn btn-ghost btn-sm" data-remove-material="${m.id}">Remove</button>
@@ -4659,10 +4712,17 @@ function renderMaterialsList(c) {
   wrap.querySelectorAll("[data-open-material]").forEach((btn) => {
     btn.addEventListener("click", () => openMaterialViewer(c, c.materials.find((m) => m.id === btn.dataset.openMaterial)));
   });
+  wrap.querySelectorAll("[data-teacher-only]").forEach((box) => {
+    box.addEventListener("change", () => {
+      const m = c.materials.find((x) => x.id === box.dataset.teacherOnly);
+      const on = box.checked;
+      run(() => DB.setMaterialTeacherOnly(m, on), null, { success: on ? `"${m.title}" is now for teachers only.` : `"${m.title}" is now visible to the whole class.` });
+    });
+  });
   wrap.querySelectorAll("[data-remove-material]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const m = c.materials.find((x) => x.id === btn.dataset.removeMaterial);
-      if (!confirm(`Remove "${m.title}" from ${c.title}? Students will no longer be able to open it.`)) return;
+      if (!confirm(`Remove "${m.title}" from ${c.title}? ${m.teacherOnly ? "Teachers" : "Students"} will no longer be able to open it.`)) return;
       run(() => DB.removeMaterial(m), null, { success: "Removed." });
     });
   });
@@ -4721,6 +4781,7 @@ function renderResourceLibrary(main) {
       <h1>Resource Library</h1>
       <p>Search course reading by keyword or topic, or pick a class to see the books and documents that match it — pulled from the church's Google Drive and the physical church library at once.</p>
     </div>
+    ${lectureArchiveEntryHtml()}
     <div class="card">
       <label for="resSearchInput">Keyword or topic</label>
       <input type="text" id="resSearchInput" placeholder="e.g. Westcott and Hort, preaching, Genesis…" value="${esc(resourceLibraryQuery)}">
@@ -4788,6 +4849,7 @@ function renderResourceLibrary(main) {
     }
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
+  wireLectureArchiveEntry();
   const searchInput = document.getElementById("resSearchInput");
   searchInput.addEventListener("input", (e) => { resourceLibraryQuery = e.target.value; renderResourceLibrary(main); });
   searchInput.focus();
