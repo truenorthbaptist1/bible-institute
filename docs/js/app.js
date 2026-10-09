@@ -1673,6 +1673,18 @@ function renderCatalogue(main) {
 
 function renderCourse(main) {
   const c = courses.find((x) => x.id === activeCourseId);
+  const key = `course:${c.id}`;
+  const hasLectures = courseHasLectures(c);
+  const playable = c.lessons.filter((l) => playableLesson(l)).length;
+  const mine = c.assignments.map((a) => ({ a, sub: getSubmission(c, a, currentStudentId) }));
+  const open = mine.filter((x) => x.sub.status !== "graded" && x.sub.status !== "submitted");
+  const tabs = [
+    { id: "overview", label: "Overview" },
+    ...(hasLectures ? [{ id: "lectures", label: "Lectures", count: playable || "" }] : []),
+    { id: "materials", label: "Materials", count: docUnits(c.materials).length || "" },
+    { id: "assignments", label: "Assignments", count: open.length || "", alert: open.some((x) => x.a.due < todayStr()) },
+  ];
+  const upcoming = open.slice().sort((x, y) => x.a.due.localeCompare(y.a.due)).slice(0, 3);
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to My Courses</button>
     <div class="page-header">
@@ -1682,49 +1694,83 @@ function renderCourse(main) {
       ${scheduleLine(c) ? `<p style="color:var(--muted-foreground);font-size:.85rem;margin-top:6px;">${esc(scheduleLine(c))}</p>` : ""}
       ${whereHtml(c)}
     </div>
-    ${courseAnnouncementsHtml(c)}
-    ${courseAttendHtml(c)}
-    <div class="section-title"><h2>Course Materials</h2></div>
-    <div class="card">
-      <ul class="materials-list">
-        ${c.materials.length === 0 ? `<li style="border:none;color:var(--muted-foreground);">No documents attached yet.</li>` : c.materials.map((m) => `<li>
-          <div>
-            <span class="type-badge">${TYPE_LABEL[m.type]}</span>${m.teacherOnly ? ` <span class="pill pill-teacher">Teachers only</span>` : ""}
-            <div><strong>${esc(m.title)}</strong></div>
-            ${m.content ? `<div style="color:var(--muted-foreground);font-size:.9rem;margin-top:4px;">${esc(m.content)}</div>` : ''}
-          </div>
-          <button class="btn btn-ghost btn-sm" data-open-material="${m.id}">Open</button>
-        </li>`).join("")}
-      </ul>
-    </div>
-    <div class="section-title"><h2>Assignments</h2></div>
-    <div class="card">
-      <ul class="assignments-list">
-        ${c.assignments.length === 0 ? `<li style="border:none;color:var(--muted-foreground);">No assignments yet.</li>` : c.assignments.map((a) => {
-          const sub = getSubmission(c, a, currentStudentId);
-          const [label, pillClass] = STATUS_LABEL[sub.status];
-          return `<li>
-            <div>
-              <div><strong>${esc(a.title)}</strong></div>
-              <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${a.points} pts</div>
-            </div>
-            <div style="text-align:right;">
-              <span class="pill ${pillClass}">${label}${sub.status === "graded" ? ` · ${sub.score}/${a.points}` : ""}</span><br>
-              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" data-assignment="${a.id}">${sub.status === "graded" ? "View" : "Turn In"}</button>
-            </div>
-          </li>`;
-        }).join("")}
-      </ul>
-    </div>
+    ${courseAttendHtml(c, "top")}
+    ${tabsHtml(key, tabs)}
+    <section ${panelAttrs(key, "overview")}>
+      ${courseAnnouncementsHtml(c)}
+      <div class="overview-grid">
+        ${nextLectureHtml(c)}
+        <div class="card overview-card">
+          <div class="overview-head"><h3>${icon("note")} Assignments</h3><a href="#" data-goto-tab="assignments">All ${c.assignments.length}</a></div>
+          ${upcoming.length ? `<ul class="assignments-list compact">${upcoming.map(({ a, sub }) => studentAssignmentRow(c, a, sub, { compact: true })).join("")}</ul>`
+            : `<p class="field-hint" style="margin:0;">${c.assignments.length ? "✓ Nothing waiting on you right now." : "No assignments yet."}</p>`}
+        </div>
+        <div class="card overview-card">
+          <div class="overview-head"><h3>${icon("book")} Course Materials</h3><a href="#" data-goto-tab="materials">All ${docUnits(c.materials).length}</a></div>
+          ${(() => {
+            const syl = docGroups(c.materials).find((g) => g.id === "syllabus");
+            return syl ? `<ul class="docs-list">${syl.units.slice(0, 2).map((u) => `<li class="doc-row"><div class="doc-main"><strong class="doc-name">${esc(u.base)}</strong></div><div class="doc-open">${u.files.map((f) => `<button type="button" class="btn btn-ghost btn-sm" data-open-material="${f.id}">${u.files.length === 1 ? "Open" : docKind(f)}</button>`).join("")}</div></li>`).join("")}</ul>`
+              : `<p class="field-hint" style="margin:0;">${c.materials.length ? `${docUnits(c.materials).length} documents — syllabus, lessons, readings and more.` : "No documents yet."}</p>`;
+          })()}
+        </div>
+      </div>
+    </section>
+    ${hasLectures ? `<section ${panelAttrs(key, "lectures")}>${courseAttendHtml(c, "list")}</section>` : ""}
+    <section ${panelAttrs(key, "materials")}>
+      <div class="section-title"><h2>Course Materials</h2></div>
+      <div class="card">${materialsBrowserHtml(c)}</div>
+    </section>
+    <section ${panelAttrs(key, "assignments")}>
+      <div class="section-title"><h2>Assignments</h2></div>
+      <div class="card">
+        <ul class="assignments-list">
+          ${c.assignments.length === 0 ? `<li style="border:none;color:var(--muted-foreground);">No assignments yet.</li>` : groupAssignments(c.assignments).map((g) => {
+            if (g.items.length === 1) return studentAssignmentRow(c, g.items[0], getSubmission(c, g.items[0], currentStudentId));
+            const today = todayStr();
+            const next = g.items.find((a) => { const st = getSubmission(c, a, currentStudentId).status; return st !== "graded" && st !== "submitted"; }) || g.items[g.items.length - 1];
+            const doneN = g.items.filter((a) => ["graded", "submitted"].includes(getSubmission(c, a, currentStudentId).status)).length;
+            return `<li class="series-row">
+              <details class="series-details">
+                <summary>
+                  <div><strong>🔁 ${esc(g.seriesLabel)}</strong> <span class="pill pill-navy">${doneN}/${g.items.length} done</span>
+                    <div class="asg-meta">${g.items.length} weeks · ${g.items[0].points} pts each · next: ${esc(next.title)}, due ${parseDay(next.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</div></div>
+                  <span class="series-more">Show weeks</span>
+                </summary>
+                <ul class="assignments-list">${g.items.map((a) => studentAssignmentRow(c, a, getSubmission(c, a, currentStudentId))).join("")}</ul>
+              </details>
+              <div class="series-next">${studentAssignmentRow(c, next, getSubmission(c, next, currentStudentId), { bare: true })}</div>
+            </li>`;
+          }).join("")}
+        </ul>
+      </div>
+    </section>
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "courses"; renderNav(); renderMain(); });
-  main.querySelectorAll("[data-open-material]").forEach((btn) => {
+  main.querySelectorAll(".overview-card [data-open-material]").forEach((btn) => {
     btn.addEventListener("click", () => openMaterialViewer(c, c.materials.find((m) => m.id === btn.dataset.openMaterial)));
   });
+  wireMaterialsBrowser(c, main);
+  wireDocChips(c, main);
   main.querySelectorAll("[data-assignment]").forEach((btn) => {
     btn.addEventListener("click", () => openSubmitModal(c, c.assignments.find((a) => a.id === btn.dataset.assignment), currentStudentId));
   });
+  wireTabs(key, main);
   wireCourseAttend(c, main);
+}
+function studentAssignmentRow(c, a, sub, opts = {}) {
+  const [label, pillClass] = STATUS_LABEL[sub.status];
+  const late = sub.status !== "graded" && sub.status !== "submitted" && a.due < todayStr();
+  const body = `
+    <div>
+      <div><strong>${esc(a.title)}</strong></div>
+      <div class="asg-meta ${late ? "asg-late" : ""}">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})}${late ? " (past due)" : ""} · ${a.points} pts</div>
+      ${opts.compact ? "" : assignmentDocsHtml(c, a)}
+    </div>
+    <div style="text-align:right;flex-shrink:0;">
+      <span class="pill ${pillClass}">${label}${sub.status === "graded" ? ` · ${sub.score}/${a.points}` : ""}</span><br>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px;" data-assignment="${a.id}">${sub.status === "graded" ? "View" : "Turn In"}</button>
+    </div>`;
+  return opts.bare ? `<div class="asg-row">${body}</div>` : `<li>${body}</li>`;
 }
 
 // Student-side "turn in an assignment" modal — attach a file, write it
@@ -1742,6 +1788,7 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
         <h2 style="font-size:1.15rem;">${esc(assignment.title)}</h2>
         <p style="color:var(--muted-foreground);font-size:.85rem;margin-top:4px;">Due ${parseDay(assignment.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${assignment.points} points</p>
         ${assignment.instructions ? `<p style="margin-top:10px;">${esc(assignment.instructions)}</p>` : ""}
+        ${assignmentDocsHtml(course, assignment, { kinds: true })}
         ${graded ? `
           <div class="warning-box" style="border-color:var(--success);background:color-mix(in srgb, var(--success) 12%, transparent);">
             <div style="color:var(--success);"><strong>Graded: ${sub.score}/${assignment.points}</strong></div>
@@ -1783,6 +1830,7 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
         `}
       </div>
     </div>`;
+  wireDocChips(course, root);
   if (graded || lock.locked) {
     document.getElementById("submitClose").addEventListener("click", closeModal);
     wireOpenMyFile();
@@ -3075,6 +3123,7 @@ async function exportMessageThread(course, studentId) {
 function renderManage(main) {
   const c = courses.find((x) => x.id === activeCourseId);
   const status = courseStatusLabel(c);
+  const mkey = `manage:${c.id}`;
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Courses</button>
     <div class="page-header">
@@ -3094,6 +3143,15 @@ function renderManage(main) {
       ${whereHtml(c)}
     </div>
 
+    ${tabsHtml(mkey, [
+      { id: "setup", label: "Overview" },
+      { id: "students", label: "Students", count: c.studentIds.length + c.enrollmentRequests.length || "", alert: c.enrollmentRequests.length > 0 },
+      { id: "lectures", label: "Lectures", count: c.lessons.filter((l) => l.status !== "removed").length || "" },
+      { id: "materials", label: "Materials", count: docUnits(c.materials).length || "" },
+      { id: "assignments", label: "Assignments", count: groupAssignments(c.assignments).length || "" },
+    ])}
+
+    <section ${panelAttrs(mkey, "setup")}>
     <div class="section-title"><h2>Teacher</h2></div>
     <div class="card" id="mgTeacherCard"></div>
 
@@ -3133,15 +3191,19 @@ function renderManage(main) {
       </p>
     </div>
 
-    <div class="section-title"><h2>Lectures &amp; Live Class</h2></div>
-    <div class="card" id="mgLecturesCard"></div>
-
     <div class="section-title"><h2>Class Days</h2></div>
     <div class="card" id="mgCancelCard"></div>
 
     <div class="section-title"><h2>Announcements</h2></div>
     <div class="card" id="mgAnnounceCard"></div>
+    </section>
 
+    <section ${panelAttrs(mkey, "lectures")}>
+    <div class="section-title"><h2>Lectures &amp; Live Class</h2></div>
+    <div class="card" id="mgLecturesCard"></div>
+    </section>
+
+    <section ${panelAttrs(mkey, "students")}>
     <div id="mgEnrollRequestsSection"></div>
 
     <div class="section-title"><h2>Roster</h2></div>
@@ -3152,22 +3214,28 @@ function renderManage(main) {
 
     <div class="section-title"><h2>Attendance</h2></div>
     <div class="card" id="mgAttendanceCard"></div>
+    </section>
 
+    <section ${panelAttrs(mkey, "materials")}>
     <div class="section-title"><h2>Course Materials</h2></div>
     <div class="card">
       <p class="field-hint" style="margin-top:0;">Everything here is for the whole class unless you check <strong>Teachers only</strong> — use that for answer keys and teaching notes. Teachers-only documents are seen by faculty and Admins, never by students.</p>
-      <ul class="materials-list" id="mgMaterialsList"></ul>
+      <div id="mgMaterialsList"></div>
       <label for="mgAddFile" style="margin-top:16px;">Add a Document</label>
       <label class="check-row" for="mgAddTeacherOnly"><input type="checkbox" id="mgAddTeacherOnly" /> Teachers only — students won't see the documents I add</label>
       <input type="file" id="mgAddFile" multiple accept="${UPLOAD_ACCEPT}" />
-      <div class="field-hint">PDF, Word, PowerPoint, text, images, or audio — up to 50 MB each. Only students enrolled in this course can open the class documents.</div>
+      <div class="field-hint">PDF, Word, PowerPoint, text, images, or audio — up to 50 MB each. You can select many at once. Only students enrolled in this course can open the class documents.</div>
     </div>
+    </section>
 
+    <section ${panelAttrs(mkey, "assignments")}>
     <div class="section-title"><h2>Assignments</h2><button class="btn btn-gold btn-sm" id="mgAddAssignment">+ Add Assignment</button></div>
     <div class="card">
       <ul class="assignments-list" id="mgAssignmentsList"></ul>
     </div>
+    </section>
   `;
+  wireTabs(mkey, main);
 
   document.getElementById("backLink").addEventListener("click", () => { view = "catalogue"; renderNav(); renderMain(); });
   document.getElementById("mgAddAssignment").addEventListener("click", () => openAddAssignmentModal(c));
@@ -3426,9 +3494,11 @@ function renderAssignmentsList(c) {
           <div>
             <div><strong>${esc(a.title)}</strong>${lock.locked ? ` <span class="pill pill-gray" style="margin-left:4px;">Locked until ${parseDay(lock.opensOn).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>` : ""}</div>
             <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${a.points} pts${a.weight ? ` · ${a.weight}% of grade` : ""}${teach ? ` · ${turnedIn}/${c.studentIds.length} turned in · ${gradedCount} graded` : ""}</div>
+            ${assignmentDocsHtml(c, a)}
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
             ${teach ? `<button class="btn btn-ghost btn-sm" data-view-roster="${a.id}">View Submissions</button>` : ""}
+            ${iManage(c) ? `<button class="btn btn-ghost btn-sm" data-asg-docs="${a.id}">Documents</button>` : ""}
             <button class="btn btn-ghost btn-sm" data-delete-assignment="${a.id}" aria-label="Delete ${esc(a.title)}">Delete</button>
           </div>
         </li>`;
@@ -3437,13 +3507,16 @@ function renderAssignmentsList(c) {
       const totalGraded = g.items.reduce((n, a) => n + ensureSubmissions(c, a).filter((s) => s.status === "graded").length, 0);
       const possible = g.items.length * c.studentIds.length;
       const next = g.items.find((a) => a.due >= todayStr()) || g.items[g.items.length - 1];
+      const withDocs = g.items.filter((a) => (a.materialIds || []).length).length;
       return `<li>
         <div>
           <div><strong>🔁 ${esc(g.seriesLabel)}</strong> <span class="pill pill-navy" style="margin-left:6px;">${g.items.length} weeks</span></div>
           <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:4px;">Next due ${parseDay(next.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})} · ${g.items[0].points} pts each${g.items[0].weight ? ` · ${g.items[0].weight}% of grade (whole series)` : ""}${teach ? ` · ${totalTurned}/${possible} turned in · ${totalGraded} graded` : ""}</div>
+          <div style="font-size:.82rem;color:var(--muted-foreground);margin-top:2px;">${withDocs ? `${icon("book")} Documents on ${withDocs === g.items.length ? "every week" : `${withDocs} of ${g.items.length} weeks`}` : "No documents attached"}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
           <button class="btn btn-ghost btn-sm" data-view-series="${g.seriesId}">View Weeks</button>
+          ${iManage(c) ? `<button class="btn btn-ghost btn-sm" data-series-docs="${g.seriesId}">Documents</button>` : ""}
           <button class="btn btn-ghost btn-sm" data-delete-series="${g.seriesId}" aria-label="Delete series ${esc(g.seriesLabel)}">Delete</button>
         </div>
       </li>`;
@@ -3455,6 +3528,13 @@ function renderAssignmentsList(c) {
   wrap.querySelectorAll("[data-view-series]").forEach((btn) => {
     btn.addEventListener("click", () => openSeriesModal(c, btn.dataset.viewSeries));
   });
+  wrap.querySelectorAll("[data-asg-docs]").forEach((btn) => {
+    btn.addEventListener("click", () => openAssignmentDocsModal(c, [c.assignments.find((a) => a.id === btn.dataset.asgDocs)]));
+  });
+  wrap.querySelectorAll("[data-series-docs]").forEach((btn) => {
+    btn.addEventListener("click", () => openAssignmentDocsModal(c, c.assignments.filter((a) => a.seriesId === btn.dataset.seriesDocs)));
+  });
+  wireDocChips(c, wrap);
   const deleteAssignments = (items, label) => {
     const turnedIn = items.reduce((n, a) => n + (a.submissions || []).filter((s) => s.status === "submitted" || s.status === "graded").length, 0);
     const warn = turnedIn ? `\n\n${turnedIn} submission${turnedIn === 1 ? "" : "s"} and any grades on ${items.length === 1 ? "it" : "them"} will be permanently deleted.` : "";
@@ -3525,6 +3605,11 @@ function openAddAssignmentModal(course) {
           <div class="field-hint">Creates one assignment per week, each due a week after the last — starting on the due date above. Every week is tracked and graded separately.</div>
         </div>
 
+        <label>Documents <span class="field-optional">(optional)</span></label>
+        <div class="field-hint" style="margin-top:0;">Quizzes, worksheets or readings students open right from the assignment. Pick them from Course Materials or upload them (many at once) — uploads are added to Course Materials too.</div>
+        <div id="asgDocPicker"></div>
+        <div id="asgWeekPlan"></div>
+
         <label>Availability</label>
         <div class="radio-row">
           <label class="radio-option"><input type="radio" name="asgAvail" value="anytime" checked /> Submit anytime</label>
@@ -3546,6 +3631,30 @@ function openAddAssignmentModal(course) {
 
   function isRecurring() { return document.querySelector('input[name="asgType"]:checked').value === "recurring"; }
   function isLocked() { return document.querySelector('input[name="asgAvail"]:checked').value === "locked"; }
+  // Documents, and (weekly) which week gets which.
+  let plan = null, planKeys = "";
+  function dueDates() {
+    const first = document.getElementById("asgDue").value;
+    const weeks = Math.max(1, Math.min(30, parseInt(document.getElementById("asgWeeks").value, 10) || 1));
+    const every = parseInt(document.getElementById("asgEvery").value, 10) || 7;
+    return Array.from({ length: weeks }, (_, i) => (first ? addDaysISO(first, every * i) : null));
+  }
+  function drawPlan() {
+    const mount = document.getElementById("asgWeekPlan");
+    const units = picker.units();
+    if (!isRecurring() || !units.length) { mount.innerHTML = ""; return; }
+    const dues = dueDates();
+    const keys = units.map((u) => u.key).join("|");
+    if (keys !== planKeys || !plan) { plan = defaultWeekPlan(units, dues.length, plan); planKeys = keys; }
+    while (plan.weeks.length < dues.length) plan.weeks.push(units[plan.weeks.length] ? units[plan.weeks.length].key : "");
+    plan.weeks.length = dues.length;
+    mount.innerHTML = weekPlanHtml(units, dues, plan, { canFit: true });
+    wireWeekPlan(mount, plan, drawPlan);
+    mount.querySelectorAll("[data-wp-fit]").forEach((b) => b.addEventListener("click", () => { document.getElementById("asgWeeks").value = b.dataset.wpFit; drawPlan(); }));
+  }
+  const picker = makeDocPicker(course, document.getElementById("asgDocPicker"), { onChange: drawPlan });
+  ["asgDue", "asgWeeks", "asgEvery"].forEach((id) => document.getElementById(id).addEventListener("change", drawPlan));
+  document.getElementById("asgWeeks").addEventListener("input", drawPlan);
   function syncLockFieldsUI() {
     const wrap = document.getElementById("asgLockFields");
     if (!isLocked()) { wrap.style.display = "none"; return; }
@@ -3567,6 +3676,7 @@ function openAddAssignmentModal(course) {
         ? "Entered once for the whole series — every week shares this weight as one grading category, rather than each week counting separately."
         : "How much this assignment counts toward the student's final grade in this course.";
       syncLockFieldsUI();
+      drawPlan();
     });
   });
   document.querySelectorAll('input[name="asgAvail"]').forEach((r) => r.addEventListener("change", syncLockFieldsUI));
@@ -3608,7 +3718,18 @@ function openAddAssignmentModal(course) {
         rows.push({ title: `${title} — Week ${i + 1}`, instructions, due, points, weight, seriesId, seriesLabel: title, submitAnytime: !locked, openDate });
       }
     }
-    run(async () => { await DB.addAssignments(course.id, rows); closeModal(); }, null,
+    const units = picker.units();
+    if (type !== "standalone" && units.length && plan && plan.mode === "order" && units.length > rows.length
+        && !confirm(`${units.length - rows.length} of the documents won't be attached — there are only ${rows.length} weeks.\n\nSave anyway?`)) return;
+    run(async () => {
+      if (units.length) {
+        const ids = await picker.commit();
+        const per = type === "standalone" ? planMaterialIds(null, units, ids, 1) : planMaterialIds(plan, units, ids, rows.length);
+        rows.forEach((r, i) => { r.materialIds = per[i] || []; });
+      }
+      await DB.addAssignments(course.id, rows);
+      closeModal();
+    }, null,
       { success: rows.length === 1 ? "Assignment added." : `${rows.length} weekly assignments added.` });
   });
 }
@@ -3634,6 +3755,7 @@ function openSeriesModal(course, seriesId) {
                 <div>
                   <div><strong>${esc(a.title)}</strong></div>
                   <div style="font-size:.8rem;color:var(--muted-foreground);">Due ${parseDay(a.due).toLocaleDateString(undefined,{month:'short',day:'numeric'})}${iTeach(course) ? ` · ${turnedIn}/${course.studentIds.length} turned in · ${gradedCount} graded` : ""}</div>
+                  ${assignmentDocsHtml(course, a)}
                 </div>
                 ${iTeach(course) ? `<button class="btn btn-ghost btn-sm" data-week-roster="${a.id}">View Submissions</button>` : ""}
               </li>`;
@@ -3644,6 +3766,7 @@ function openSeriesModal(course, seriesId) {
       </div>
     </div>`;
   document.getElementById("seriesClose").addEventListener("click", closeModal);
+  wireDocChips(course, root);
   root.querySelectorAll("[data-week-roster]").forEach((btn) => {
     btn.addEventListener("click", () => openAssignmentRoster(course, course.assignments.find((a) => a.id === btn.dataset.weekRoster)));
   });
@@ -4692,40 +4815,8 @@ function openFileViewer(file) {
 function renderMaterialsList(c) {
   const wrap = document.getElementById("mgMaterialsList");
   if (!wrap) return;
-  if (c.materials.length === 0) {
-    wrap.innerHTML = `<li style="border:none;color:var(--muted-foreground);">No documents attached yet.</li>`;
-    return;
-  }
-  wrap.innerHTML = c.materials
-    .map(
-      (m) => `
-    <li>
-      <div><span class="type-badge">${TYPE_LABEL[m.type] || "Material"}</span>${m.teacherOnly ? ` <span class="pill pill-teacher">Teachers only</span>` : ""}<div><strong>${esc(m.title)}</strong></div>
-        <label class="check-row check-row-sm"><input type="checkbox" data-teacher-only="${m.id}" ${m.teacherOnly ? "checked" : ""} /> Teachers only</label></div>
-      <div style="display:flex;gap:6px;flex-shrink:0;">
-        <button class="btn btn-ghost btn-sm" data-open-material="${m.id}">Open</button>
-        <button class="btn btn-ghost btn-sm" data-remove-material="${m.id}">Remove</button>
-      </div>
-    </li>`
-    )
-    .join("");
-  wrap.querySelectorAll("[data-open-material]").forEach((btn) => {
-    btn.addEventListener("click", () => openMaterialViewer(c, c.materials.find((m) => m.id === btn.dataset.openMaterial)));
-  });
-  wrap.querySelectorAll("[data-teacher-only]").forEach((box) => {
-    box.addEventListener("change", () => {
-      const m = c.materials.find((x) => x.id === box.dataset.teacherOnly);
-      const on = box.checked;
-      run(() => DB.setMaterialTeacherOnly(m, on), null, { success: on ? `"${m.title}" is now for teachers only.` : `"${m.title}" is now visible to the whole class.` });
-    });
-  });
-  wrap.querySelectorAll("[data-remove-material]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const m = c.materials.find((x) => x.id === btn.dataset.removeMaterial);
-      if (!confirm(`Remove "${m.title}" from ${c.title}? ${m.teacherOnly ? "Teachers" : "Students"} will no longer be able to open it.`)) return;
-      run(() => DB.removeMaterial(m), null, { success: "Removed." });
-    });
-  });
+  wrap.innerHTML = materialsBrowserHtml(c, { manage: true });
+  wireMaterialsBrowser(c, wrap, { manage: true });
 }
 
 let resourceLibraryQuery = "";

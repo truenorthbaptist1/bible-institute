@@ -148,7 +148,7 @@ async function fetchOwnProfile(uid) {
 async function loadAll() {
   const fac = currentUser.role === "faculty";
   const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks, cancels, anns, trans, past,
-         lessonRows, lessonDates, viewRows, syncRows] = await Promise.all([
+         lessonRows, lessonDates, viewRows, syncRows, asgDocs] = await Promise.all([
     selectAll("courses", "*", "title"),
     selectAll("enrollments", "*"),
     selectAll("enrollment_requests", "*", "requested_at"),
@@ -181,6 +181,8 @@ async function loadAll() {
     sb.rpc("visible_lesson_dates").then(must).catch(() => []),
     selectAll("lesson_views", "lesson_id,student_id,pct,completed_at,last_at").catch(() => []),
     fac ? selectAll("playlist_sync", "*").catch(() => []) : Promise.resolve([]),
+    // Added Oct 9 (later): documents attached to assignments.
+    selectAll("assignment_materials", "*", "position").catch(() => []),
   ]);
 
   // Your role changed since this page loaded: switch to the new role and
@@ -275,10 +277,14 @@ async function loadAll() {
     const obj = {
       id: a.id, courseId: a.course_id, title: a.title, instructions: a.instructions || "", due: a.due, points: a.points,
       weight: Number(a.weight) || 0, seriesId: a.series_id || undefined, seriesLabel: a.series_label || undefined,
-      submitAnytime: a.submit_anytime, openDate: a.open_date, submissions: [],
+      submitAnytime: a.submit_anytime, openDate: a.open_date, submissions: [], materialIds: [],
     };
     byAssignment[a.id] = obj;
     c.assignments.push(obj);
+  });
+  asgDocs.slice().sort((x, y) => x.position - y.position).forEach((d) => {
+    const a = byAssignment[d.assignment_id];
+    if (a) a.materialIds.push(d.material_id);
   });
   subs.forEach((s) => {
     const a = byAssignment[s.assignment_id];
@@ -348,8 +354,8 @@ async function loadAll() {
     const l = lessonById[v.lesson_id];
     if (l) l.views[v.student_id] = { pct: Number(v.pct) || 0, completedAt: v.completed_at, lastAt: v.last_at };
   });
-  Object.values(byCourse).forEach((c) => c.lessons.sort((a, b) =>
-    (a.classDate || "9999").localeCompare(b.classDate || "9999") || a.position - b.position || String(a.addedAt).localeCompare(String(b.addedAt))));
+  // Lesson 1 first: by class day, then the lesson number in the title.
+  Object.values(byCourse).forEach((c) => sortLessons(c.lessons));
   syncRows.forEach((r) => { if (byCourse[r.course_id]) byCourse[r.course_id].sync = { playlistId: r.playlist_id, syncedAt: r.synced_at, requestedAt: r.requested_at, ok: r.ok, error: r.error || "", count: r.video_count }; });
 
   // Self-paced courses: a student's due dates count from the day they
@@ -443,13 +449,17 @@ const DB = {
 
   // --- materials -----------------------------------------------------------
   // teacherOnly: hidden from students (answer keys, teacher notes).
+  // Returns the new rows ({ id, title }) in the order given.
   async addMaterials(courseId, files, teacherOnly = false) {
     files.forEach((f) => checkUpload(f, MATERIAL_MAX_BYTES));
+    const made = [];
     for (const f of files) {
       const path = `${courseId}/${newId()}-${safeFileName(f.name)}`;
       must(await sb.storage.from("materials").upload(path, f, { contentType: f.type || undefined, upsert: false }));
-      must(await sb.from("materials").insert({ course_id: courseId, type: "material", title: f.name, storage_path: path, mime_type: f.type || null, size_bytes: f.size, teacher_only: !!teacherOnly }));
+      const rows = must(await sb.from("materials").insert({ course_id: courseId, type: "material", title: f.name, storage_path: path, mime_type: f.type || null, size_bytes: f.size, teacher_only: !!teacherOnly }).select("id,title"));
+      if (rows && rows[0]) made.push(rows[0]);
     }
+    return made;
   },
   async setMaterialTeacherOnly(m, teacherOnly) {
     must(await sb.from("materials").update({ teacher_only: !!teacherOnly }).eq("id", m.id));
@@ -465,12 +475,22 @@ const DB = {
   },
 
   // --- assignments & submissions -------------------------------------------
+  // Each item may carry materialIds: documents from Course Materials.
   async addAssignments(courseId, list) {
-    must(await sb.from("assignments").insert(list.map((a) => ({
-      course_id: courseId, title: a.title, instructions: a.instructions || "", due: a.due, points: a.points,
+    const rows = list.map((a) => ({
+      id: a.id || newId(), course_id: courseId, title: a.title, instructions: a.instructions || "", due: a.due, points: a.points,
       weight: a.weight || 0, series_id: a.seriesId || null, series_label: a.seriesLabel || null,
       submit_anytime: a.submitAnytime !== false, open_date: a.openDate || null,
-    }))));
+    }));
+    must(await sb.from("assignments").insert(rows));
+    const links = list.flatMap((a, i) => (a.materialIds || []).map((m, k) => ({ assignment_id: rows[i].id, material_id: m, position: k })));
+    if (links.length) must(await sb.from("assignment_materials").insert(links));
+    return rows.map((r) => r.id);
+  },
+  async setAssignmentMaterials(assignmentId, materialIds) {
+    must(await sb.from("assignment_materials").delete().eq("assignment_id", assignmentId));
+    const ids = [...new Set(materialIds)];
+    if (ids.length) must(await sb.from("assignment_materials").insert(ids.map((m, k) => ({ assignment_id: assignmentId, material_id: m, position: k }))));
   },
   async deleteAssignments(ids) {
     must(await sb.from("assignments").delete().in("id", ids));
@@ -676,17 +696,38 @@ const DB = {
   async copyCourse(course, title, startDate) {
     const id = must(await sb.rpc("copy_course", { p_course: course.id, p_title: title, p_start: startDate || null }));
     let filesFailed = 0;
+    const newMat = {}; // old material id → new
     for (const m of course.materials) {
       try {
+        let rows;
         if (m.storagePath) {
           const path = `${id}/${newId()}-${safeFileName(m.title)}`;
           must(await sb.storage.from("materials").copy(m.storagePath, path));
-          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, storage_path: path, mime_type: m.mimeType || null, size_bytes: m.size || null, teacher_only: !!m.teacherOnly }));
+          rows = must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, storage_path: path, mime_type: m.mimeType || null, size_bytes: m.size || null, teacher_only: !!m.teacherOnly }).select("id"));
         } else {
-          must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, teacher_only: !!m.teacherOnly }));
+          rows = must(await sb.from("materials").insert({ course_id: id, type: m.type || "material", title: m.title, teacher_only: !!m.teacherOnly }).select("id"));
         }
+        if (rows && rows[0]) newMat[m.id] = rows[0].id;
       } catch (e) { console.warn("copy file:", e); filesFailed++; }
     }
+    // The documents on each assignment come along too. Assignments were
+    // copied in order of due date, so match them up the same way.
+    try {
+      const withDocs = course.assignments.filter((a) => (a.materialIds || []).length);
+      if (withDocs.length) {
+        const fresh = must(await sb.from("assignments").select("id,title,series_id,due").eq("course_id", id));
+        const key = (a) => `${a.title}\u0000${a.series_id ?? a.seriesId ?? ""}`;
+        const pool = {};
+        fresh.slice().sort((x, y) => x.due.localeCompare(y.due)).forEach((a) => (pool[key(a)] = pool[key(a)] || []).push(a.id));
+        const links = [];
+        course.assignments.slice().sort((x, y) => (x.courseDue || x.due).localeCompare(y.courseDue || y.due)).forEach((a) => {
+          const target = (pool[key(a)] || []).shift();
+          if (!target) return;
+          (a.materialIds || []).forEach((m, k) => { if (newMat[m]) links.push({ assignment_id: target, material_id: newMat[m], position: k }); });
+        });
+        if (links.length) must(await sb.from("assignment_materials").insert(links));
+      }
+    } catch (e) { console.warn("copy assignment documents:", e); }
     return { id, filesFailed };
   },
   async recordFinalGrades(courseId, entries) {

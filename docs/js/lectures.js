@@ -239,7 +239,9 @@ function readFormatSettings(p) {
 // ---------------------------------------------------------------------------
 // Student course page: how I attend, the live class, the lectures
 // ---------------------------------------------------------------------------
-function courseAttendHtml(c) {
+// part: "top" → the attend choice and Watch Live banner (Overview tab);
+// "list" → the Lectures card (Lectures tab); default both.
+function courseAttendHtml(c, part = "all") {
   if (!courseHasLectures(c)) return "";
   const sid = currentStudentId;
   const trk = effTrack(c, sid);
@@ -261,7 +263,8 @@ function courseAttendHtml(c) {
       : trk === "live"
         ? `You attend live online: watch the class here as it happens${counts ? ` (${Math.round(LIVE_SHARE * 100)}% of the class counts you present)` : ""}. If you miss it, watch the recording within ${WATCH_DAYS} days.`
         : `You watch the recorded lectures${counts ? ` — ${WATCH_SHARE}% of each lecture within ${WATCH_DAYS} days of it being posted counts you present` : ""}. You're welcome to join live too.`;
-  return `
+  const upNext = open.find((l) => watchedPct(l, sid) < WATCH_SHARE);
+  const top = `
     ${choose ? `
     <div class="card attend-choose" id="attendChoose">
       <h2 class="card-title" style="margin:0 0 6px;">How will you attend this course?</h2>
@@ -275,7 +278,9 @@ function courseAttendHtml(c) {
       <span class="live-dot" aria-hidden="true"></span>
       <span><strong>Class is in session — Watch Live</strong><small>Stay on this page while you watch; leaving for the YouTube app doesn't count for attendance.</small></span>
       <span class="live-go">${icon("video")}</span>
-    </button>` : ""}
+    </button>` : ""}`;
+  if (part === "top") return top;
+  const list = `
     <div class="section-title"><h2>Lectures</h2>${open.length ? `<span class="field-hint" style="margin:0;">${done} of ${open.length} watched</span>` : ""}</div>
     <div class="card">
       ${choose ? "" : `<div class="attend-how">
@@ -287,22 +292,38 @@ function courseAttendHtml(c) {
       ${!live && next && trk !== "recorded" && c.format !== "in_person" ? `<p class="field-hint" style="margin:10px 0 0;">${icon("calendar")} Next live class: <strong>${esc(classTimeText(next.at))}</strong>. <a href="#" id="openLivePage">Open the live class page</a></p>` : ""}
       <ul class="lecture-list">
         ${open.length === 0 ? `<li class="lecture-empty">${lessons.length ? "The first lecture opens soon." : c.playlistId ? "No lectures have been posted yet. They'll appear here as each class is uploaded." : "No lectures yet."}</li>` : ""}
-        ${open.slice().reverse().map((l) => lectureRowHtml(c, l, sid)).join("")}
+        ${open.map((l) => lectureRowHtml(c, l, sid, l === upNext)).join("")}
         ${later.length ? `<li class="lecture-later">${icon("lock")} ${later.length} more lecture${later.length === 1 ? "" : "s"} open as the class reaches ${later.length === 1 ? "it" : "them"} (next: ${esc(fmtDay(lessonOpensOn(c, later[0], sid), { month: "short", day: "numeric" }))}).</li>` : ""}
       </ul>
     </div>`;
+  return part === "list" ? list : top + list;
 }
-function lectureRowHtml(c, l, sid) {
+// The next lecture to watch, for the course Overview.
+function nextLectureHtml(c) {
+  if (!courseHasLectures(c)) return "";
+  const sid = currentStudentId;
+  const today = todayStr();
+  const open = c.lessons.filter((l) => playableLesson(l) && lessonOpensOn(c, l, sid) <= today);
+  if (!open.length) return "";
+  const next = open.find((l) => watchedPct(l, sid) < WATCH_SHARE);
+  const done = open.length - open.filter((l) => watchedPct(l, sid) < WATCH_SHARE).length;
+  return `<div class="card overview-card">
+    <div class="overview-head"><h3>${icon("video")} Lectures</h3><a href="#" data-goto-tab="lectures">All ${open.length}</a></div>
+    ${next ? `<ul class="lecture-list">${lectureRowHtml(c, next, sid, true)}</ul>` : `<p class="field-hint" style="margin:0;">✓ You've watched every lecture posted so far.</p>`}
+    <p class="field-hint" style="margin:8px 0 0;">${done} of ${open.length} watched</p>
+  </div>`;
+}
+function lectureRowHtml(c, l, sid, isNext = false) {
   const pct = watchedPct(l, sid);
   const doneNow = pct >= WATCH_SHARE;
   const by = lessonWatchBy(c, l, sid);
   const late = !doneNow && by < todayStr();
   const counts = lectureCountsForMe(c) && (isOnlineStudent(c, sid) || (c.attMarks[l.classDate] || {})[sid] === "absent");
-  return `<li class="lecture-row">
+  return `<li class="lecture-row ${isNext ? "lecture-next" : ""}">
     <button type="button" class="lecture-open" data-lesson="${l.id}">
       <span class="lecture-thumb"><img src="https://i.ytimg.com/vi/${esc(l.videoId)}/mqdefault.jpg" alt="" loading="lazy" width="120" height="68"><span class="lecture-play">▶</span></span>
       <span class="lecture-text">
-        <strong>${esc(l.title || "Lecture")}</strong>
+        ${isNext ? `<span class="up-next">Up next</span>` : ""}<strong>${esc(l.title || "Lecture")}</strong>
         <small>${l.classDate ? `Class of ${esc(fmtDay(l.classDate, { month: "short", day: "numeric" }))}` : ""}${l.duration ? ` · ${fmtDuration(l.duration)}` : ""}</small>
         <span class="watch-bar" aria-label="${Math.round(pct)}% watched"><span style="width:${Math.min(100, pct)}%"></span></span>
         <small class="${doneNow ? "watch-done" : late ? "watch-late" : ""}">${doneNow ? "✓ Watched" : `${Math.round(pct)}% watched`}${!doneNow && counts ? (late ? ` · was due ${esc(fmtDay(by, { month: "short", day: "numeric" }))}` : ` · watch by ${esc(fmtDay(by, { month: "short", day: "numeric" }))} for attendance`) : ""}</small>
