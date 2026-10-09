@@ -9,6 +9,10 @@
 //   • delivers every bell notification to people's phones (Web Push) and
 //     by email (right away, as a morning summary, or not at all — their
 //     choice), so nobody has to sign in to find out what's new
+//   • reads each course's YouTube playlist (every 30 minutes; every 2
+//     minutes around class time, to catch the live stream) and posts new
+//     lectures to the course — needs the secret YOUTUBE_API_KEY
+//   • fills in online students' attendance from what they watched
 //   • takes a nightly backup of the database (2 AM Alaska time) and emails
 //     a copy to the church's Gmail once a week (Sunday morning)
 // Email needs the GMAIL_APP_PASSWORD secret (see SETUP.md); everything
@@ -329,6 +333,7 @@ const KIND_TITLE: Record<string, string> = {
   message: "New message", grade: "Grade posted", due: "Assignment due", cancel: "Class update",
   announcement: "Announcement", enrollment: "Enrollment", signup: "New sign-up waiting",
   transcript: "Final grade recorded", welcome: "Welcome!", teacher: "Your course",
+  lecture: "New lecture", live: "Class is live",
 };
 function safeLink(link: string): string {
   return /^\/(\?[A-Za-z0-9_=&%.:\-|]*)?$/.test(link || "") ? link : "/";
@@ -403,6 +408,101 @@ async function setStatus(sql: Sql, key: string, ok: boolean, detail: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Lecture videos: read each course's YouTube playlist
+// ---------------------------------------------------------------------------
+// Uses a YouTube Data API key (free; Supabase → Edge Functions → Secrets →
+// YOUTUBE_API_KEY). Videos must be Public or Unlisted — YouTube never shows
+// Private videos to anyone else — with embedding allowed.
+function youtubeKey(): string {
+  try { return (Deno.env.get("YOUTUBE_API_KEY") || "").trim(); } catch (_) { return ""; }
+}
+function youtubeBase(): string {
+  try { return Deno.env.get("YOUTUBE_API_BASE") || "https://www.googleapis.com/youtube/v3"; } catch (_) { return "https://www.googleapis.com/youtube/v3"; }
+}
+// "PT1H2M3S" → 3723 seconds ("P0D" while live → 0)
+export function isoDuration(d: string): number {
+  const m = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(d || "");
+  if (!m) return 0;
+  return (+(m[1] || 0)) * 86400 + (+(m[2] || 0)) * 3600 + (+(m[3] || 0)) * 60 + (+(m[4] || 0));
+}
+function alaskaDay(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const t = new Date(iso);
+  if (isNaN(t.getTime())) return null;
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Anchorage", year: "numeric", month: "2-digit", day: "2-digit" }).format(t);
+}
+type YtItem = { video_id: string; title: string; position: number; duration: number; published_at: string | null;
+  recorded_on: string | null; status: string; in_playlist: boolean };
+async function ytGet(path: string, params: Record<string, string>, fetchImpl: typeof fetch) {
+  const q = new URLSearchParams({ ...params, key: youtubeKey() });
+  const res = await fetchImpl(`${youtubeBase()}/${path}?${q}`);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const reason = body && body.error && body.error.errors && body.error.errors[0] && body.error.errors[0].reason || "";
+    const msg = body && body.error && body.error.message || `HTTP ${res.status}`;
+    if (reason === "playlistNotFound" || res.status === 404)
+      throw new Error("YouTube can't find this playlist. Check the link, and that the playlist is Public or Unlisted (not Private).");
+    if (reason === "keyInvalid" || /API key not valid/i.test(msg)) throw new Error("The YouTube key isn't valid (Supabase secret YOUTUBE_API_KEY).");
+    if (/quota/i.test(reason)) throw new Error("YouTube's daily limit was reached; it will try again tomorrow.");
+    throw new Error(`YouTube said: ${msg}`);
+  }
+  return body;
+}
+export async function readPlaylist(playlistId: string, extraIds: string[], fetchImpl: typeof fetch): Promise<YtItem[]> {
+  const order: { id: string; position: number; title: string; inPlaylist: boolean }[] = [];
+  if (playlistId) {
+    let pageToken = "";
+    for (let page = 0; page < 20; page++) {  // up to 1,000 videos
+      const body = await ytGet("playlistItems", { part: "snippet,contentDetails", maxResults: "50", playlistId, ...(pageToken ? { pageToken } : {}) }, fetchImpl);
+      for (const it of body.items || []) {
+        const id = it.contentDetails && it.contentDetails.videoId || it.snippet && it.snippet.resourceId && it.snippet.resourceId.videoId;
+        if (id) order.push({ id, position: it.snippet ? Number(it.snippet.position) || 0 : order.length, title: it.snippet ? it.snippet.title || "" : "", inPlaylist: true });
+      }
+      pageToken = body.nextPageToken || "";
+      if (!pageToken) break;
+    }
+  }
+  for (const id of extraIds || []) if (id && !order.some((o) => o.id === id)) order.push({ id, position: 0, title: "", inPlaylist: false });
+  const details: Record<string, any> = {};
+  for (let i = 0; i < order.length; i += 50) {
+    const ids = order.slice(i, i + 50).map((o) => o.id).join(",");
+    const body = await ytGet("videos", { part: "snippet,contentDetails,status,liveStreamingDetails,recordingDetails", id: ids, maxResults: "50" }, fetchImpl);
+    for (const v of body.items || []) details[v.id] = v;
+  }
+  return order.map((o) => {
+    const v = details[o.id];
+    if (!v) return { video_id: o.id, title: o.title, position: o.position, duration: 0, published_at: null, recorded_on: null, status: "private", in_playlist: o.inPlaylist };
+    const sn = v.snippet || {}, st = v.status || {}, live = v.liveStreamingDetails || {}, rec = v.recordingDetails || {};
+    const status = st.privacyStatus === "private" ? "private"
+      : st.embeddable === false ? "no_embed"
+      : sn.liveBroadcastContent === "live" ? "live"
+      : sn.liveBroadcastContent === "upcoming" ? "upcoming" : "ok";
+    const recorded = rec.recordingDate ? String(rec.recordingDate).slice(0, 10)
+      : alaskaDay(live.actualStartTime || live.scheduledStartTime || sn.publishedAt);
+    return { video_id: o.id, title: sn.title || o.title, position: o.position, duration: isoDuration(v.contentDetails && v.contentDetails.duration),
+      published_at: sn.publishedAt || null, recorded_on: recorded, status, in_playlist: o.inPlaylist };
+  });
+}
+export async function syncPlaylists(sql: Sql, fetchImpl: typeof fetch, now: Date) {
+  const due = await sql`select * from public.courses_due_for_sync(${now})`;
+  let added = 0;
+  for (const c of due) {
+    if (!youtubeKey()) {
+      await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, ${"[]"}::jsonb, ${"Lecture videos aren't connected yet: the YouTube key (Supabase secret YOUTUBE_API_KEY) hasn't been added."})`;
+      continue;
+    }
+    try {
+      const items = await readPlaylist(c.playlist_id, c.extra_ids || [], fetchImpl);
+      const r = await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, ${JSON.stringify(items)}::jsonb) as n`;
+      added += Number(r[0] && r[0].n) || 0;
+    } catch (e) {
+      await sql`select public.sync_course_lessons(${c.course_id}, ${c.playlist_id}, ${"[]"}::jsonb, ${(e as Error).message})`;
+    }
+  }
+  return { checked: due.length, added };
+}
+
+// ---------------------------------------------------------------------------
 // The every-minute run
 // ---------------------------------------------------------------------------
 async function safely<T>(label: string, fn: () => Promise<T>): Promise<T | null> {
@@ -430,6 +530,13 @@ export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new 
     out.sent += res.delivered;
   }
   out.classes = due.length;
+
+  // 1b. Lecture videos from YouTube playlists (new-lecture notices are sent
+  //     below with everything else), then online attendance.
+  const yt = await safely("playlists", () => syncPlaylists(sql, fetchImpl, now));
+  if (yt) { out.playlists = yt.checked; out.lectures = yt.added; }
+  out.attendance = (await safely("online attendance", async () =>
+    (await sql`select public.settle_online_attendance() as n`)[0].n)) || 0;
 
   // 2. Students: assignment due dates become notifications (sent below).
   out.assignments = (await safely("assignment reminders", async () =>
