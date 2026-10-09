@@ -1703,7 +1703,7 @@ begin
   foreach t in array array['profiles','courses','enrollments','enrollment_requests','materials','assignments',
       'submissions','discussion_posts','messages','notifications','bible_highlights','attendance_days',
       'attendance','class_cancellations','announcements','transcript_entries','past_records',
-      'lessons','lesson_views','live_presence'] loop
+      'lessons','lesson_views','live_presence','assignment_materials'] loop
     execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x', t) into rows;
     v := v || jsonb_build_object(t, rows);
   end loop;
@@ -2410,19 +2410,29 @@ revoke all on public.site_backups, public.service_status from authenticated;
 
 alter table public.lessons add column if not exists recorded_on date;  -- from YouTube: recording date / stream date / upload date
 
+-- A lecture's number in its series, read from its title: "Lesson 3",
+-- "Lecture #12", "Week 4", "Part 2", "03 - …". Null when there isn't one.
+create or replace function public.lesson_number(p_title text) returns int
+language sql immutable set search_path = public as $$
+  select coalesce(
+    substring(coalesce(p_title, '') from '(?i)(?:lesson|lecture|session|week|part|class|chapter|study|unit|day|no\.?|#)\s*#?\s*(\d{1,3})(?!\d)'),
+    substring(coalesce(p_title, '') from '^\s*(\d{1,3})(?!\d)'))::int
+$$;
+
 -- Which class day each lecture belongs to:
 --   1. the date the teacher set, if any;
 --   2. a new recording (made since the course began) → the most recent class
 --      day on or before the day it was recorded;
 --   3. an older recording (reused from an earlier term) → the remaining class
---      days in playlist order.
+--      days in series order (the lesson number in its title, then its
+--      recording date, then playlist order).
 create or replace function public.lesson_schedule(p_course text)
 returns table (lesson_id uuid, class_date date)
 language sql stable security definer set search_path = public as $$
   with c as (select sched_start from courses where id = p_course),
   dates as (select d from public.course_class_dates(p_course) d),
   vis as (
-    select l.id, l.position, l.added_at, l.class_date as fixed,
+    select l.id, l.title, l.recorded_on, l.published_at, l.position, l.added_at, l.class_date as fixed,
            case when l.recorded_on is not null and l.recorded_on >= (select sched_start from c) - 1
                 then (select max(d) from dates where d <= l.recorded_on) end as fresh
       from lessons l
@@ -2430,7 +2440,8 @@ language sql stable security definer set search_path = public as $$
   ),
   taken as (select coalesce(fixed, fresh) as d from vis where coalesce(fixed, fresh) is not null),
   free_dates as (select d, row_number() over (order by d) as n from dates where d not in (select d from taken)),
-  rest as (select id, row_number() over (order by position, added_at, id) as k
+  rest as (select id, row_number() over (order by public.lesson_number(title) nulls last, recorded_on nulls last,
+                                                 published_at nulls last, position, added_at, id) as k
              from vis where fixed is null and fresh is null)
   select id, coalesce(fixed, fresh) from vis where coalesce(fixed, fresh) is not null
   union all
@@ -2700,6 +2711,9 @@ declare v_first boolean; v_new int := 0; it jsonb; v_ids text[]; r record; c rec
 begin
   select * into c from courses where id = p_course;
   if c.id is null then return 0; end if;
+  -- A list sent as JSON text arrives as one quoted string; unwrap it.
+  if jsonb_typeof(p_items) = 'string' then p_items := (p_items #>> '{}')::jsonb; end if;
+  if p_items is not null and jsonb_typeof(p_items) <> 'array' then p_items := '[]'; end if;
   if p_error is not null then
     insert into playlist_sync (course_id, playlist_id, synced_at, ok, error)
     values (p_course, coalesce(p_playlist, ''), now(), false, left(p_error, 300))
@@ -2866,3 +2880,50 @@ language sql stable set search_path = public as $$
 $$;
 revoke execute on function public.visible_lesson_dates() from public, anon;
 grant execute on function public.visible_lesson_dates() to authenticated;
+
+-- ===========================================================================
+-- Assignment documents (Oct 9, 2026)
+-- ===========================================================================
+-- Documents from Course Materials attached to an assignment (e.g. "Quiz 3"
+-- on week 3 of a weekly quiz). Students see the ones they're allowed to
+-- see (never a Teachers-only document such as an answer key).
+create table if not exists public.assignment_materials (
+  assignment_id uuid not null references public.assignments(id) on delete cascade,
+  material_id   uuid not null references public.materials(id) on delete cascade,
+  position      int  not null default 0,
+  primary key (assignment_id, material_id)
+);
+create index if not exists assignment_materials_material on public.assignment_materials (material_id);
+alter table public.assignment_materials enable row level security;
+grant select, insert, update, delete on public.assignment_materials to authenticated;
+
+create or replace function public.material_course(p_material uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select course_id from materials where id = p_material
+$$;
+create or replace function public.material_for_class(p_material uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from materials where id = p_material and not teacher_only)
+$$;
+revoke execute on function public.material_course(uuid) from public, anon;
+revoke execute on function public.material_for_class(uuid) from public, anon;
+grant execute on function public.material_course(uuid) to authenticated;
+grant execute on function public.material_for_class(uuid) to authenticated;
+
+drop policy if exists amat_select on public.assignment_materials;
+drop policy if exists amat_insert on public.assignment_materials;
+drop policy if exists amat_update on public.assignment_materials;
+drop policy if exists amat_delete on public.assignment_materials;
+create policy amat_select on public.assignment_materials for select to authenticated
+  using (public.is_faculty() or public.is_super_admin()
+         or (public.is_enrolled(public.assignment_course(assignment_id)) and public.material_for_class(material_id)));
+-- Only the course's teacher, and only documents of that same course.
+create policy amat_insert on public.assignment_materials for insert to authenticated
+  with check (public.manages_course(public.assignment_course(assignment_id))
+              and public.material_course(material_id) = public.assignment_course(assignment_id));
+create policy amat_update on public.assignment_materials for update to authenticated
+  using (public.manages_course(public.assignment_course(assignment_id)))
+  with check (public.manages_course(public.assignment_course(assignment_id))
+              and public.material_course(material_id) = public.assignment_course(assignment_id));
+create policy amat_delete on public.assignment_materials for delete to authenticated
+  using (public.manages_course(public.assignment_course(assignment_id)));
