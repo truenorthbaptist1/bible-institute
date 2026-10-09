@@ -169,6 +169,31 @@ check("…but still sees the class materials", True,
       "select count(*) from public.materials where course_id = 'c1' and title = 'Syllabus.pdf'", stu1, expect_out=1)
 check("Students can't make a material teacher-only or visible", True,
       "update public.materials set teacher_only = false where course_id = 'c1' returning id", stu1, expect_out="")
+# Documents attached to assignments (Oct 9)
+syl = admin("select id from public.materials where course_id = 'c1' and title = 'Syllabus.pdf'").splitlines()[0]
+key = admin("select id from public.materials where course_id = 'c1' and title = 'Answer Key.pdf'").splitlines()[0]
+other_mat = admin("insert into public.materials (course_id, title, storage_path) values ('c8', 'Other.pdf', 'c8/x-Other.pdf') returning id").splitlines()[0]
+check("The course's teacher attaches course documents to an assignment", True,
+      f"insert into public.assignment_materials (assignment_id, material_id, position) values ('{aid}', '{syl}', 0), ('{aid}', '{key}', 1)", phil)
+check("…but not a document from a different course", False,
+      f"insert into public.assignment_materials (assignment_id, material_id) values ('{aid}', '{other_mat}')", phil)
+check("A student can't attach documents to an assignment", False,
+      f"insert into public.assignment_materials (assignment_id, material_id) values ('{locked}', '{syl}')", stu1)
+check("The class sees an assignment's documents — never a teacher-only one", True,
+      f"select count(*) from public.assignment_materials where assignment_id = '{aid}'", stu1, expect_out=1)
+check("A student outside the course sees none of them", True,
+      "select count(*) from public.assignment_materials", stu3, expect_out=0)
+check("Faculty see all of an assignment's documents", True,
+      f"select count(*) from public.assignment_materials where assignment_id = '{aid}'", phil, expect_out=2)
+check("A student can't remove an assignment's documents", True,
+      "with d as (delete from public.assignment_materials returning 1) select count(*) from d", stu1, expect_out=0)
+check("Lecture order reads the lesson number from a title", True,
+      "select string_agg(coalesce(public.lesson_number(t)::text, '-'), ',') from unnest(array['Lesson #3 Revelation', 'Week 12', '03 - Intro', 'Introduction', 'Class of 2025']) t",
+      None, expect_out="3,12,3,-,-")
+admin("insert into public.lessons (course_id, video_id, title, position, status, recorded_on) values ('c5', 'vidLesson03', 'Lesson 3', 0, 'ok', '2020-01-01'), ('c5', 'vidLesson02', 'Lesson 2', 1, 'ok', '2020-01-01'), ('c5', 'vidLesson01', 'Lesson 1', 2, 'ok', '2020-01-01')")
+check("Reused recordings fill the class days in series order, even when the playlist runs backwards", True,
+      "select string_agg(l.title, ',' order by s.class_date) from public.lesson_schedule('c5') s join public.lessons l on l.id = s.lesson_id",
+      None, expect_out="Lesson 1,Lesson 2,Lesson 3")
 check("Student turns in work; server sets the date (no back-dating)", True,
       f"insert into public.submissions (assignment_id, student_id, status, file_name, submitted_at) values ('{aid}', '{stu1}', 'submitted', 'mine.pdf', '2026-08-01') returning submitted_at = public.local_today()", stu1, expect_out="t")
 check("Student cannot grade their own work", False,
