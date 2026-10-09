@@ -1270,3 +1270,106 @@ label.check-row-sm:first-of-type { margin-top: 6px; }
 .archive-course img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
 .archive-course strong, .archive-course small { padding: 0 14px; }
 .archive-course small { color: var(--muted-foreground); }
+
+/* ===========================================================================
+   Course pages in tabs, grouped documents, assignment documents (Oct 9)
+   =========================================================================== */
+.course-tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--border); margin: 22px 0 6px; position: sticky; top: 0; z-index: 5; background: var(--background); padding-top: 6px; -webkit-overflow-scrolling: touch; }
+.course-tabs::-webkit-scrollbar { display: none; }
+.course-tab { flex-shrink: 0; background: none; border: none; border-bottom: 3px solid transparent; padding: 10px 14px 9px; font: inherit; font-weight: 600; font-size: .92rem; color: var(--muted-foreground); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+.course-tab:hover { color: var(--foreground); }
+.course-tab.active { color: var(--foreground); border-bottom-color: var(--gold); }
+.course-tab:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; border-radius: 6px 6px 0 0; }
+.tab-count { font-size: .72rem; font-weight: 700; background: var(--muted); color: var(--muted-foreground); border-radius: 999px; padding: 1px 8px; }
+.course-tab.active .tab-count { background: color-mix(in srgb, var(--gold) 22%, transparent); color: var(--foreground); }
+.tab-count.tab-alert { background: var(--destructive); color: #fff; }
+.tab-panel[hidden] { display: none; }
+.tab-panel > .section-title:first-child { margin-top: 20px; }
+
+.overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 18px; }
+.overview-grid .card { margin-bottom: 0; }
+.overview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.overview-head h3 { margin: 0; font-size: 1rem; display: flex; align-items: center; gap: 8px; font-family: "Figtree", sans-serif; }
+.overview-head h3 svg { width: 18px; height: 18px; color: var(--gold); }
+.overview-head a { font-size: .85rem; font-weight: 600; color: var(--link); }
+.overview-card .lecture-row { border-top: none; }
+.assignments-list.compact li { padding: 10px 0; }
+
+/* Documents browser */
+.docs-tools { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.docs-search { flex: 1; min-width: 200px; margin: 0; }
+.docs-group { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; background: var(--card); }
+.docs-group > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; font-weight: 700; min-height: 44px; }
+.docs-group > summary::-webkit-details-marker { display: none; }
+.docs-group > summary::before { content: "›"; display: inline-block; margin-right: 4px; font-size: 1.2rem; line-height: 1; transition: transform .15s; color: var(--muted-foreground); }
+.docs-group[open] > summary::before { transform: rotate(90deg); }
+.docs-group-name { flex: 1; }
+.docs-count { font-size: .75rem; font-weight: 700; background: var(--muted); color: var(--muted-foreground); border-radius: 999px; padding: 2px 9px; }
+.docs-list { list-style: none; margin: 0; padding: 0 14px 6px; }
+.docs-group .docs-list { border-top: 1px solid var(--border); }
+.doc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.doc-row:last-child { border-bottom: none; }
+.doc-row[hidden] { display: none; }
+.doc-main { min-width: 0; flex: 1; }
+.doc-name { font-weight: 600; overflow-wrap: anywhere; margin-right: 6px; }
+.doc-kind { font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--gold); }
+.doc-open { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.doc-files { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.doc-file { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.doc-file .check-row-sm { margin: 0; }
+.docs-none, .docs-empty { color: var(--muted-foreground); margin: 6px 0 0; }
+.overview-card .docs-list { padding: 0; }
+
+/* Documents on an assignment */
+.asg-docs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.doc-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface, var(--card)); color: var(--foreground); border-radius: 999px; padding: 5px 12px; font: inherit; font-size: .82rem; font-weight: 600; cursor: pointer; min-height: 34px; text-align: left; }
+.doc-chip:hover { border-color: var(--gold); }
+.doc-chip svg { width: 14px; height: 14px; color: var(--gold); flex-shrink: 0; }
+.doc-chip small { font-size: .66rem; text-transform: uppercase; color: var(--muted-foreground); }
+.asg-meta { font-size: .82rem; color: var(--muted-foreground); margin-top: 4px; }
+.asg-late { color: var(--destructive); }
+.asg-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.series-row { flex-direction: column; align-items: stretch !important; gap: 10px !important; }
+.series-details > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.series-details > summary::-webkit-details-marker { display: none; }
+.series-more { font-size: .82rem; font-weight: 600; color: var(--link); white-space: nowrap; }
+.series-details[open] .series-more::after { content: " ▲"; }
+.series-details[open] + .series-next { display: none; }
+.series-details > .assignments-list { margin-top: 8px; padding-left: 14px; border-left: 3px solid var(--border); }
+.series-next { background: var(--muted); border-radius: var(--radius); padding: 10px 12px; }
+
+/* Picking documents for an assignment */
+.asg-docs-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.file-btn { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.file-btn svg, .asg-docs-actions svg { width: 15px; height: 15px; }
+.doc-picker { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-top: 10px; max-height: 340px; overflow-y: auto; background: var(--card); }
+.doc-picker .docs-search { width: 100%; margin-bottom: 8px; }
+.doc-pick-group { border: none; margin: 0 0 8px; padding: 0; }
+.doc-pick-group legend { font-weight: 700; font-size: .85rem; padding: 0; margin-bottom: 4px; display: flex; gap: 10px; align-items: center; }
+.doc-pick-group[hidden], .doc-pick-row[hidden] { display: none; }
+.doc-pick-row { padding: 6px 0; font-weight: 500; }
+.doc-chosen { list-style: none; padding: 0; margin: 10px 0 0; }
+.doc-chosen li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 6px; font-size: .9rem; }
+.week-plan { margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px; }
+.week-plan-list { list-style: none; padding: 0; margin: 8px 0 0; max-height: 300px; overflow-y: auto; }
+.week-plan-list li { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.week-plan-list li:last-child { border-bottom: none; }
+.wp-week { width: 96px; flex-shrink: 0; display: flex; flex-direction: column; font-size: .88rem; }
+.wp-week small { color: var(--muted-foreground); font-size: .75rem; }
+.week-plan-list select { flex: 1; min-width: 0; margin: 0; }
+.wp-warn { color: var(--destructive); }
+.wp-warn svg { width: 14px; height: 14px; vertical-align: -2px; }
+
+/* Lectures: the next one to watch */
+.lecture-next .lecture-open { background: color-mix(in srgb, var(--gold) 9%, transparent); border-radius: var(--radius); }
+.up-next { display: inline-block; font-size: .66rem; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--gold); margin-bottom: 2px; }
+
+@media (max-width: 640px) {
+  .course-tab { padding: 10px 11px 9px; font-size: .88rem; }
+  .doc-row { flex-wrap: wrap; }
+  .doc-open { width: 100%; justify-content: flex-start; }
+  .asg-row { flex-wrap: wrap; }
+  .wp-week { width: 72px; }
+}
+.docs-search { padding: 10px 16px; border: 1px solid var(--border); border-radius: 999px; font-size: .95rem; font-family: inherit; background: var(--surface); color: var(--foreground); -webkit-appearance: none; appearance: none; }
+.docs-search:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
