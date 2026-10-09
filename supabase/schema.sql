@@ -129,6 +129,10 @@ create table if not exists public.materials (
   size_bytes   bigint,
   created_at   timestamptz not null default now()
 );
+-- Teacher-only materials (Oct 2026): answer keys, teacher notes and the like.
+-- Faculty and Admins see them; students never do (enforced below and in
+-- storage). Safe to re-run.
+alter table public.materials add column if not exists teacher_only boolean not null default false;
 
 create table if not exists public.assignments (
   id             uuid primary key default gen_random_uuid(),
@@ -216,6 +220,122 @@ create table if not exists public.attendance (
   status     text not null check (status in ('present','late','absent','excused')),
   primary key (course_id, class_date, student_id),
   foreign key (course_id, class_date) references public.attendance_days(course_id, class_date) on delete cascade
+);
+
+-- ===========================================================================
+-- Hybrid & online courses (added Oct 9, 2026)
+-- ===========================================================================
+-- A course can be attended three ways at once: in the classroom, live
+-- online (watching the YouTube Live stream inside the site), or by watching
+-- the recording afterward. Assignments, discussion, messages and grades are
+-- the same for everyone; only attendance differs.
+--   format  in_person — everyone in the room (recordings, if any, are make-ups)
+--           hybrid    — classroom + online students
+--           online    — online students only
+--   pace    calendar  — everyone follows the class calendar
+--           self      — online, self-paced: every lecture open at once; each
+--                       student's dates count from the day they start, and
+--                       they have one semester (sched_weeks) to finish
+--   playlist_id   — the YouTube playlist the lectures are uploaded to
+--   live_video_id — optional: the live stream for the next class, if it
+--                   isn't in the playlist (normally found automatically)
+--   class_minutes — how long a class lasts (live viewers need 75% of it)
+alter table public.courses
+  add column if not exists format text not null default 'in_person'
+    check (format in ('in_person','hybrid','online')),
+  add column if not exists pace text not null default 'calendar'
+    check (pace in ('calendar','self')),
+  add column if not exists playlist_id text not null default ''
+    check (playlist_id ~ '^[A-Za-z0-9_-]{0,64}$'),
+  add column if not exists live_video_id text not null default ''
+    check (live_video_id ~ '^[A-Za-z0-9_-]{0,20}$'),
+  add column if not exists class_minutes int not null default 90
+    check (class_minutes between 15 and 480);
+
+-- How each student attends. live and recorded are both "online": either way
+-- of watching counts. start_on = the day a self-paced student started.
+alter table public.enrollments
+  add column if not exists track text not null default 'classroom'
+    check (track in ('classroom','live','recorded')),
+  add column if not exists track_chosen boolean not null default false,
+  add column if not exists start_on date not null default ((now() at time zone 'America/Anchorage')::date);
+
+-- Attendance days the site filled in by itself (online students), as
+-- opposed to days the teacher actually took attendance in class.
+alter table public.attendance_days add column if not exists teacher_taken boolean not null default true;
+-- Marks the site set from watching (live or recording), and why.
+alter table public.attendance
+  add column if not exists auto boolean not null default false,
+  add column if not exists note text not null default '';
+
+-- One lecture video. Most come from the course's playlist; a teacher can
+-- also add one by link, or swap in a better recording (replaces = the
+-- playlist video it stands in for, so the playlist doesn't bring it back).
+--   status ok | live | upcoming | private | no_embed | removed
+create table if not exists public.lessons (
+  id               uuid primary key default gen_random_uuid(),
+  course_id        text not null references public.courses(id) on delete cascade,
+  video_id         text not null check (video_id ~ '^[A-Za-z0-9_-]{6,20}$'),
+  title            text not null default '' check (length(title) <= 300),
+  position         int  not null default 0,
+  duration_seconds int  check (duration_seconds is null or duration_seconds > 0),
+  published_at     timestamptz,
+  status           text not null default 'ok'
+                   check (status in ('ok','live','upcoming','private','no_embed','removed')),
+  from_playlist    boolean not null default true,
+  replaces         text not null default '',
+  hidden           boolean not null default false,
+  class_date       date,                 -- set by the teacher; null = automatic
+  added_at         timestamptz not null default now(),
+  notified_at      timestamptz,
+  live_notified_at timestamptz,
+  unique (course_id, video_id)
+);
+create index if not exists idx_lessons_course on public.lessons(course_id);
+
+-- How much of each lecture a student has watched: 200 slices of the video,
+-- each marked once it has actually played (skipping ahead doesn't count).
+create table if not exists public.lesson_views (
+  lesson_id    uuid not null references public.lessons(id) on delete cascade,
+  student_id   uuid not null references public.profiles(id) on delete cascade,
+  seen         bit(200) not null default repeat('0', 200)::bit(200),
+  pct          numeric not null default 0,
+  first_at     timestamptz not null default now(),
+  last_at      timestamptz not null default now(),
+  completed_at timestamptz,               -- first time 95% was reached
+  primary key (lesson_id, student_id)
+);
+
+-- Minutes each online student watched a class live, inside the site.
+create table if not exists public.live_presence (
+  course_id  text not null references public.courses(id) on delete cascade,
+  class_date date not null,
+  student_id uuid not null references public.profiles(id) on delete cascade,
+  minutes    int  not null default 0,
+  last_beat  timestamptz,
+  primary key (course_id, class_date, student_id)
+);
+
+-- The chat under the live stream: questions to the teacher during class.
+create table if not exists public.live_chat (
+  id         uuid primary key default gen_random_uuid(),
+  course_id  text not null references public.courses(id) on delete cascade,
+  class_date date not null default ((now() at time zone 'America/Anchorage')::date),
+  author_id  uuid not null default auth.uid() references public.profiles(id) on delete cascade,
+  body       text not null check (length(trim(body)) between 1 and 500),
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_live_chat_course on public.live_chat(course_id, created_at);
+
+-- Playlist checking: when each course's playlist was last read from YouTube.
+create table if not exists public.playlist_sync (
+  course_id    text primary key references public.courses(id) on delete cascade,
+  playlist_id  text not null default '',
+  synced_at    timestamptz,
+  requested_at timestamptz,
+  ok           boolean,
+  error        text not null default '',
+  video_count  int not null default 0
 );
 
 -- Phone reminders (Web Push). One row per device a person turned them on for.
@@ -484,8 +604,31 @@ language sql stable security definer set search_path = public as $$
   select exists (
     select 1 from courses
     where id = p_course and not archived and sched_mode is not null
-      and sched_start is not null and sched_start > public.local_today()
+      and sched_start is not null
+      and (sched_start > public.local_today() or pace = 'self')  -- self-paced: join any time
   )
+$$;
+
+-- How a student actually attends a course (Oct 9): everyone is in the
+-- classroom for an in-person course; self-paced students watch recordings;
+-- an online course has no classroom.
+create or replace function public.student_track(p_course text, p_student uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select case when c.format = 'in_person' then 'classroom'
+              when c.pace = 'self' then 'recorded'
+              when c.format = 'online' and e.track = 'classroom' then 'live'
+              else e.track end
+    from courses c join enrollments e on e.course_id = c.id
+   where c.id = p_course and e.student_id = p_student
+$$;
+-- Self-paced courses: how many days later than the course calendar this
+-- student's dates fall (the day they started minus the course start).
+-- 0 for everyone else.
+create or replace function public.student_shift(p_course text, p_student uuid) returns int
+language sql stable security definer set search_path = public as $$
+  select coalesce((select case when c.pace = 'self' and c.sched_start is not null then e.start_on - c.sched_start else 0 end
+                     from courses c join enrollments e on e.course_id = c.id
+                    where c.id = p_course and e.student_id = p_student), 0)
 $$;
 
 create or replace function public.assignment_course(p_assignment uuid) returns text
@@ -818,17 +961,30 @@ begin
   if p_date > public.local_today() then
     raise exception 'Attendance can''t be taken for a day that hasn''t happened yet.';
   end if;
-  insert into attendance_days (course_id, class_date, held, taken_by, taken_at)
-  values (p_course, p_date, coalesce(p_held, true), auth.uid(), now())
+  insert into attendance_days (course_id, class_date, held, taken_by, taken_at, teacher_taken)
+  values (p_course, p_date, coalesce(p_held, true), auth.uid(), now(), true)
   on conflict (course_id, class_date) do update
-    set held = excluded.held, taken_by = excluded.taken_by, taken_at = excluded.taken_at;
-  delete from attendance where course_id = p_course and class_date = p_date;
-  if coalesce(p_held, true) then
-    insert into attendance (course_id, class_date, student_id, status)
-    select p_course, p_date, e.student_id, coalesce(p_marks ->> e.student_id::text, 'present')
-      from enrollments e
-     where e.course_id = p_course;
+    set held = excluded.held, taken_by = excluded.taken_by, taken_at = excluded.taken_at, teacher_taken = true;
+  -- Classroom students are marked here (everyone defaults to Present).
+  -- Online students are counted automatically from what they watched,
+  -- unless the teacher marks one of them on purpose.
+  if not coalesce(p_held, true) then
+    delete from attendance where course_id = p_course and class_date = p_date;
+    return;
   end if;
+  delete from attendance a
+   where a.course_id = p_course and a.class_date = p_date
+     and (public.student_track(p_course, a.student_id) is distinct from 'live'
+          and public.student_track(p_course, a.student_id) is distinct from 'recorded'
+          or coalesce(p_marks, '{}'::jsonb) ? a.student_id::text);
+  insert into attendance (course_id, class_date, student_id, status)
+  select p_course, p_date, e.student_id, coalesce(p_marks ->> e.student_id::text, 'present')
+    from enrollments e
+   where e.course_id = p_course
+     and (public.student_track(p_course, e.student_id) = 'classroom'
+          or coalesce(p_marks, '{}'::jsonb) ? e.student_id::text)
+  on conflict (course_id, class_date, student_id) do update
+    set status = excluded.status, auto = false, note = '';
 end $$;
 
 -- Clear a day's attendance (e.g. taken on the wrong day by mistake).
@@ -873,12 +1029,13 @@ language sql volatile security definer set search_path = public as $$
     select c.id, c.title, (n.t)::date as d, c.sched_time, public.course_teacher(c.id) as teacher
       from courses c, now_ak n
      where not c.archived and c.attendance_on
+       and c.format <> 'online' and c.pace = 'calendar'   -- no classroom to take attendance in
        and c.sched_time ~ '^[0-9]{1,2}:[0-9]{2}'
        and public.course_teacher(c.id) is not null
        and (n.t)::date in (select public.course_class_dates(c.id))
        and n.t >= (n.t)::date + c.sched_time::time - interval '5 minutes'
        and n.t <  (n.t)::date + c.sched_time::time + interval '2 hours'
-       and not exists (select 1 from attendance_days ad where ad.course_id = c.id and ad.class_date = (n.t)::date)
+       and not exists (select 1 from attendance_days ad where ad.course_id = c.id and ad.class_date = (n.t)::date and ad.teacher_taken)
   ),
   claimed as (
     insert into attendance_reminders (course_id, class_date)
@@ -934,10 +1091,13 @@ language sql stable security definer set search_path = public as $$
      where f.token = p_token and length(p_token) >= 32 and p.status = 'active'
   ),
   my_courses as (
-    select c.*, false as teaching from courses c join enrollments e on e.course_id = c.id
+    -- shift: a self-paced student's dates count from the day they started
+    select c.*, false as teaching,
+           case when c.pace = 'self' and c.sched_start is not null then e.start_on - c.sched_start else 0 end as shift
+      from courses c join enrollments e on e.course_id = c.id
      where e.student_id = (select id from me) and not c.archived
     union
-    select c.*, true from courses c
+    select c.*, true, 0 from courses c
      where public.course_teacher(c.id) = (select id from me) and not c.archived
   )
   select 'class', mc.id || '-' || d::text, mc.id, mc.title, mc.title, d,
@@ -945,13 +1105,15 @@ language sql stable security definer set search_path = public as $$
     from my_courses mc, lateral public.course_class_dates(mc.id) d
    where not exists (select 1 from attendance_days ad
                       where ad.course_id = mc.id and ad.class_date = d and not ad.held)
+     and not (mc.pace = 'self' and not mc.teaching)     -- self-paced students have no class days
   union all
   -- canceled days stay on the calendar, clearly marked, so nobody shows up
   select 'canceled', mc.id || '-' || x.class_date::text, mc.id, mc.title, mc.title, x.class_date,
          coalesce(mc.sched_time, ''), false, (select name from me), mc.location, mc.meeting_url, x.reason
     from my_courses mc join class_cancellations x on x.course_id = mc.id
+   where not (mc.pace = 'self' and not mc.teaching)
   union all
-  select 'due', a.id::text, mc.id, mc.title, a.title, a.due, '',
+  select 'due', a.id::text, mc.id, mc.title, a.title, a.due + mc.shift, '',
          (not mc.teaching and exists (select 1 from submissions s where s.assignment_id = a.id
             and s.student_id = (select id from me) and s.status in ('submitted','graded'))),
          (select name from me), '', '', ''
@@ -1064,12 +1226,15 @@ language sql volatile security definer set search_path = public as $$
     select e.student_id, w.kind, a.id as assignment_id, a.title as assignment_title,
            c.title as course_title
       from windows w
-      join assignments a on a.due = w.due_day
-      join courses c on c.id = a.course_id and not c.archived
+      join courses c on not c.archived
       join enrollments e on e.course_id = c.id
+      join assignments a on a.course_id = c.id
+       and a.due + case when c.pace = 'self' and c.sched_start is not null then e.start_on - c.sched_start else 0 end = w.due_day
       join profiles p on p.id = e.student_id and p.status = 'active'
      where p.due_reminders in (w.kind, 'both')
-       and (a.submit_anytime or a.open_date is null or a.open_date <= (select (t)::date from now_ak))
+       and (a.submit_anytime or a.open_date is null
+            or a.open_date + case when c.pace = 'self' and c.sched_start is not null then e.start_on - c.sched_start else 0 end
+               <= (select (t)::date from now_ak))
        and not exists (select 1 from submissions s where s.assignment_id = a.id
                          and s.student_id = e.student_id and s.status in ('submitted','graded'))
        and (p.notify_email <> 'off' or exists (select 1 from push_subscriptions ps where ps.user_id = e.student_id))
@@ -1182,12 +1347,24 @@ begin
   v_shift := case when c.sched_start is not null and p_start is not null then p_start - c.sched_start else 0 end;
   insert into courses (title, description, credits, level, faculty_id, sched_weeks, sched_days, sched_time,
                        sched_mode, sched_start, attendance_on, attendance_weight, attendance_late_credit,
-                       location, meeting_url)
+                       location, meeting_url, format, pace, playlist_id, class_minutes)
   values (coalesce(nullif(trim(p_title), ''), c.title), c.description, c.credits, c.level, auth.uid(),
           c.sched_weeks, c.sched_days, c.sched_time,
           case when p_start is null then null else 'scheduled' end, p_start,
-          c.attendance_on, c.attendance_weight, c.attendance_late_credit, c.location, c.meeting_url)
+          c.attendance_on, c.attendance_weight, c.attendance_late_credit, c.location, c.meeting_url,
+          c.format, c.pace, c.playlist_id, c.class_minutes)
   returning id into v_new;
+  -- The lectures come along (re-dated automatically to the new calendar);
+  -- the new course can switch to a different playlist later.
+  insert into lessons (course_id, video_id, title, position, duration_seconds, published_at, status,
+                       from_playlist, replaces, hidden, notified_at, live_notified_at)
+  select v_new, video_id, title, position, duration_seconds, published_at, status,
+         from_playlist, replaces, hidden, now(), now()
+    from lessons where course_id = p_course and status <> 'removed';
+  if c.playlist_id <> '' then
+    insert into playlist_sync (course_id, playlist_id, synced_at, requested_at)
+    values (v_new, c.playlist_id, null, now());
+  end if;
   insert into assignments (course_id, title, instructions, due, points, weight, series_id, series_label, submit_anytime, open_date)
   select v_new, title, instructions, due + v_shift, points, weight, series_id, series_label, submit_anytime, open_date + v_shift
     from assignments where course_id = p_course;
@@ -1494,6 +1671,22 @@ begin
   delete from past_records where id = p_id;
 end $$;
 
+-- Accounts made before the site tracked email confirmation (early Oct
+-- 2026) have no email_verified_at even though Supabase confirmed them. Fill
+-- it in from Supabase's own record; that also hands them any past records
+-- waiting under their email (the trigger above). Safe to re-run.
+create or replace function public.backfill_email_verified() returns int
+language sql security definer set search_path = public, auth as $$
+  with u as (
+    update public.profiles p set email_verified_at = a.email_confirmed_at
+      from auth.users a
+     where a.id = p.id and p.email_verified_at is null and a.email_confirmed_at is not null
+    returning 1)
+  select count(*)::int from u
+$$;
+revoke execute on function public.backfill_email_verified() from public, anon, authenticated;
+do $$ begin perform public.backfill_email_verified(); end $$;
+
 -- Records imported before early transcripts existed go on now (safe to re-run).
 do $$ begin perform public.publish_past_records(); end $$;
 
@@ -1509,7 +1702,8 @@ declare v jsonb := '{}'::jsonb; t text; rows jsonb;
 begin
   foreach t in array array['profiles','courses','enrollments','enrollment_requests','materials','assignments',
       'submissions','discussion_posts','messages','notifications','bible_highlights','attendance_days',
-      'attendance','class_cancellations','announcements','transcript_entries','past_records'] loop
+      'attendance','class_cancellations','announcements','transcript_entries','past_records',
+      'lessons','lesson_views','live_presence'] loop
     execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x', t) into rows;
     v := v || jsonb_build_object(t, rows);
   end loop;
@@ -1713,7 +1907,10 @@ begin
     end if;
   end if;
 
-  select x.submit_anytime, x.open_date, c.archived into a
+  select x.submit_anytime,
+         x.open_date + coalesce((select case when c.pace = 'self' and c.sched_start is not null then e.start_on - c.sched_start else 0 end
+                                   from enrollments e where e.course_id = c.id and e.student_id = new.student_id), 0) as open_date,
+         c.archived into a
     from assignments x join courses c on c.id = x.course_id where x.id = new.assignment_id;
   if a.archived then raise exception 'This course has been archived.'; end if;
   if not a.submit_anytime and a.open_date is not null and a.open_date > public.local_today() then
@@ -1908,8 +2105,9 @@ create policy req_delete on public.enrollment_requests for delete to authenticat
 
 -- materials & assignments: enrolled students and faculty read; the
 -- course's teacher or a Super Admin manages them.
+-- Teacher-only materials are hidden from students.
 create policy materials_select on public.materials for select to authenticated
-  using (public.is_faculty() or public.is_super_admin() or public.is_enrolled(course_id));
+  using (public.is_faculty() or public.is_super_admin() or (public.is_enrolled(course_id) and not teacher_only));
 create policy materials_insert on public.materials for insert to authenticated with check (public.manages_course(course_id));
 create policy materials_update on public.materials for update to authenticated using (public.manages_course(course_id));
 create policy materials_delete on public.materials for delete to authenticated using (public.manages_course(course_id));
@@ -2057,7 +2255,12 @@ drop policy if exists tnbbi_avatars_update   on storage.objects;
 drop policy if exists tnbbi_avatars_delete   on storage.objects;
 
 create policy tnbbi_materials_read on storage.objects for select to authenticated
-  using (bucket_id = 'materials' and (public.is_faculty() or public.is_super_admin() or public.is_enrolled((storage.foldername(name))[1])));
+  using (bucket_id = 'materials' and (public.is_faculty() or public.is_super_admin()
+         -- students: only files listed as an everyone-can-see material of a
+         -- course they're in (teacher-only files stay closed to them)
+         or exists (select 1 from public.materials m
+                     where m.storage_path = name and m.course_id = (storage.foldername(name))[1]
+                       and not m.teacher_only and public.is_enrolled(m.course_id))));
 create policy tnbbi_materials_insert on storage.objects for insert to authenticated
   with check (bucket_id = 'materials' and public.manages_course((storage.foldername(name))[1]));
 create policy tnbbi_materials_delete on storage.objects for delete to authenticated
@@ -2199,3 +2402,467 @@ revoke all on public.assignment_reminders, public.calendar_feeds from authentica
 revoke insert, update, delete on public.class_cancellations, public.transcript_entries, public.past_records from authenticated;
 revoke update on public.announcements from authenticated;
 revoke all on public.site_backups, public.service_status from authenticated;
+
+-- ===========================================================================
+-- Hybrid & online courses — lectures, watching, live class (Oct 9, 2026)
+-- ===========================================================================
+-- (Tables are near the top, after attendance.)
+
+alter table public.lessons add column if not exists recorded_on date;  -- from YouTube: recording date / stream date / upload date
+
+-- Which class day each lecture belongs to:
+--   1. the date the teacher set, if any;
+--   2. a new recording (made since the course began) → the most recent class
+--      day on or before the day it was recorded;
+--   3. an older recording (reused from an earlier term) → the remaining class
+--      days in playlist order.
+create or replace function public.lesson_schedule(p_course text)
+returns table (lesson_id uuid, class_date date)
+language sql stable security definer set search_path = public as $$
+  with c as (select sched_start from courses where id = p_course),
+  dates as (select d from public.course_class_dates(p_course) d),
+  vis as (
+    select l.id, l.position, l.added_at, l.class_date as fixed,
+           case when l.recorded_on is not null and l.recorded_on >= (select sched_start from c) - 1
+                then (select max(d) from dates where d <= l.recorded_on) end as fresh
+      from lessons l
+     where l.course_id = p_course and not l.hidden and l.status <> 'removed'
+  ),
+  taken as (select coalesce(fixed, fresh) as d from vis where coalesce(fixed, fresh) is not null),
+  free_dates as (select d, row_number() over (order by d) as n from dates where d not in (select d from taken)),
+  rest as (select id, row_number() over (order by position, added_at, id) as k
+             from vis where fixed is null and fresh is null)
+  select id, coalesce(fixed, fresh) from vis where coalesce(fixed, fresh) is not null
+  union all
+  select r.id, f.d from rest r left join free_dates f on f.n = r.k
+$$;
+
+-- Online attendance, filled in by the site:
+--   • an online student (live or recorded) is Present for a class day when
+--     they watched the class live for 75% of its length inside the site, OR
+--     watched 95% of that day's recording(s) within a week of it being
+--     available; Absent once the week has passed; Excused if no recording
+--     was ever posted for that day;
+--   • a classroom student marked Absent is changed to Present the same way
+--     (a make-up);
+--   • self-paced students: Present for a class day's lecture(s) once watched
+--     95%, as long as it's before the end of their semester; Absent after.
+-- The teacher's own marks are kept, except an Absent that was made up.
+create or replace function public.settle_online_attendance(p_course text default null, p_student uuid default null)
+returns int
+language plpgsql security definer set search_path = public as $$
+declare
+  c record; e record; d date; v_today date := public.local_today();
+  v_lessons uuid[]; v_window date; v_done boolean; v_live boolean; v_ok boolean; v_closed boolean;
+  v_trk text; cur record; v_changed int := 0; v_end date; v_need int; v_note text;
+begin
+  for c in select * from courses x
+            where not x.archived and x.attendance_on and x.sched_start is not null
+              and (p_course is null or x.id = p_course)
+              and (x.format <> 'in_person' or exists (select 1 from lessons l where l.course_id = x.id))
+  loop
+    v_need := ceil(c.class_minutes * 0.75);
+    for d in select distinct ls.class_date from public.lesson_schedule(c.id) ls where c.pace = 'self' and ls.class_date is not null
+             union
+             select cd from public.course_class_dates(c.id) cd
+              where c.pace = 'calendar' and cd <= v_today and (p_course is not null or cd >= v_today - 45)
+             order by 1
+    loop
+      if exists (select 1 from attendance_days where course_id = c.id and class_date = d and not held) then continue; end if;
+      select array_agg(ls.lesson_id) into v_lessons from public.lesson_schedule(c.id) ls
+        join lessons l on l.id = ls.lesson_id
+       where ls.class_date = d and l.status in ('ok','live','private','no_embed');
+      select max(greatest(d, (l.added_at at time zone 'America/Anchorage')::date)) + 7 into v_window
+        from lessons l where l.id = any (coalesce(v_lessons, '{}'));
+      for e in select en.* from enrollments en join profiles p on p.id = en.student_id and p.status = 'active'
+                where en.course_id = c.id and (p_student is null or en.student_id = p_student)
+      loop
+        v_trk := public.student_track(c.id, e.student_id);
+        if c.pace = 'self' then
+          v_end := e.start_on + coalesce(c.sched_weeks, 16) * 7 - 1;
+          v_done := v_lessons is not null and not exists (
+            select 1 from unnest(v_lessons) lid left join lesson_views v on v.lesson_id = lid and v.student_id = e.student_id
+             where v.completed_at is null or (v.completed_at at time zone 'America/Anchorage')::date > v_end);
+          v_live := false;
+          v_closed := v_today > v_end;
+        else
+          v_done := v_lessons is not null and not exists (
+            select 1 from unnest(v_lessons) lid left join lesson_views v on v.lesson_id = lid and v.student_id = e.student_id
+             where v.completed_at is null or (v.completed_at at time zone 'America/Anchorage')::date > v_window);
+          v_live := exists (select 1 from live_presence lp where lp.course_id = c.id and lp.class_date = d
+                              and lp.student_id = e.student_id and lp.minutes >= v_need);
+          v_closed := v_today > coalesce(v_window, d + 7);
+        end if;
+        v_ok := v_done or v_live;
+        v_note := case when v_live then 'Watched the class live' else 'Watched the recording' end;
+        select * into cur from attendance where course_id = c.id and class_date = d and student_id = e.student_id;
+
+        if v_trk = 'classroom' then
+          -- make-ups only, on top of the teacher's mark
+          if cur.status = 'absent' and v_ok then
+            update attendance set status = 'present', auto = true,
+                   note = case when v_live then 'Made up — watched the class live' else 'Made up — watched the recording' end
+             where course_id = c.id and class_date = d and student_id = e.student_id;
+            v_changed := v_changed + 1;
+          elsif cur.auto and not v_ok then   -- the recording it counted was taken away
+            update attendance set status = 'absent', auto = false, note = ''
+             where course_id = c.id and class_date = d and student_id = e.student_id;
+            v_changed := v_changed + 1;
+          end if;
+          continue;
+        end if;
+
+        if cur.student_id is not null and not cur.auto then
+          if cur.status = 'absent' and v_ok then
+            update attendance set status = 'present', auto = true, note = v_note
+             where course_id = c.id and class_date = d and student_id = e.student_id;
+            v_changed := v_changed + 1;
+          end if;
+          continue;
+        end if;
+
+        if v_ok or v_closed then
+          insert into attendance_days (course_id, class_date, held, teacher_taken)
+          values (c.id, d, true, false) on conflict do nothing;
+          insert into attendance (course_id, class_date, student_id, status, auto, note)
+          values (c.id, d, e.student_id,
+                  case when v_ok then 'present' when v_lessons is null then 'excused' else 'absent' end, true,
+                  case when v_ok then v_note
+                       when v_lessons is null then 'No recording was posted for this class'
+                       when c.pace = 'self' then 'Not watched before the course ended'
+                       else 'Not watched within a week' end)
+          on conflict (course_id, class_date, student_id) do update
+            set status = excluded.status, note = excluded.note, auto = true
+            where attendance.status is distinct from excluded.status or attendance.note is distinct from excluded.note;
+          if found then v_changed := v_changed + 1; end if;
+        elsif cur.auto then
+          delete from attendance where course_id = c.id and class_date = d and student_id = e.student_id;
+          v_changed := v_changed + 1;
+        end if;
+      end loop;
+    end loop;
+  end loop;
+  return v_changed;
+end $$;
+
+-- A student's player reports which slices of a lecture have played. Only
+-- students enrolled in the (unarchived) course get credit; anyone else
+-- watching — e.g. from the Lecture Archive — is simply not recorded. The
+-- total can't grow faster than real time (at up to 2.5× speed), so it can't
+-- be faked by skipping around.
+create or replace function public.record_lesson_progress(p_lesson uuid, p_seen text, p_duration int default null)
+returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare l record; v record; v_bits bit(200); v_merged bit(200); v_n int; v_slice numeric; v_allow numeric;
+begin
+  select ls.*, c.archived into l from lessons ls join courses c on c.id = ls.course_id where ls.id = p_lesson;
+  if l.id is null or l.archived or l.hidden or l.status = 'removed' or not public.is_enrolled(l.course_id) then
+    return jsonb_build_object('counted', false);
+  end if;
+  if p_seen !~ '^[01]{200}$' then raise exception 'Bad progress report.'; end if;
+  v_bits := p_seen::bit(200);
+  v_slice := greatest(coalesce(l.duration_seconds, least(greatest(coalesce(p_duration, 3600), 60), 21600)), 60) / 200.0;
+  insert into lesson_views (lesson_id, student_id) values (p_lesson, auth.uid()) on conflict do nothing;
+  select * into v from lesson_views where lesson_id = p_lesson and student_id = auth.uid() for update;
+  v_merged := v.seen | v_bits;
+  v_n := length(replace(v_merged::text, '0', ''));
+  v_allow := extract(epoch from now() - v.first_at) * 2.5 + 2 * v_slice + 30;
+  if v_n * v_slice > v_allow then
+    v_merged := v.seen;  -- faster than possible; keep what we had
+    v_n := length(replace(v_merged::text, '0', ''));
+  end if;
+  update lesson_views set seen = v_merged, pct = round(v_n / 2.0, 1), last_at = now(),
+         completed_at = coalesce(completed_at, case when v_n >= 190 then now() end)
+   where lesson_id = p_lesson and student_id = auth.uid()
+   returning * into v;
+  if v.completed_at is not null then perform public.settle_online_attendance(l.course_id, auth.uid()); end if;
+  return jsonb_build_object('counted', true, 'pct', v.pct, 'completed', v.completed_at is not null);
+end $$;
+
+-- Is a course's class happening right now (from 15 minutes before it starts
+-- until 30 minutes after it should end)? Returns today's date if so.
+create or replace function public.class_in_session(p_course text) returns date
+language sql stable security definer set search_path = public as $$
+  select (n.t)::date
+    from courses c, (select now() at time zone 'America/Anchorage' as t) n
+   where c.id = p_course and not c.archived
+     and c.sched_time ~ '^[0-9]{1,2}:[0-9]{2}'
+     and (n.t)::date in (select public.course_class_dates(c.id))
+     and n.t >= (n.t)::date + c.sched_time::time - interval '15 minutes'
+     and n.t <  (n.t)::date + c.sched_time::time + make_interval(mins => c.class_minutes + 30)
+$$;
+
+-- While a student watches the live class inside the site, their player
+-- checks in once a minute. Returns their minutes so far and how many are
+-- needed (75% of the class).
+create or replace function public.record_live_minute(p_course text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare v_day date; v_min int; v_need int;
+begin
+  if not public.is_enrolled(p_course) then return jsonb_build_object('counted', false); end if;
+  v_day := public.class_in_session(p_course);
+  if v_day is null then return jsonb_build_object('counted', false, 'reason', 'not in session'); end if;
+  insert into live_presence (course_id, class_date, student_id, minutes, last_beat)
+  values (p_course, v_day, auth.uid(), 1, now())
+  on conflict (course_id, class_date, student_id) do update
+    set minutes = live_presence.minutes + 1, last_beat = now()
+    where live_presence.last_beat is null or live_presence.last_beat < now() - interval '50 seconds';
+  select minutes into v_min from live_presence where course_id = p_course and class_date = v_day and student_id = auth.uid();
+  select ceil(class_minutes * 0.75) into v_need from courses where id = p_course;
+  if v_min = v_need then perform public.settle_online_attendance(p_course, auth.uid()); end if;
+  return jsonb_build_object('counted', true, 'minutes', v_min, 'needed', v_need);
+end $$;
+
+-- Students choose how they attend; the teacher (or an Admin) can change it.
+create or replace function public.check_track(p_course text, p_track text) returns void
+language plpgsql stable security definer set search_path = public as $$
+declare c record;
+begin
+  select * into c from courses where id = p_course;
+  if c.id is null or c.archived then raise exception 'This course isn''t running.'; end if;
+  if p_track not in ('classroom','live','recorded') then raise exception 'Unknown way to attend.'; end if;
+  if c.format = 'in_person' and p_track <> 'classroom' then raise exception 'This course meets in person only.'; end if;
+  if c.format = 'online' and p_track = 'classroom' then raise exception 'This course is online only.'; end if;
+  if c.pace = 'self' and p_track <> 'recorded' then raise exception 'This course is self-paced (recorded lectures).'; end if;
+end $$;
+create or replace function public.set_my_track(p_course text, p_track text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_enrolled(p_course) then raise exception 'You aren''t enrolled in this course.'; end if;
+  perform public.check_track(p_course, p_track);
+  update enrollments set track = p_track, track_chosen = true where course_id = p_course and student_id = auth.uid();
+end $$;
+create or replace function public.set_student_track(p_course text, p_student uuid, p_track text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or an Admin can change that.'; end if;
+  perform public.check_track(p_course, p_track);
+  update enrollments set track = p_track, track_chosen = true where course_id = p_course and student_id = p_student;
+end $$;
+-- Self-paced: when a student's semester began (their dates count from it).
+create or replace function public.set_student_start(p_course text, p_student uuid, p_start date) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or an Admin can change that.'; end if;
+  if p_start is null then raise exception 'Choose a start date.'; end if;
+  update enrollments set start_on = p_start where course_id = p_course and student_id = p_student;
+  perform public.settle_online_attendance(p_course, p_student);
+end $$;
+
+-- "Check the playlist now" (teacher or Admin): the service picks it up
+-- within a minute.
+create or replace function public.request_playlist_sync(p_course text) returns void
+language plpgsql security definer set search_path = public as $$
+begin
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or an Admin can do that.'; end if;
+  insert into playlist_sync (course_id, playlist_id, requested_at)
+  values (p_course, (select playlist_id from courses where id = p_course), now())
+  on conflict (course_id) do update set requested_at = now();
+end $$;
+
+-- Used only by the service: which courses' playlists to read from YouTube
+-- now. Every 30 minutes normally; every 2 minutes around class time (to
+-- catch the live stream); daily for archived courses; at once when asked.
+create or replace function public.courses_due_for_sync(p_now timestamptz default now())
+returns table (course_id text, playlist_id text, extra_ids text[])
+language sql stable security definer set search_path = public as $$
+  select c.id, c.playlist_id,
+         array(select l.video_id from lessons l where l.course_id = c.id and not l.from_playlist and l.status <> 'removed'
+               union select nullif(c.live_video_id, '') where c.live_video_id <> '')
+    from courses c left join playlist_sync ps on ps.course_id = c.id
+   where (c.playlist_id <> '' or c.live_video_id <> ''
+          or exists (select 1 from lessons l where l.course_id = c.id and not l.from_playlist
+                       and (l.duration_seconds is null or l.status in ('live','upcoming') or l.notified_at is null)))
+     and (ps.synced_at is null
+          or ps.playlist_id is distinct from c.playlist_id
+          or ps.requested_at > ps.synced_at
+          or (not c.archived and ps.synced_at < p_now - interval '30 minutes')
+          or (not c.archived and ps.synced_at < p_now - interval '2 minutes'
+              and c.sched_time ~ '^[0-9]{1,2}:[0-9]{2}'
+              and ((p_now at time zone 'America/Anchorage')::date) in (select public.course_class_dates(c.id))
+              and (p_now at time zone 'America/Anchorage') between
+                    ((p_now at time zone 'America/Anchorage')::date + c.sched_time::time - interval '20 minutes')
+                and ((p_now at time zone 'America/Anchorage')::date + c.sched_time::time + make_interval(mins => c.class_minutes + 60)))
+          or (c.archived and ps.synced_at < p_now - interval '1 day'))
+   order by ps.synced_at nulls first
+   limit 10
+$$;
+
+-- Used only by the service: what YouTube says is in a course's playlist
+-- (p_items: [{video_id, title, position, duration, published_at,
+-- recorded_on, status, in_playlist}]), or why it couldn't be read.
+-- New lectures notify the online students; a stream going live notifies
+-- the live students. The very first reading of a playlist is quiet.
+create or replace function public.sync_course_lessons(p_course text, p_playlist text, p_items jsonb, p_error text default null)
+returns int
+language plpgsql security definer set search_path = public as $$
+declare v_first boolean; v_new int := 0; it jsonb; v_ids text[]; r record; c record; s record;
+begin
+  select * into c from courses where id = p_course;
+  if c.id is null then return 0; end if;
+  if p_error is not null then
+    insert into playlist_sync (course_id, playlist_id, synced_at, ok, error)
+    values (p_course, coalesce(p_playlist, ''), now(), false, left(p_error, 300))
+    on conflict (course_id) do update set playlist_id = excluded.playlist_id, synced_at = now(), ok = false, error = excluded.error;
+    return 0;
+  end if;
+  v_first := coalesce(p_playlist, '') <> ''
+             and not exists (select 1 from playlist_sync where course_id = p_course and synced_at is not null and ok
+                               and playlist_id = coalesce(p_playlist, ''));
+  v_ids := array(select x ->> 'video_id' from jsonb_array_elements(coalesce(p_items, '[]')) x where (x ->> 'in_playlist')::boolean);
+  if v_first then  -- everything already on the course counts as announced
+    update lessons set notified_at = coalesce(notified_at, now()), live_notified_at = coalesce(live_notified_at, now())
+     where course_id = p_course;
+  end if;
+  for it in select * from jsonb_array_elements(coalesce(p_items, '[]')) loop
+    continue when (it ->> 'video_id') !~ '^[A-Za-z0-9_-]{6,20}$';
+    if (it ->> 'in_playlist')::boolean then
+      continue when exists (select 1 from lessons where course_id = p_course and replaces = it ->> 'video_id');
+      insert into lessons (course_id, video_id, title, position, duration_seconds, published_at, recorded_on, status,
+                           from_playlist, notified_at, live_notified_at)
+      values (p_course, it ->> 'video_id', left(coalesce(it ->> 'title', ''), 300), coalesce((it ->> 'position')::int, 0),
+              nullif((it ->> 'duration')::int, 0), (it ->> 'published_at')::timestamptz, (it ->> 'recorded_on')::date,
+              coalesce(it ->> 'status', 'ok'), true,
+              case when v_first then now() end, case when v_first then now() end)
+      on conflict (course_id, video_id) do update
+        set title = case when lessons.from_playlist then excluded.title else lessons.title end,
+            position = case when lessons.from_playlist then excluded.position else lessons.position end,
+            duration_seconds = coalesce(excluded.duration_seconds, lessons.duration_seconds),
+            published_at = excluded.published_at, recorded_on = excluded.recorded_on, status = excluded.status,
+            from_playlist = lessons.from_playlist or excluded.from_playlist
+      returning (xmax = 0) as inserted into r;
+      if r.inserted then v_new := v_new + 1; end if;
+    else
+      update lessons set duration_seconds = coalesce(nullif((it ->> 'duration')::int, 0), duration_seconds),
+             status = coalesce(it ->> 'status', status),
+             title = case when title = '' then left(coalesce(it ->> 'title', ''), 300) else title end,
+             published_at = coalesce((it ->> 'published_at')::timestamptz, published_at),
+             recorded_on = coalesce((it ->> 'recorded_on')::date, recorded_on)
+       where course_id = p_course and video_id = it ->> 'video_id' and not from_playlist;
+    end if;
+  end loop;
+  -- taken out of the playlist (or the course moved to a different one)
+  update lessons set status = 'removed'
+   where course_id = p_course and from_playlist and status <> 'removed' and not (video_id = any (v_ids));
+
+  if not c.archived then
+    -- "Class is live now" → students attending live
+    for r in select * from lessons where course_id = p_course and status = 'live' and live_notified_at is null and not hidden loop
+      for s in select e.student_id from enrollments e join profiles p on p.id = e.student_id and p.status = 'active'
+                where e.course_id = p_course and public.student_track(p_course, e.student_id) = 'live' loop
+        perform public.notify(s.student_id, 'Class is live now: ' || c.title || ' — tap to watch', '/?live=' || p_course, 'live');
+      end loop;
+      update lessons set live_notified_at = now() where id = r.id;
+    end loop;
+    -- a new lecture is ready → online and self-paced students
+    for r in select * from lessons where course_id = p_course and status = 'ok' and notified_at is null and not hidden loop
+      for s in select e.student_id from enrollments e join profiles p on p.id = e.student_id and p.status = 'active'
+                where e.course_id = p_course and public.student_track(p_course, e.student_id) in ('live','recorded') loop
+        perform public.notify(s.student_id, 'New lecture posted in ' || c.title || ': ' || coalesce(nullif(r.title, ''), 'Lecture'),
+                              '/?lesson=' || r.id, 'lecture');
+      end loop;
+      update lessons set notified_at = now(), live_notified_at = coalesce(live_notified_at, now()) where id = r.id;
+    end loop;
+  end if;
+
+  insert into playlist_sync (course_id, playlist_id, synced_at, ok, error, video_count)
+  values (p_course, coalesce(p_playlist, ''), now(), true, '', coalesce(array_length(v_ids, 1), 0))
+  on conflict (course_id) do update
+    set playlist_id = excluded.playlist_id, synced_at = now(), ok = true, error = '', video_count = excluded.video_count;
+  return v_new;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Privacy for the lecture tables
+-- ---------------------------------------------------------------------------
+alter table public.lessons       enable row level security;
+alter table public.lesson_views  enable row level security;
+alter table public.live_presence enable row level security;
+alter table public.live_chat     enable row level security;
+alter table public.playlist_sync enable row level security;
+
+create or replace function public.lesson_course(p_lesson uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select course_id from lessons where id = p_lesson
+$$;
+
+drop policy if exists lessons_select on public.lessons;
+drop policy if exists lessons_insert on public.lessons;
+drop policy if exists lessons_update on public.lessons;
+drop policy if exists lessons_delete on public.lessons;
+drop policy if exists views_select on public.lesson_views;
+drop policy if exists live_select on public.live_presence;
+drop policy if exists chat_select on public.live_chat;
+drop policy if exists chat_insert on public.live_chat;
+drop policy if exists chat_delete on public.live_chat;
+drop policy if exists psync_select on public.playlist_sync;
+
+-- Lectures: faculty see all; enrolled students see the course's lectures;
+-- every active student can watch past (archived) courses' lectures in the
+-- Lecture Archive — no credit there.
+create policy lessons_select on public.lessons for select to authenticated
+  using (public.is_faculty() or public.is_super_admin()
+         or (not hidden and status <> 'removed' and public.is_enrolled(course_id))
+         or (not hidden and status = 'ok' and public.is_active_user()
+             and exists (select 1 from courses c where c.id = course_id and c.archived)));
+create policy lessons_insert on public.lessons for insert to authenticated with check (public.manages_course(course_id));
+create policy lessons_update on public.lessons for update to authenticated using (public.manages_course(course_id)) with check (public.manages_course(course_id));
+create policy lessons_delete on public.lessons for delete to authenticated using (public.manages_course(course_id));
+
+-- Watching records: like grades — the student and the course's teacher.
+create policy views_select on public.lesson_views for select to authenticated
+  using ((student_id = auth.uid() and public.is_active_user()) or public.teaches_course(public.lesson_course(lesson_id)));
+create policy live_select on public.live_presence for select to authenticated
+  using ((student_id = auth.uid() and public.is_active_user()) or public.teaches_course(course_id));
+
+-- Live class chat: the class and its teacher (and Admins).
+create policy chat_select on public.live_chat for select to authenticated
+  using (public.is_enrolled(course_id) or public.manages_course(course_id));
+create policy chat_insert on public.live_chat for insert to authenticated
+  with check (author_id = auth.uid() and (public.is_enrolled(course_id) or public.manages_course(course_id))
+              and exists (select 1 from courses c where c.id = course_id and not c.archived));
+create policy chat_delete on public.live_chat for delete to authenticated
+  using (author_id = auth.uid() or public.manages_course(course_id));
+
+create policy psync_select on public.playlist_sync for select to authenticated
+  using (public.is_faculty() or public.is_super_admin());
+
+revoke insert, update, delete on public.lesson_views, public.live_presence, public.playlist_sync from authenticated;
+revoke update on public.live_chat from authenticated;
+-- Enrollment changes for tracks/start dates go through their functions.
+revoke update on public.enrollments from authenticated;
+
+revoke execute on function public.student_track(text, uuid) from public, anon, authenticated;
+revoke execute on function public.student_shift(text, uuid) from public, anon, authenticated;
+revoke execute on function public.settle_online_attendance(text, uuid) from public, anon, authenticated;
+revoke execute on function public.courses_due_for_sync(timestamptz) from public, anon, authenticated;
+revoke execute on function public.sync_course_lessons(text, text, jsonb, text) from public, anon, authenticated;
+revoke execute on function public.check_track(text, text) from public, anon, authenticated;
+revoke execute on function public.lesson_schedule(text) from public, anon;
+revoke execute on function public.lesson_course(uuid) from public, anon;
+revoke execute on function public.class_in_session(text) from public, anon;
+revoke execute on function public.record_lesson_progress(uuid, text, int) from public, anon;
+revoke execute on function public.record_live_minute(text) from public, anon;
+revoke execute on function public.set_my_track(text, text) from public, anon;
+revoke execute on function public.set_student_track(text, uuid, text) from public, anon;
+revoke execute on function public.set_student_start(text, uuid, date) from public, anon;
+revoke execute on function public.request_playlist_sync(text) from public, anon;
+grant execute on function public.lesson_schedule(text) to authenticated;
+grant execute on function public.lesson_course(uuid) to authenticated;
+grant execute on function public.class_in_session(text) to authenticated;
+grant execute on function public.record_lesson_progress(uuid, text, int) to authenticated;
+grant execute on function public.record_live_minute(text) to authenticated;
+grant execute on function public.set_my_track(text, text) to authenticated;
+grant execute on function public.set_student_track(text, uuid, text) to authenticated;
+grant execute on function public.set_student_start(text, uuid, date) to authenticated;
+grant execute on function public.request_playlist_sync(text) to authenticated;
+
+-- Every lecture this person can see, with the class day it belongs to (one
+-- call for the whole site).
+create or replace function public.visible_lesson_dates() returns table (lesson_id uuid, class_date date)
+language sql stable set search_path = public as $$
+  select ls.lesson_id, ls.class_date
+    from (select distinct course_id from public.lessons) l, lateral public.lesson_schedule(l.course_id) ls
+$$;
+revoke execute on function public.visible_lesson_dates() from public, anon;
+grant execute on function public.visible_lesson_dates() to authenticated;
