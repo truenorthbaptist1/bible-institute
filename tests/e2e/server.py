@@ -17,8 +17,9 @@ PASSWORDS = {}
 PORT = 8765
 TABLES = {"profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments", "submissions",
           "discussion_posts", "messages", "notifications", "bible_highlights", "attendance_days", "attendance", "push_subscriptions",
-          "class_cancellations", "announcements", "transcript_entries", "past_records"}
-SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status"}
+          "class_cancellations", "announcements", "transcript_entries", "past_records",
+          "lessons", "lesson_views", "live_presence", "live_chat", "playlist_sync"}
+SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status", "visible_lesson_dates"}
 IDENT = lambda s: '"' + str(s).replace('"', '') + '"'
 
 
@@ -51,6 +52,10 @@ def where(filters):
     for col, op, val in filters:
         if op == "eq":
             parts.append(f"{IDENT(col)} = {lit(val)}")
+        elif op == "gt":
+            parts.append(f"{IDENT(col)} > {lit(val)}")
+        elif op == "gte":
+            parts.append(f"{IDENT(col)} >= {lit(val)}")
         elif op == "in":
             parts.append(f"{IDENT(col)} in ({', '.join(lit(x) for x in val) or 'NULL'})" if val else "false")
     return (" where " + " and ".join(parts)) if parts else ""

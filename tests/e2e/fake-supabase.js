@@ -28,6 +28,8 @@
       delete() { this.q.op = "delete"; return this; }
       eq(c, v) { this.q.filters.push([c, "eq", v]); return this; }
       in(c, v) { this.q.filters.push([c, "in", v]); return this; }
+      gt(c, v) { this.q.filters.push([c, "gt", v]); return this; }
+      gte(c, v) { this.q.filters.push([c, "gte", v]); return this; }
       order(c, o) { this.q.order.push([c, !o || o.ascending !== false]); return this; }
       range(a, b) { this.q.range = [a, b]; return this; }
       limit(n) { this.q.limit = n; return this; }

@@ -13,7 +13,7 @@ rules (via tests/e2e/server.py). Walks a compressed semester:
 
 Any uncaught JavaScript error on any page fails the run.
 """
-import json, os, re, sys, time, datetime
+import json, os, re, sys, time, datetime, subprocess
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("BASE", "http://localhost:8765")
@@ -46,6 +46,10 @@ def check(cond, what):
 
 REAL_JSPDF = open(os.path.join(HERE, "vendor", "jspdf.umd.min.js")).read()
 
+import base64 as _b64
+_PNG = _b64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEUlEQVR4nGPY0GuPFTEMLQkAOzNfAVOXhvQAAAAASUVORK5CYII=")
+def base64_png(): return _PNG
+
 def new_page(browser, name, google_email=None, mobile=False, tour=False, real_pdf=False):
     ctx = browser.new_context(viewport={"width": 390, "height": 844} if mobile else {"width": 1280, "height": 900},
                               device_scale_factor=2 if mobile else 1, is_mobile=mobile, has_touch=mobile, accept_downloads=True)
@@ -58,6 +62,9 @@ def new_page(browser, name, google_email=None, mobile=False, tour=False, real_pd
     ctx.route(re.compile(r".*dompurify.*"), lambda r: r.fulfill(body=FAKE_PURIFY, content_type="application/javascript"))
     ctx.route(re.compile(r".*jspdf.*"), lambda r: r.fulfill(body=REAL_JSPDF if real_pdf else FAKE_JSPDF, content_type="application/javascript"))
     ctx.route(re.compile(r".*fonts\.(googleapis|gstatic)\.com.*"), lambda r: r.abort())
+    ctx.route(re.compile(r".*youtube\.com/iframe_api.*"), lambda r: r.fulfill(body=FAKE_YT, content_type="application/javascript"))
+    ctx.route(re.compile(r".*i\.ytimg\.com.*"), lambda r: r.fulfill(body=base64_png(), content_type="image/png"))
+    ctx.add_init_script("window.TNBBI_TEST_LIVE_BEAT = 3000;")
     ctx.route(re.compile(r".*/js/config\.js$"), lambda r: r.fulfill(body=CONFIG, content_type="application/javascript"))
     page = ctx.new_page()
     page.on("pageerror", lambda e: errors.append(f"[{name}] {e}"))
@@ -65,6 +72,39 @@ def new_page(browser, name, google_email=None, mobile=False, tour=False, real_pd
     page.on("dialog", lambda dlg: dlg.accept())
     page.goto(BASE + "/")
     return page
+
+# The fake YouTube player (youtube.com isn't reachable from the test machine):
+# plays in real time, reports state/time like the real IFrame API.
+FAKE_YT = """
+(function () {
+  window.__yt = { players: [] };
+  function Player(id, opts) {
+    var el = document.getElementById(id), self = this, state = 5, t = 0, last = null, timer = null;
+    var dur = (window.__ytDur && window.__ytDur[opts.videoId]) || 20;
+    if (el) { el.className = 'fake-yt'; el.textContent = 'YouTube ' + opts.videoId; el.setAttribute('data-video', opts.videoId); }
+    function fire(s) { state = s; if (opts.events && opts.events.onStateChange) opts.events.onStateChange({ data: s }); }
+    this.videoId = opts.videoId;
+    this.playVideo = function () { if (timer) return; fire(1); last = Date.now(); timer = setInterval(function () {
+      var now = Date.now(); t = Math.min(dur, t + (now - last) / 1000); last = now;
+      if (t >= dur) { clearInterval(timer); timer = null; fire(0); } }, 200); };
+    this.pauseVideo = function () { if (timer) { clearInterval(timer); timer = null; } fire(2); };
+    this.getPlayerState = function () { return state; };
+    this.getCurrentTime = function () { return t; };
+    this.getDuration = function () { return dur; };
+    this.destroy = function () { if (timer) clearInterval(timer); };
+    window.__yt.players.push(this); window.__yt.last = this;
+    setTimeout(function () { if (opts.events && opts.events.onReady) opts.events.onReady({ target: self }); }, 50);
+  }
+  window.YT = { Player: Player, PlayerState: { PLAYING: 1 } };
+  setTimeout(function () { if (window.onYouTubeIframeAPIReady) window.onYouTubeIframeAPIReady(); }, 0);
+})();
+"""
+
+# Straight to the test database — standing in for the behind-the-scenes
+# service (which reads YouTube playlists) and for setting a scene quickly.
+def psql(q):
+    return subprocess.run(["psql", "-h", "/var/tmp/pgtest", "-p", "5499", "-U", "postgres", "-d", "t", "-At", "-v", "ON_ERROR_STOP=1", "-q"],
+                          input=q, capture_output=True, text=True, check=True).stdout.strip()
 
 def settle(page):
     page.wait_for_timeout(150)
@@ -162,6 +202,18 @@ with sync_playwright() as p:
     admin.set_input_files("#mgAddFile", files=[{"name": "Hermeneutics Syllabus.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4 syllabus"}])
     settle(admin)
     check("Hermeneutics Syllabus.pdf" in admin.inner_text("#mgMaterialsList"), "syllabus uploaded to course materials")
+    admin.check("#mgAddTeacherOnly")
+    admin.set_input_files("#mgAddFile", files=[{"name": "Final Exam Answer Key.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4 key"}])
+    settle(admin)
+    key_row = admin.locator("#mgMaterialsList li", has_text="Final Exam Answer Key.pdf")
+    check(key_row.locator(".pill-teacher").count() == 1 and key_row.locator("[data-teacher-only]").is_checked(), "answer key added as Teachers only")
+    syl_row = admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf")
+    check(not syl_row.locator("[data-teacher-only]").is_checked(), "the syllabus stays visible to the class")
+    syl_row.locator("[data-teacher-only]").check(); settle(admin)
+    check(admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf").locator(".pill-teacher").count() == 1, "checking the box makes a document teachers-only")
+    admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf").locator("[data-teacher-only]").uncheck(); settle(admin)
+    check(admin.locator("#mgMaterialsList li", has_text="Hermeneutics Syllabus.pdf").locator(".pill-teacher").count() == 0, "unchecking shares it with the class again")
+    admin.uncheck("#mgAddTeacherOnly")
     admin.set_input_files("#mgAddFile", files=[{"name": "virus.exe", "mimeType": "application/octet-stream", "buffer": b"MZ"}])
     admin.wait_for_selector(".toast-error");
     check("isn't an allowed file type" in admin.inner_text(".toast-wrap"), "a disallowed file type is refused with a clear message")
@@ -187,6 +239,7 @@ with sync_playwright() as p:
     check("Hermeneutics I" in body(blake), "Blake sees Hermeneutics I under Enrolled")
     blake.locator(".tile h3", has_text="Hermeneutics I").click(); settle(blake)
     check("Hermeneutics Syllabus.pdf" in body(blake), "Blake sees the uploaded syllabus")
+    check("Answer Key" not in body(blake), "Blake does NOT see the teachers-only answer key")
     blake.locator("[data-open-material]").first.click()
     blake.wait_for_selector(".doc-viewer")
     blake.wait_for_selector(".doc-pages, .doc-frame", timeout=15000)
@@ -772,6 +825,133 @@ with sync_playwright() as p:
     check(admin.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1"), "Past Records fits a phone screen (no sideways scrolling)")
     admin.set_viewport_size({"width": 1280, "height": 900}); admin.wait_for_timeout(200)
 
+    print("12j. Oct 9: hybrid & online courses — lectures, live class, tracks")
+    nav(admin, "Dashboard"); tile(admin, "Courses")
+    admin.click("#catAddCourse"); admin.wait_for_selector("#cbName")
+    admin.fill("#cbName", "Romans (Hybrid)")
+    admin.locator("label.fmt-choice", has_text="Hybrid").click()
+    check(admin.locator("#cbLiveWrap").is_visible() and not admin.locator("#cbPaceWrap").is_visible(), "Hybrid shows the live settings (self-paced is for Online courses)")
+    admin.fill("#cbPlaylist", "not a link")
+    admin.click("#cbSave"); admin.wait_for_selector(".toast-error")
+    check("playlist link" in admin.inner_text(".toast-wrap"), "a bad playlist link is caught with a clear message")
+    admin.fill("#cbPlaylist", "https://www.youtube.com/playlist?list=PLromans12345")
+    admin.screenshot(path=f"{SHOTS}/12j-add-hybrid-course.png", full_page=True)
+    admin.click("#cbSave"); settle(admin)
+    cid = psql("select id from public.courses where title = 'Romans (Hybrid)'")
+    check(psql(f"select format || ',' || playlist_id || ',' || (select count(*) from public.playlist_sync where course_id = '{cid}') from public.courses where id = '{cid}'") == "hybrid,PLromans12345,1",
+          "the course is saved as Hybrid with its playlist, and a playlist check is requested")
+    blake_id = psql("select id from public.profiles where email = 'blake@example.com'")
+    amber_id = psql("select id from public.profiles where email = 'amber@example.com'")
+    psql(f"""update public.courses set sched_mode = 'scheduled', sched_start = public.local_today() - 14, sched_weeks = 8,
+               sched_days = array['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],
+               sched_time = to_char((now() at time zone 'America/Anchorage') - interval '5 minutes', 'HH24:MI'),
+               attendance_on = true, attendance_weight = 10 where id = '{cid}';
+             insert into public.enrollments (course_id, student_id) values ('{cid}', '{blake_id}'), ('{cid}', '{amber_id}');""")
+    # The service reads the playlist from YouTube (simulated):
+    items = [
+        {"video_id": "ROMvid00001", "title": "Romans 1 — The Gospel of God", "position": 0, "duration": 20, "status": "ok", "in_playlist": True, "recorded_on": d(-7)},
+        {"video_id": "ROMvid00002", "title": "Romans 3 — Justified Freely", "position": 1, "duration": 20, "status": "ok", "in_playlist": True, "recorded_on": d(-1)},
+        {"video_id": "ROMlive0003", "title": "Romans 5 — Live", "position": 2, "status": "live", "in_playlist": True, "recorded_on": d(0)},
+    ]
+    psql(f"select public.sync_course_lessons('{cid}', 'PLromans12345', '{json.dumps(items)}'::jsonb)")
+    admin.reload(); admin.wait_for_selector("#main .page-header"); settle(admin)
+    nav(admin, "Dashboard"); tile(admin, "Courses")
+    admin.locator(".tile h3", has_text="Romans (Hybrid)").click(); settle(admin)
+    lc = admin.inner_text("#mgLecturesCard")
+    check("Hybrid" in lc and "Romans 3" in lc and "LIVE NOW" in lc.upper() and "3 videos" in lc, "Lectures card: format, the playlist's lectures, and the live stream")
+    admin.screenshot(path=f"{SHOTS}/12j-lectures-card.png", full_page=True)
+
+    # Blake chooses recordings and watches a lecture
+    nav(blake, "Dashboard"); tile(blake, "My Courses")
+    blake.locator(".tile h3", has_text="Romans (Hybrid)").click(); settle(blake)
+    check(blake.locator("#attendChoose").count() == 1, "a new student is asked how they'll attend")
+    check(blake.locator("#watchLive").count() == 1, "class is in session: a Watch Live button appears")
+    blake.screenshot(path=f"{SHOTS}/12j-student-course.png", full_page=True)
+    blake.locator("[data-track=recorded]").click(); settle(blake)
+    check("You watch the recorded lectures" in body(blake) and blake.locator("#attendChoose").count() == 0, "Blake picks recorded lectures")
+    check(blake.locator(".lecture-row").count() == 2, "both posted lectures are listed (the live one is under Watch Live)")
+    blake.locator(".lecture-row", has_text="Romans 3").locator("button").click(); settle(blake)
+    blake.wait_for_selector(".fake-yt")
+    check(blake.locator("[data-video=ROMvid00002]").count() == 1 and "0% watched" in blake.inner_text("#watchText"), "the lecture opens in the site's player")
+    blake.evaluate("window.__yt.last.playVideo()")
+    blake.wait_for_function("document.getElementById('watchText') && document.getElementById('watchText').innerText.includes('Watched')", timeout=60000)
+    check(True, "watching the whole lecture marks it watched")
+    blake.wait_for_timeout(1500)
+    check(psql(f"select status || ',' || auto from public.attendance where course_id = '{cid}' and student_id = '{blake_id}' and class_date = public.local_today() - 1") == "present,true",
+          "…and counts Blake present for that class day, automatically")
+    blake.screenshot(path=f"{SHOTS}/12j-lecture.png", full_page=True)
+    blake.click("#backLink"); settle(blake)
+    check("✓ Watched" in blake.inner_text(".lecture-row >> nth=0"), "back on the course, the lecture shows ✓ Watched")
+
+    # Amber, on a phone, attends live and asks a question
+    amberp = new_page(browser, "amber-phone", mobile=True)
+    amberp.wait_for_selector("#signinForm")
+    amberp.fill("#siEmail", "amber@example.com"); amberp.fill("#siPassword", "faithful123")
+    amberp.locator("#signinForm button[type=submit]").click(); amberp.wait_for_selector("#main .page-header", timeout=15000); settle(amberp)
+    tile(amberp, "My Courses")
+    amberp.locator(".tile h3", has_text="Romans (Hybrid)").click(); settle(amberp)
+    amberp.locator("[data-track=live]").click(); settle(amberp)
+    amberp.click("#watchLive"); settle(amberp)
+    amberp.wait_for_selector("[data-video=ROMlive0003]", timeout=15000)
+    check(True, "Watch Live opens the live stream inside the site")
+    amberp.evaluate("window.__yt.last.playVideo()")
+    amberp.wait_for_function("document.getElementById('liveCountText') && /1 of \\d+ minutes/.test(document.getElementById('liveCountText').innerText)", timeout=20000)
+    check(True, "watching live is counted, minute by minute")
+    amberp.fill("#chatInput", "Does verse 8 mean God's love came first?")
+    amberp.locator("#chatForm button").click()
+    amberp.wait_for_selector(".chat-msg.chat-mine", timeout=10000)
+    check("verse 8" in amberp.inner_text("#chatList"), "Amber's question appears in the class chat")
+    amberp.screenshot(path=f"{SHOTS}/12j-live-phone.png", full_page=True)
+    w = amberp.evaluate("[document.documentElement.scrollWidth, window.innerWidth]")
+    check(w[0] <= w[1] + 1, "the live class fits a phone screen (no sideways scrolling)")
+
+    # The teacher reads and answers it from the Live Class page
+    admin.click("#lectOpenLive"); settle(admin)
+    admin.wait_for_selector(".chat-msg", timeout=10000)
+    check("verse 8" in admin.inner_text("#chatList"), "the teacher sees the question")
+    admin.wait_for_function("document.getElementById('liveWatchers') && document.getElementById('liveWatchers').innerText.includes('Amber')", timeout=35000)
+    check("1" in admin.inner_text("#liveWatchers"), "…and who's watching online right now")
+    admin.fill("#chatInput", "Yes — while we were yet sinners.")
+    admin.locator("#chatForm button").click()
+    amberp.wait_for_selector(".chat-msg.chat-teacher", timeout=10000)
+    check("yet sinners" in amberp.inner_text("#chatList"), "Amber gets the teacher's answer, marked Teacher")
+    admin.screenshot(path=f"{SHOTS}/12j-live-teacher.png", full_page=True)
+    admin.click("#backLink"); settle(admin)
+
+    # Online students on the attendance screen
+    admin.click("#mgTakeAttendance"); settle(admin)
+    oa = admin.inner_text("#main")
+    check("Online — counted automatically" in oa and "Amis, Blake" in oa and "Amis, Amber" in oa, "online students are listed separately, counted automatically")
+    admin.screenshot(path=f"{SHOTS}/12j-attendance-online.png", full_page=True)
+    admin.click("#backLink"); settle(admin)
+    check(admin.locator("[data-track-for]").count() == 2, "the roster shows how each student attends")
+
+    # Teacher tools: add a video by link, hide one
+    admin.fill("#lectAddUrl", "https://youtu.be/ABCDEFGHIJK"); admin.fill("#lectAddTitle", "Romans 8 (guest)")
+    admin.locator("#lectAddForm button").click(); settle(admin)
+    check("Romans 8 (guest)" in admin.inner_text("#mgLecturesCard") and "Added by link" in admin.inner_text("#mgLecturesCard"), "a video can be added by link")
+    admin.locator(".lect-admin-row", has_text="Romans 1").locator("[data-hide-lesson]").click(); settle(admin)
+    check(admin.locator(".lect-admin-row", has_text="Romans 1").locator(".pill", has_text="Hidden").count() == 1, "…and a lecture hidden from students")
+    nav(blake, "Dashboard"); tile(blake, "My Courses")
+    blake.locator(".tile h3", has_text="Romans (Hybrid)").click(); settle(blake)
+    check("Romans 1" not in blake.inner_text(".lecture-list"), "the hidden lecture disappears for students")
+
+    # Lecture Archive
+    psql(f"""insert into public.courses (id, title, archived) values ('arch1', 'Church History I (2023)', true);
+             insert into public.lessons (course_id, video_id, title, duration_seconds) values ('arch1', 'CHvideo0001', 'The Apostolic Age', 20);""")
+    blake.reload(); blake.wait_for_selector("#main .page-header"); settle(blake)
+    nav(blake, "Resource Library")
+    blake.click("#openLectureArchive"); settle(blake)
+    blake.locator("[data-arch-course=arch1]").click(); settle(blake)
+    blake.locator("[data-arch-lesson]").first.click(); settle(blake)
+    blake.wait_for_selector(".fake-yt")
+    check("doesn't count toward any course" in body(blake), "past lectures play from the Lecture Archive, clearly for study only")
+    blake.click("#backLink"); settle(blake)
+    amberp.context.close()
+    # (Done with Romans: it goes to the archive so it doesn't meet "today" in later checks.)
+    psql(f"update public.courses set archived = true where id = '{cid}'")
+    admin.reload(); admin.wait_for_selector("#main .page-header"); settle(admin)
+
     print("13. Settings: levels (Student / Faculty / Admin), deactivate")
     nav(admin, "Dashboard"); tile(admin, "Settings")
     check(admin.locator(".user-row", has_text="Blake Amis").locator("button[data-level=admin]").count() == 1, "an Admin sets each person's level: Student / Faculty / Admin")
@@ -915,7 +1095,7 @@ with sync_playwright() as p:
     phone.screenshot(path=f"{SHOTS}/12-phone-profile.png", full_page=True)
 
     print("15b. Updates reach people without a hard refresh")
-    check(len(admin.evaluate("Object.keys(window.TNBBI_VERSIONS || {})")) == 9, "every site file was version-checked on load")
+    check(len(admin.evaluate("Object.keys(window.TNBBI_VERSIONS || {})")) == 10, "every site file was version-checked on load")
     check(admin.locator(".site-update-bar").count() == 0, "no update notice when nothing changed")
     admin.evaluate("checkForSiteUpdate(true)"); admin.wait_for_timeout(500)
     check(admin.locator(".site-update-bar").count() == 0, "…still none after a check")
