@@ -1828,6 +1828,20 @@ body { background-image: var(--paper), radial-gradient(1200px 380px at 50% -120p
 .pf-table th, .pf-table td { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--border); }
 .pf-table select { margin: 0; width: auto; }
 .pf-sum { font-size: .86rem; margin: 6px 0 0; }
+.pf-from { color: var(--muted-foreground); font-size: .8rem; white-space: nowrap; }
+.pf-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 0 0 10px; }
+.pf-tab { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; border-bottom: 3px solid transparent; padding: 8px 12px; font: inherit; font-size: .88rem; color: var(--muted-foreground); cursor: pointer; margin-bottom: -1px; }
+.pf-tab svg { width: 16px; height: 16px; }
+.pf-tab.active { color: var(--foreground); border-bottom-color: var(--gold); font-weight: 600; }
+.pf-mat-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.pf-mat-tools input[type="search"] { flex: 1; min-width: 160px; margin: 0; padding: 8px 14px; border: 1px solid var(--border); border-radius: 999px; font: inherit; font-size: .88rem; background: var(--surface); color: var(--foreground); }
+.pf-mats { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.pf-mats li + li { border-top: 1px solid var(--border); }
+.pf-mats label { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin: 0; font-size: .88rem; font-weight: 400; cursor: pointer; }
+.pf-mats input[type="checkbox"] { width: auto; margin: 0; flex: none; }
+.pf-mat-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pf-tag { font-size: .72rem; padding: 1px 7px; border-radius: 999px; background: var(--muted, rgba(0,0,0,.06)); color: var(--muted-foreground); white-space: nowrap; }
+.pf-tag-used { background: rgba(201,162,39,.16); color: inherit; }
 @media (max-width: 700px) {
   .plan-row { flex-wrap: wrap; gap: 8px 12px; }
   .plan-date { width: auto; flex-direction: row; gap: 8px; align-items: baseline; }
