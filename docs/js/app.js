@@ -509,7 +509,7 @@ function renderAuthScreen() {
       </div>
       <div class="auth-card">
         <div class="auth-logo">
-          <img src="brand/tnbbi-logo-color.png" alt="True North Baptist Church Bible Institute crest">
+          <img src="brand/tnbbi-logo-color.png" alt="True North Baptist Church Bible Institute crest" width="150" height="149">
           <div>
             <div class="auth-logo-title">True North Baptist Church</div>
             <div class="auth-logo-sub">Bible Institute</div>
@@ -986,6 +986,7 @@ window.addEventListener("pageshow", checkIdle);
 window.addEventListener("storage", (e) => { if (e.key === IDLE_KEY) hideIdleWarning(); });
 
 async function signOut(message) {
+  if (typeof navReset === "function") navReset();
   hideIdleWarning();
   clearInterval(pollTimer);
   clearInterval(pendingTimer);
@@ -1041,7 +1042,10 @@ function clearViewTimers() {
 
 function renderNav() {
   const nav = document.getElementById("navPills");
-  const items = [{ key: "home", label: "Dashboard" }, { key: "calendar", label: "Calendar" }, { key: "studyBible", label: "Study Bible" }, { key: "resourceLibrary", label: "Resource Library" }];
+  // Every page is on the dashboard menu, so the header holds no page
+  // buttons; the crest at the top left is the way home from anywhere.
+  const items = [];
+  nav.hidden = true;
   const homeViews =
     role === "student"
       ? ["home", "courses", "course", "grades", "messages", "messageThread", "submit", "discussion", "discussionBoard", "profile"]
@@ -1053,6 +1057,11 @@ function renderNav() {
     })
     .join("");
   nav.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { view = "home"; activeCourseId = null; profileUserId = null; if (b.dataset.view !== "home") view = b.dataset.view; renderNav(); renderMain(); }));
+  const brand = document.getElementById("brandHome");
+  if (brand && !brand.dataset.wired) {
+    brand.dataset.wired = "1";
+    brand.addEventListener("click", () => { view = "home"; activeCourseId = null; profileUserId = null; renderNav(); renderMain(); window.scrollTo(0, 0); });
+  }
 }
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
@@ -1133,7 +1142,14 @@ function renderMain() {
   renderView();
 }
 
+// Draws the current page, then records it so the browser's Back button
+// steps back through the site (navRecord, in home.js).
 function renderView() {
+  const r = drawView();
+  if (typeof navRecord === "function") navRecord();
+  return r;
+}
+function drawView() {
   const main = document.getElementById("main");
   if (!currentUser) return;
   // Leaving a lecture or the live class stops its player (and saves progress).

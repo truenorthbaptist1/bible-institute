@@ -42,6 +42,12 @@ function greetingWord(d = new Date()) {
   const h = d.getHours();
   return h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
 }
+// A teacher's last name for "Professor Smith" — skipping Jr., Sr., II, III…
+function surname(name) {
+  const parts = String(name || "").trim().replace(/,/g, "").split(/\s+/).filter(Boolean);
+  while (parts.length > 1 && /^(jr|sr|ii|iii|iv|v|phd|dr|md)\.?$/i.test(parts[parts.length - 1])) parts.pop();
+  return parts.length > 1 ? parts[parts.length - 1] : (parts[0] || "");
+}
 function isSmallScreen() { return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches); }
 function photoLayerHtml(name) {
   return `<div class="slides" aria-hidden="true"><div class="slide on" style="background-image:url('${photoUrl(name, isSmallScreen())}')"></div></div>`;
@@ -50,7 +56,7 @@ function photoLayerHtml(name) {
 // --- the dashboard banner ------------------------------------------------------
 function heroHtml(kind) {
   const first = currentUser && currentUser.name ? currentUser.name.trim().split(/\s+/)[0] : "";
-  const who = kind === "teacher" ? (first ? `Professor ${esc(first)}` : "Professor") : esc(first || "friend");
+  const last = surname(currentUser && currentUser.name);
   const v = todaysVerse(kind);
   const date = new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   return `<section class="hero page-header">
@@ -58,7 +64,9 @@ function heroHtml(kind) {
     <div class="hero-shade"></div>
     <div class="hero-inner">
       <div class="hero-eyebrow">${kind === "teacher" ? esc(staffEyebrow()) : "Student Dashboard"} · ${esc(date)}</div>
-      <h1 class="hero-title">${greetingWord()}, ${who}</h1>
+      <h1 class="hero-title">${kind === "teacher"
+        ? `Welcome, Professor${last ? " " + esc(last) : ""}`
+        : `${greetingWord()}, ${esc(first || "friend")}`}</h1>
       <button type="button" class="hero-verse" data-verse="${v.key}" title="Read it in the Study Bible">
         <span class="hero-verse-text">“${esc(v.text)}”</span>
         <span class="hero-verse-ref">${esc(v.ref)} ${icon("bible")}</span>

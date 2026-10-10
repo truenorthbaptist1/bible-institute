@@ -71,6 +71,32 @@ function askConfirm(opts) {
 // ---------------------------------------------------------------------------
 // Students: This Week
 // ---------------------------------------------------------------------------
+// Class meetings from now through the next `days` days, soonest first. A day
+// the teacher canceled stays in the list, marked canceled, so nobody shows up
+// to an empty room. Self-paced courses and courses with no class time have
+// no meetings to list.
+function upcomingClasses(list, days = 7) {
+  const now = alaskaParts();
+  const until = addDaysISO(now.date, days);
+  const out = [];
+  list.forEach((c) => {
+    if (c.archived || c.pace === "self" || !c.schedule) return;
+    const start = timeMins(c.schedule.time);
+    if (start === null) return;
+    scheduledDates(c).forEach((d) => {
+      if (d < now.date || d > until) return;
+      if (d === now.date && now.mins >= start + (c.classMinutes || 90) + 30) return; // already over
+      out.push({ c, date: d, at: alaskaMoment(d, c.schedule.time), canceled: isCanceled(c, d) });
+    });
+  });
+  return out.sort((x, y) => x.at - y.at);
+}
+function classDayWord(d) {
+  const today = todayStr();
+  if (d === today) return "Today";
+  if (d === addDaysISO(today, 1)) return "Tomorrow";
+  return "";
+}
 function myActiveCourses() {
   return courses.filter((c) => !c.archived && c.studentIds.includes(currentStudentId));
 }
@@ -110,11 +136,14 @@ function thisWeekItems() {
     if (l) lectures.push({ c, l, by: lessonWatchBy(c, l, sid) });
   });
   lectures.sort((x, y) => x.by.localeCompare(y.by));
-  return { mine, next, live, due, lectures };
+  // Classes this student has to be at (in the room, or watching live) — not
+  // courses they follow by recording.
+  const classes = upcomingClasses(mine.filter((c) => effTrack(c, sid) !== "recorded"));
+  return { mine, next, live, due, lectures, classes };
 }
 
 function thisWeekCardHtml() {
-  const { mine, next, live, due, lectures } = thisWeekItems();
+  const { mine, live, due, lectures, classes } = thisWeekItems();
   if (!mine.length) {
     return `<div class="card week-card">
       <div class="week-head"><h2>${icon("calendar")} This Week</h2></div>
@@ -141,12 +170,7 @@ function thisWeekCardHtml() {
       <span class="week-sum">${open.length ? `${open.length} to do` : "✓ All caught up"}</span>
     </div>
     ${live.map((c) => `<button type="button" class="week-live" data-week-live="${c.id}"><span class="live-dot" aria-hidden="true"></span><span><strong>${esc(c.title)} is live now</strong><small>Tap to watch the class</small></span>${icon("video")}</button>`).join("")}
-    ${next && !live.some((c) => c.id === next.c.id) ? `
-    <button type="button" class="week-next" data-week-course="${next.c.id}">
-      <span class="week-next-label">Next class</span>
-      <strong>${esc(next.c.title)}</strong>
-      <small>${esc(classTimeText(next.at))}${next.c.location ? ` · ${esc(next.c.location)}` : ""}</small>
-    </button>` : ""}
+    ${upcomingClassesHtml(classes.filter((x) => !live.some((c) => c.id === x.c.id && x.date === todayStr())), "student")}
     ${mine.filter((c) => c.memory && c.memory.ref).slice(0, 2).map((c) => `
     <button type="button" class="week-memory" data-memory-open="${esc(c.memory.ref)}">
       <span class="week-next-label">Memory verse · ${esc(c.title)}</span>
@@ -161,6 +185,28 @@ function thisWeekCardHtml() {
       <span class="week-go">Watch</span>
     </button>`).join("")}
     <div class="week-foot"><a href="#" id="thisWeekAll">See all assignments</a></div>
+  </div>`;
+}
+// The "Upcoming classes" list, shared by the student and teacher cards.
+function upcomingClassesHtml(classes, who) {
+  if (!classes.length) return "";
+  const shown = classes.slice(0, 5);
+  const more = classes.length - shown.length;
+  return `<div class="week-classes">
+    <div class="week-next-label">${who === "teacher" ? "Classes you're teaching" : "Upcoming classes"} · next 7 days</div>
+    <ul class="week-list">${shown.map(({ c, date, at, canceled }) => {
+      const word = classDayWord(date);
+      const online = who === "student" && effTrack(c, currentStudentId) === "live";
+      const where = canceled ? "Canceled" : online ? "Watch online, live" : (c.location || "");
+      const today = date === todayStr();
+      const attend = who === "teacher" && today && !canceled && takesClassroomAttendance(c);
+      return `<li><button type="button" class="week-row week-class ${canceled ? "week-canceled" : ""} ${today && !canceled ? "week-today" : ""}" ${who === "teacher" ? `data-attn-class="${c.id}|${date}"` : `data-week-course="${c.id}"`}>
+        <span class="week-mark" aria-hidden="true">${icon(canceled ? "cancel" : "calendar")}</span>
+        <span class="week-text"><strong>${esc(c.title)}</strong><small>${esc(classTimeText(at))}${where ? ` · ${esc(where)}` : ""}</small></span>
+        <span class="week-go">${attend ? "Take Attendance" : canceled ? "" : esc(word || "Open")}</span>
+      </button></li>`;
+    }).join("")}</ul>
+    ${more > 0 ? `<p class="week-more">+ ${more} more this week — see the Calendar.</p>` : ""}
   </div>`;
 }
 function wireThisWeek(main) {
@@ -282,8 +328,18 @@ function attentionItems() {
   });
   return items;
 }
+// Upcoming meetings of the classes I'm the assigned teacher of — never
+// anyone else's, and not a course still waiting for a teacher (an Admin can
+// stand in on those, but isn't slated to teach them).
+function myTeachingClasses() {
+  return upcomingClasses(courses.filter((c) => {
+    const t = !c.archived && courseTeacher(c);
+    return t && currentUser && t.id === currentUser.id;
+  }));
+}
 function attentionCardHtml() {
   const items = attentionItems();
+  const classes = myTeachingClasses();
   const ico = { grade: "cap", attendance: "check", requests: "users", messages: "mail", signups: "user", setup: "gear" };
   return `<div class="card week-card attention-card" id="needsAttention">
     <div class="week-head">
@@ -297,6 +353,7 @@ function attentionCardHtml() {
         <span class="week-go">${esc(it.act)}</span>
       </button></li>`).join("")}</ul>`
       : `<p class="week-empty">✓ You're all caught up — nothing is waiting on you.</p>`}
+    ${upcomingClassesHtml(classes, "teacher")}
   </div>`;
 }
 function wireAttention(main) {
@@ -318,4 +375,110 @@ function wireAttention(main) {
     if (it.kind === "signups") return go("settings");
     if (it.kind === "setup") return go("manage", it.course.id, "setup");
   }));
+  card.querySelectorAll("[data-attn-class]").forEach((b) => b.addEventListener("click", () => {
+    const [cid, date] = b.dataset.attnClass.split("|");
+    const c = courses.find((x) => x.id === cid);
+    if (!c) return;
+    if (date === todayStr() && !isCanceled(c, date) && takesClassroomAttendance(c)) return openAttendance(cid, date, "home");
+    go("manage", cid, "setup");
+  }));
 }
+
+// ---------------------------------------------------------------------------
+// The browser's Back button
+// ---------------------------------------------------------------------------
+// A website can't switch off the browser's Back button, but it can make Back
+// do the right thing: every page change inside the site is recorded, so Back
+// steps to the page you were on before (like the site's own "← Back" links)
+// instead of leaving the site. Back closes an open window first. On the
+// Dashboard, Back stays put and says how to leave — so nobody is signed out
+// of their work by a stray tap.
+let navLastKey = null;
+let navRestoring = false;
+let navBaseSet = false;
+function navSnapshot() {
+  const tabKey = activeCourseId ? `${view}:${activeCourseId}` : null;
+  return {
+    tnbbi: 1,
+    view,
+    c: activeCourseId || null,
+    p: profileUserId || null,
+    m: messageThreadStudentId || null,
+    l: typeof activeLessonId !== "undefined" ? activeLessonId : null,
+    d: view === "attendance" ? attendanceDate : null,
+    sb: view === "studyBible" && typeof sbBookId !== "undefined" ? `${sbBookId}.${sbChapter}` : null,
+    t: tabKey && typeof courseTabs !== "undefined" ? courseTabs.get(tabKey) || null : null,
+  };
+}
+function navKey(s) { return JSON.stringify([s.view, s.c, s.p, s.m, s.view === "lecture" ? s.l : null, s.d, s.sb, s.t]); }
+function navRecord() {
+  if (!currentUser || !window.history || !history.pushState) return;
+  const snap = navSnapshot();
+  const key = navKey(snap);
+  try {
+    if (!navBaseSet) {
+      // A floor under the site, so Back from the Dashboard lands here, not
+      // on whatever page came before.
+      history.replaceState({ tnbbi: "floor" }, "");
+      history.pushState(snap, "");
+      navBaseSet = true;
+    } else if (navRestoring) {
+      history.replaceState(snap, "");
+    } else if (key !== navLastKey) {
+      history.pushState(snap, "");
+    } else {
+      history.replaceState(snap, "");
+    }
+  } catch (e) { /* history unavailable — the site still works */ }
+  navLastKey = key;
+}
+function navRestore(s) {
+  navRestoring = true;
+  try {
+    profileUserId = s.p || null;
+    messageThreadStudentId = s.m || null;
+    if (s.c && s.t && typeof courseTabs !== "undefined") courseTabs.set(`${s.view}:${s.c}`, s.t);
+    if (s.view === "attendance" && s.c) { openAttendance(s.c, s.d, "home"); return; }
+    if (s.view === "lecture" && s.c && s.l) { openLecture(s.c, s.l); return; }
+    if (s.view === "live" && s.c) { openLiveClass(s.c); return; }
+    if (s.view === "studyBible" && s.sb && typeof sbBookId !== "undefined") {
+      const [b, ch] = s.sb.split(".");
+      sbBookId = b; sbChapter = +ch || 1; sbMode = "read";
+    }
+    activeCourseId = s.c || null;
+    view = s.view || "home";
+    renderNav(); renderMain();
+    window.scrollTo(0, 0);
+  } finally {
+    navRestoring = false;
+    navLastKey = navKey(navSnapshot());
+  }
+}
+window.addEventListener("popstate", (e) => {
+  if (!currentUser) return; // signed out: ordinary browser behaviour
+  const here = navSnapshot();
+  // An open window (a form, a document, a pop-up) closes first.
+  const modal = document.querySelector("#modalRoot .modal-backdrop, #modalRoot > *");
+  if (modal) {
+    closeModal();
+    try { history.pushState(here, ""); } catch (err) { /* fine */ }
+    navLastKey = navKey(here);
+    return;
+  }
+  const s = e.state;
+  if (!s || s.tnbbi === "floor" || !s.tnbbi) {
+    // Back from the first page of the visit: stay in the site.
+    try { history.pushState(navSnapshot(), ""); } catch (err) { /* fine */ }
+    if (view !== "home") {
+      navRestore({ view: "home" });
+    } else {
+      navLastKey = navKey(navSnapshot());
+      toast("You're on the Dashboard. To leave, use Log Out or close this tab.", "success");
+    }
+    return;
+  }
+  navRestore(s);
+});
+// renderView (app.js) calls navRecord() after drawing each page, and
+// signOut calls navReset().
+function navReset() { navBaseSet = false; navLastKey = null; }
