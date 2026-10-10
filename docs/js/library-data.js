@@ -9,7 +9,9 @@
 // ---------------------------------------------------------------------------
 
 // 24 verified real reference documents from the church Google Drive, each
-// tagged with the course(s) it best supports.
+// tagged with the course(s) it best supports. (Not read by the page directly any
+// more: tools/library/build_drive_shelves.py folds them into drive-library.js,
+// on the shelves, keeping their class tags.)
 const digitalLibrary = [
   { title: "Hermeneutics Class Notes", author: "Pastor Phil McBroom", topic: "Lecture notes on principles of biblical interpretation, context, and genre", courseIds: ["c1"], url: "https://docs.google.com/document/d/1RRJJ5Si-ES9iXGd9YhSaNTrPL_JP-bUzSYoeb2s5Q44/edit?usp=drivesdk" },
   { title: "Understanding The Bible For Yourself", author: "David W. Cloud", topic: "Full-length guide to sound Bible study methods and rules of interpretation", courseIds: ["c1", "c8"], url: "https://drive.google.com/file/d/1dJhGij8zCkJl-Oz4dctiHE0-Z-kJm8wx/view?usp=drivesdk" },

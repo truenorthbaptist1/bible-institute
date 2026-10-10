@@ -4908,6 +4908,7 @@ const LIB_SHELF_BLURB = {
 function libTitleKey(t) { return String(t || "").replace(/^(the|an|a)\s+/i, "").replace(/^["“'(]+/, "").toLowerCase(); }
 function libAuthorKey(a) {
   if (!a) return "~";
+  if (a.includes("›")) return a.toLowerCase(); // a Drive folder, sorted as written
   const name = String(a).split(/\s*(?:&|,| and )\s*/)[0].trim();
   // People sort by last name; ministries and publishers by their full name.
   if (/\b(ministr|church|press|genesis|publication|society|institute|baptist|books|bible)\w*/i.test(name)) return name.toLowerCase();
@@ -4916,8 +4917,8 @@ function libAuthorKey(a) {
 const libCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 function libSort(list) {
   const out = list.slice();
-  if (resourceLibrarySort === "author") out.sort((x, y) => libCollator.compare(libAuthorKey(x[1]), libAuthorKey(y[1])) || libCollator.compare(libTitleKey(x[0]), libTitleKey(y[0])));
-  else out.sort((x, y) => libCollator.compare(libTitleKey(x[0]), libTitleKey(y[0])));
+  if (resourceLibrarySort === "author") out.sort((x, y) => libCollator.compare(libAuthorKey(x.a), libAuthorKey(y.a)) || libCollator.compare(libTitleKey(x.t), libTitleKey(y.t)));
+  else out.sort((x, y) => libCollator.compare(libTitleKey(x.t), libTitleKey(y.t)));
   return out;
 }
 function libMark(text, q) {
@@ -4928,73 +4929,92 @@ function libMark(text, q) {
   const raw = String(text);
   return `${esc(raw.slice(0, i))}<mark>${esc(raw.slice(i, i + q.length))}</mark>${esc(raw.slice(i + q.length))}`;
 }
-// The catalog with two copies of one book on one shelf folded into a
-// single line, "2 copies": [title, author, shelf, copies].
-let libTitlesCache = null;
-function libTitles() {
-  if (libTitlesCache) return libTitlesCache;
+// Everything on the shelves, as one list:
+//   { t: title, a: author (or, for Drive items, the Drive folder it's in),
+//     s: shelf, n: copies (books), c: class ids, note, d: Drive details or null }
+// Books: two copies of one book on one shelf fold into a single line, "2 copies".
+// Drive items: every document, recording and album in the linked church
+// Drive folders and the Institute's picked course documents (drive-library.js).
+let libItemsCache = null;
+function libItems() {
+  if (libItemsCache) return libItemsCache;
+  const out = [];
   const copies = new Map();
   physicalLibrary.forEach((b) => {
     const k = `${b[0].trim().toLowerCase()}|${(b[1] || "").trim().toLowerCase()}|${b[2]}`;
-    if (copies.has(k)) copies.get(k)[3]++; else copies.set(k, [b[0], b[1], b[2], 1]);
+    if (copies.has(k)) copies.get(k).n++;
+    else { const it = { t: b[0], a: b[1] || "", s: b[2], n: 1, c: [], d: null }; copies.set(k, it); out.push(it); }
   });
-  return (libTitlesCache = [...copies.values()]);
+  (typeof DRIVE_ITEMS !== "undefined" ? DRIVE_ITEMS : []).forEach((r) => {
+    const [t, s, k, id, li, count, cids, note, author, vid] = r;
+    const label = DRIVE_LABELS[li] || "";
+    out.push({ t, a: author || label, s, n: 1, c: cids ? String(cids).split(",") : [], note: note || "",
+      d: { k, id, label, count: count || 0, vid: !!vid } });
+  });
+  return (libItemsCache = out);
+}
+function driveUrl(d) {
+  if (d.k === "c") return `https://drive.google.com/drive/folders/${d.id}`;
+  if (d.k === "g") return `https://docs.google.com/document/d/${d.id}/edit`;
+  return `https://drive.google.com/file/d/${d.id}/view`;
+}
+function driveKindLabel(d) {
+  if (d.k === "c") return d.vid ? `Video series · ${d.count}` : /Music|Choir|Song Leading/.test(d.label) ? `Album · ${d.count} tracks` : `Audio series · ${d.count}`;
+  return { p: "PDF", w: "Word", s: "Slides", g: "Google Doc", a: "Audio", v: "Video" }[d.k] || "File";
 }
 // Every shelf name, in the order shown: a course's own shelves first (most
 // relevant first), otherwise A–Z.
 function libShelfOrder(courseId) {
-  const all = [...new Set(physicalLibrary.map((b) => b[2]))];
+  const all = [...new Set(libItems().map((b) => b.s))];
   const own = courseId ? (COURSE_SUBJECTS[courseId] || []) : [];
   const rest = all.filter((s) => !own.includes(s)).sort((a, b) => libCollator.compare(a, b));
   return [...own.filter((s) => all.includes(s)), ...rest];
 }
+let resourceLibraryKind = ""; // "" everything · "book" to borrow · "online" open now
+function libPlural(n, one, many) { return `${n} ${n === 1 ? one : many || one + "s"}`; }
 
 function renderResourceLibrary(main) {
   const q = resourceLibraryQuery.trim().toLowerCase();
   const courseId = resourceLibraryCourse;
-  const shelf = resourceLibraryShelf;
-  const hasSearch = q.length > 0 || courseId !== "" || shelf !== "";
+  const shelf = resourceLibraryShelf === "__drive" ? "" : resourceLibraryShelf;
+  const kindF = resourceLibraryKind;
+  const hasSearch = q.length > 0 || courseId !== "" || shelf !== "" || kindF !== "";
 
   // --- what matches -------------------------------------------------------
-  const DRIVE = "__drive";
-  const onDrive = shelf === DRIVE;
-  const digitalMatches = digitalLibrary.filter((d) => {
-    const courseOk = !courseId || d.courseIds.includes(courseId);
-    const kwOk = !q || [d.title, d.author, d.topic].some((t) => t && t.toLowerCase().includes(q));
-    return courseOk && kwOk;
-  });
-  const digitalResults = !hasSearch || (shelf && !onDrive) ? [] : digitalMatches;
   // Church Drive folders: a keyword matches a topic folder's name or the
   // big folder it sits in; a class brings up the folders tagged for it.
   const folderMatches = [];
-  driveFolders.forEach((f) => f.topics.forEach((t) => {
+  if (kindF !== "book") driveFolders.forEach((f) => f.topics.forEach((t) => {
     const courseOk = !courseId || (t.courseIds || []).includes(courseId);
     const kwOk = !q || t.name.toLowerCase().includes(q) || f.name.toLowerCase().includes(q) || (f.blurb || "").toLowerCase().includes(q);
     if (courseOk && kwOk) folderMatches.push({ folder: f, topic: t });
   }));
-  // A keyword that names a whole big folder ("audio", "powerpoint") lists the folder itself too.
-  const bigFolderMatches = q && !courseId ? driveFolders.filter((f) => f.name.toLowerCase().includes(q)) : [];
-  const folderResults = !hasSearch || (shelf && !onDrive) ? [] : folderMatches;
-  const driveCount = digitalMatches.length + folderMatches.length;
-  let pool = libTitles();
+  const bigFolderMatches = q && !courseId && kindF !== "book" ? driveFolders.filter((f) => f.name.toLowerCase().includes(q)) : [];
+  const folderResults = !hasSearch || shelf ? [] : folderMatches;
+
+  let pool = libItems();
+  if (kindF) pool = pool.filter((b) => (kindF === "online") === !!b.d);
   if (courseId) {
     const subs = COURSE_SUBJECTS[courseId] || [];
-    pool = pool.filter((b) => subs.includes(b[2]));
+    pool = pool.filter((b) => subs.includes(b.s) || b.c.includes(courseId));
   }
-  // A keyword matches a title, an author, or a whole shelf by name.
-  if (q) pool = pool.filter(([t, a, s]) => t.toLowerCase().includes(q) || (a && a.toLowerCase().includes(q)) || s.toLowerCase().includes(q));
+  // A keyword matches a title, an author, a Drive folder, a note, or a whole shelf by name.
+  if (q) pool = pool.filter((b) => b.t.toLowerCase().includes(q) || b.a.toLowerCase().includes(q)
+    || b.s.toLowerCase().includes(q) || (b.note && b.note.toLowerCase().includes(q)));
   const beforeShelf = pool;
-  if (shelf) pool = onDrive ? [] : pool.filter((b) => b[2] === shelf);
-  const physicalTotal = hasSearch ? pool.length : 0;
+  if (shelf) pool = pool.filter((b) => b.s === shelf);
+  const total = hasSearch ? pool.length : 0;
+  const nBooks = pool.filter((b) => !b.d).length;
+  const nOnline = total - nBooks;
 
   // Shelves among the matches (before a shelf is picked, so the chips stay).
   const shelfCounts = {};
-  beforeShelf.forEach((b) => { shelfCounts[b[2]] = (shelfCounts[b[2]] || 0) + 1; });
+  beforeShelf.forEach((b) => { shelfCounts[b.s] = (shelfCounts[b.s] || 0) + 1; });
   const order = libShelfOrder(courseId);
   const chipShelves = order.filter((s) => shelfCounts[s]);
-  const groups = order.filter((s) => pool.some((b) => b[2] === s))
-    .map((s) => ({ name: s, books: libSort(pool.filter((b) => b[2] === s)) }));
-  const openAllByDefault = physicalTotal <= LIB_OPEN_UNDER || groups.length === 1;
+  const groups = order.filter((s) => pool.some((b) => b.s === s))
+    .map((s) => ({ name: s, items: libSort(pool.filter((b) => b.s === s)) }));
+  const openAllByDefault = total <= LIB_OPEN_UNDER || groups.length === 1;
 
   const eligibleCourses = courses
     .filter((c) => !c.archived && (role !== "student" || c.studentIds.includes(currentStudentId)))
@@ -5008,29 +5028,41 @@ function renderResourceLibrary(main) {
 
   // --- pieces -------------------------------------------------------------
   const copiesTag = (n) => n > 1 ? ` <span class="lib-copies">${n} copies</span>` : "";
-  const bookRow = ([t, a, , n]) => `<li class="lib-book">
-      <span class="lib-title">${libMark(t, q)}${copiesTag(n)}</span>
-      ${a ? `<span class="lib-author">${libMark(a, q)}</span>` : ""}
+  const itemRow = (b, withAuthor = true) => {
+    if (!b.d) return `<li class="lib-book">
+      <span class="lib-title">${libMark(b.t, q)}${copiesTag(b.n)}</span>
+      ${withAuthor && b.a ? `<span class="lib-author">${libMark(b.a, q)}</span>` : ""}
     </li>`;
+    return `<li class="lib-book lib-online">
+      <a class="lib-online-link" href="${esc(driveUrl(b.d))}" target="_blank" rel="noopener">
+        <span class="lib-online-text">
+          <span class="lib-title">${libMark(b.t, q)}</span>
+          <span class="lib-author"><span class="lib-kind lib-kind-${b.d.k}">${esc(driveKindLabel(b.d))}</span>${withAuthor && b.a ? ` ${libMark(b.a, q)}` : ""}</span>
+          ${b.note ? `<span class="lib-note">${libMark(b.note, q)}</span>` : ""}
+        </span>
+        <span class="lib-open-btn">Open</span>
+      </a>
+    </li>`;
+  };
   const shelfBody = (g) => {
-    const all = libShowAll.has(g.name) || g.books.length <= LIB_SHELF_PREVIEW + 2;
-    const shown = all ? g.books : g.books.slice(0, LIB_SHELF_PREVIEW);
+    const all = libShowAll.has(g.name) || g.items.length <= LIB_SHELF_PREVIEW + 2;
+    const shown = all ? g.items : g.items.slice(0, LIB_SHELF_PREVIEW);
     let html;
     if (resourceLibrarySort === "author") {
-      // Under each author's name, that author's books.
+      // Under each author's (or Drive folder's) name, its items.
       const byAuthor = [];
       shown.forEach((b) => {
         const last = byAuthor[byAuthor.length - 1];
-        if (last && last.author === (b[1] || "")) last.books.push(b);
-        else byAuthor.push({ author: b[1] || "", books: [b] });
+        if (last && last.author === b.a) last.items.push(b);
+        else byAuthor.push({ author: b.a, items: [b] });
       });
       html = byAuthor.map((x) => `<li class="lib-author-head">${x.author ? libMark(x.author, q) : "Author not listed"}</li>
-        ${x.books.map(([t, , , n]) => `<li class="lib-book"><span class="lib-title">${libMark(t, q)}${copiesTag(n)}</span></li>`).join("")}`).join("");
+        ${x.items.map((b) => itemRow(b, false)).join("")}`).join("");
     } else {
-      html = shown.map(bookRow).join("");
+      html = shown.map((b) => itemRow(b)).join("");
     }
     return `<ul class="lib-books">${html}</ul>
-      ${all ? "" : `<button type="button" class="link-btn lib-more" data-lib-more="${esc(g.name)}">Show all ${g.books.length} on this shelf</button>`}`;
+      ${all ? "" : `<button type="button" class="link-btn lib-more" data-lib-more="${esc(g.name)}">Show all ${g.items.length} on this shelf</button>`}`;
   };
   const folderRow = (f, t) => `<li>
       <a class="lib-folder" href="${DRIVE_ROOT(t ? t.id : f.id)}" target="_blank" rel="noopener">
@@ -5040,20 +5072,21 @@ function renderResourceLibrary(main) {
       </a>
     </li>`;
   const browseHtml = () => {
-    const counts = {};
-    libTitles().forEach((b) => { counts[b[2]] = (counts[b[2]] || 0) + 1; });
+    const books = {}, online = {};
+    libItems().forEach((b) => { const m = b.d ? online : books; m[b.s] = (m[b.s] || 0) + 1; });
+    const nb = libItems().filter((b) => !b.d).length;
     return `
-    <div class="section-title"><h2>Browse the shelves</h2><span class="pill pill-navy">${libTitles().length} books</span></div>
+    <div class="section-title"><h2>Browse the shelves</h2><span class="pill pill-navy">${nb} books · ${libItems().length - nb} online</span></div>
     <div class="lib-shelves">
       ${libShelfOrder("").map((s) => `<button type="button" class="lib-shelf-card" data-lib-shelf="${esc(s)}">
         <strong>${esc(s)}</strong>
         <small>${esc(LIB_SHELF_BLURB[s] || "")}</small>
-        <span class="lib-shelf-count">${counts[s]} book${counts[s] === 1 ? "" : "s"}</span>
+        <span class="lib-shelf-count">${[books[s] ? libPlural(books[s], "book") : "", online[s] ? `${online[s]} online` : ""].filter(Boolean).join(" · ")}</span>
       </button>`).join("")}
     </div>
-    <p class="lib-policy">${esc(LIBRARY_CHECKOUT_POLICY)}</p>
-    <div class="section-title"><h2>On the church Drive</h2><span class="pill pill-navy">${driveFolders.length} folders</span></div>
-    <p class="lib-policy">${esc(DRIVE_ACCESS_NOTE)}</p>
+    <p class="lib-policy">${esc(LIBRARY_CHECKOUT_POLICY)} Items marked <strong>Open</strong> are on the church's Google Drive and open right away.</p>
+    <div class="section-title"><h2>The church Drive folders</h2><span class="pill pill-navy">${driveFolders.length} folders</span></div>
+    <p class="lib-policy">Everything in these folders is already on the shelves above. Open a folder to browse it the way it's kept on the Drive.</p>
     <div class="lib-drive-groups">
       ${driveFolders.map((f) => `<div class="lib-drive-group">
         <a class="lib-drive-head" href="${DRIVE_ROOT(f.id)}" target="_blank" rel="noopener">
@@ -5063,11 +5096,6 @@ function renderResourceLibrary(main) {
         </a>
         <div class="lib-topic-links">${f.topics.map((t) => `<a href="${DRIVE_ROOT(t.id)}" target="_blank" rel="noopener">${esc(t.name)}</a>`).join("")}</div>
       </div>`).join("")}
-      <button type="button" class="lib-drive-group lib-drive-picked" data-lib-shelf="__drive">
-        <strong>Selected documents</strong>
-        <small>Class notes, lessons and textbooks picked for the Institute's courses</small>
-        <span class="lib-open">${digitalLibrary.length} documents →</span>
-      </button>
     </div>`;
   };
 
@@ -5076,14 +5104,14 @@ function renderResourceLibrary(main) {
     <div class="page-header">
       <div class="eyebrow">Resources</div>
       <h1>Resource Library</h1>
-      <p>Browse the church library shelf by shelf, search by title, author or topic, or pick a class to see the books and Drive documents that go with it.</p>
+      <p>The church library's books and the church Drive's documents, recordings and albums, together on one set of shelves. Browse a shelf, search by title, author or topic, or pick a class.</p>
     </div>
     ${lectureArchiveEntryHtml()}
     <div class="card lib-search">
       <div class="lib-search-row">
         <div class="lib-field lib-field-grow">
           <label for="resSearchInput">Title, author or topic</label>
-          <input type="text" id="resSearchInput" enterkeyhint="search" autocomplete="off" placeholder="e.g. Westcott and Hort, Spurgeon, preaching…" value="${esc(resourceLibraryQuery)}">
+          <input type="text" id="resSearchInput" enterkeyhint="search" autocomplete="off" placeholder="e.g. Westcott and Hort, Spurgeon, Revelation…" value="${esc(resourceLibraryQuery)}">
         </div>
         <div class="lib-field">
           <label for="resCourseSelect">${esc(courseLabel)}</label>
@@ -5093,52 +5121,40 @@ function renderResourceLibrary(main) {
           </select>
         </div>
       </div>
+      <div class="lib-kinds" role="group" aria-label="Show">
+        ${[["", "Everything"], ["book", "Books to borrow"], ["online", "Open online"]].map(([v, l]) => `<button type="button" class="lib-kind-btn ${kindF === v ? "active" : ""}" data-lib-kind="${v}" aria-pressed="${kindF === v}">${l}</button>`).join("")}
+      </div>
       ${eligibleCourses.length === 0 && role === "student" ? `<p class="field-hint">You're not enrolled in any active classes yet, so the class list is empty — searching still works.</p>` : ""}
       ${hasSearch ? `<div class="lib-chips" role="group" aria-label="Shelves">
-        <button type="button" class="lib-chip ${shelf ? "" : "active"}" data-lib-chip="">All <span>${beforeShelf.length + driveCount}</span></button>
-        ${driveCount ? `<button type="button" class="lib-chip lib-chip-drive ${onDrive ? "active" : ""}" data-lib-chip="${DRIVE}">Church Drive <span>${driveCount}</span></button>` : ""}
+        <button type="button" class="lib-chip ${shelf ? "" : "active"}" data-lib-chip="">All <span>${beforeShelf.length}</span></button>
         ${chipShelves.map((s) => `<button type="button" class="lib-chip ${s === shelf ? "active" : ""}" data-lib-chip="${esc(s)}">${esc(s)} <span>${shelfCounts[s]}</span></button>`).join("")}
-        ${shelf && !onDrive && !chipShelves.includes(shelf) ? `<button type="button" class="lib-chip active" data-lib-chip="${esc(shelf)}">${esc(shelf)} <span>0</span></button>` : ""}
+        ${shelf && !chipShelves.includes(shelf) ? `<button type="button" class="lib-chip active" data-lib-chip="${esc(shelf)}">${esc(shelf)} <span>0</span></button>` : ""}
       </div>
       <div class="lib-tools">
-        <span class="lib-sum">${onDrive ? "" : `${physicalTotal} book${physicalTotal === 1 ? "" : "s"}`}${onDrive ? `${folderResults.length} Drive folder${folderResults.length === 1 ? "" : "s"} · ${digitalResults.length} document${digitalResults.length === 1 ? "" : "s"}` : driveCount ? ` · ${driveCount} on the church Drive` : ""}</span>
+        <span class="lib-sum">${[nBooks ? libPlural(nBooks, "book") : "", nOnline ? `${nOnline} to open online` : ""].filter(Boolean).join(" · ") || "Nothing found"}</span>
         <label class="lib-sort">Sort by
-          <select id="resSort"><option value="title" ${resourceLibrarySort === "title" ? "selected" : ""}>Title</option><option value="author" ${resourceLibrarySort === "author" ? "selected" : ""}>Author</option></select>
+          <select id="resSort"><option value="title" ${resourceLibrarySort === "title" ? "selected" : ""}>Title</option><option value="author" ${resourceLibrarySort === "author" ? "selected" : ""}>Author / folder</option></select>
         </label>
-        ${groups.length > 1 ? `<button type="button" class="link-btn" id="libToggleAll">${groups.every((g) => libOpenShelves.has(g.name)) || openAllByDefault ? "Close all shelves" : "Open all shelves"}</button>` : ""}
+        ${groups.length > 1 ? `<button type="button" class="link-btn" id="libToggleAll">${openAllByDefault ? "Close all shelves" : "Open all shelves"}</button>` : ""}
         <button type="button" class="link-btn" id="libClear">Start over</button>
       </div>` : ""}
     </div>
     ${!hasSearch ? browseHtml() : `
-    ${folderResults.length || (bigFolderMatches.length && (!shelf || onDrive)) ? `
+    ${folderResults.length || bigFolderMatches.length ? `
     <div class="section-title"><h2>Church Drive folders</h2><span class="pill pill-navy">${folderResults.length + bigFolderMatches.length}</span></div>
     <ul class="lib-folders">
       ${bigFolderMatches.map((f) => folderRow(f, null)).join("")}
       ${folderResults.map(({ folder, topic }) => folderRow(folder, topic)).join("")}
-    </ul>
-    <p class="lib-policy">${esc(DRIVE_ACCESS_NOTE)}</p>` : ""}
-    ${digitalResults.length ? `
-    <div class="section-title"><h2>${folderResults.length ? "Selected Drive documents" : "Google Drive documents"}</h2><span class="pill pill-navy">${digitalResults.length}</span></div>
-    <ul class="materials-list lib-drive">
-      ${digitalResults.slice().sort((a, b) => libCollator.compare(libTitleKey(a.title), libTitleKey(b.title))).map((d) => `
-        <li>
-          <div>
-            <div style="font-weight:600;">${libMark(d.title, q)}</div>
-            <p style="margin:2px 0 0;color:var(--muted-foreground);font-size:.85rem;">${d.author ? libMark(d.author, q) + " — " : ""}${esc(d.topic)}</p>
-          </div>
-          <a class="btn btn-ghost btn-sm" href="${esc(d.url)}" target="_blank" rel="noopener">Open</a>
-        </li>`).join("")}
     </ul>` : ""}
-    ${onDrive ? (digitalResults.length || folderResults.length ? "" : `<p class="lib-none">Nothing on the church Drive matches “${esc(resourceLibraryQuery.trim())}”.</p>`) : `
-    <div class="section-title"><h2>${shelf ? esc(shelf) : "Church library"}</h2><span class="pill pill-navy">${physicalTotal} book${physicalTotal === 1 ? "" : "s"}</span></div>
-    <p class="lib-policy">${esc(LIBRARY_CHECKOUT_POLICY)}</p>
-    ${physicalTotal === 0
-      ? `<p class="lib-none">No books match${q ? ` “${esc(resourceLibraryQuery.trim())}”` : ""}${shelf ? ` on the ${esc(shelf)} shelf` : ""}.${shelf || courseId ? ` <a href="#" id="libWiden">Search every shelf</a>` : ""}</p>`
+    <div class="section-title"><h2>${shelf ? esc(shelf) : "On the shelves"}</h2><span class="pill pill-navy">${total}</span></div>
+    ${nBooks ? `<p class="lib-policy">${esc(LIBRARY_CHECKOUT_POLICY)}</p>` : ""}
+    ${total === 0
+      ? `<p class="lib-none">Nothing matches${q ? ` “${esc(resourceLibraryQuery.trim())}”` : ""}${shelf ? ` on the ${esc(shelf)} shelf` : ""}.${shelf || courseId || kindF ? ` <a href="#" id="libWiden">Search everything</a>` : ""}</p>`
       : groups.map((g) => `
       <details class="docs-group lib-shelf" data-shelf="${esc(g.name)}" ${openAllByDefault || libOpenShelves.has(g.name) ? "open" : ""}>
-        <summary><span class="docs-group-name">${esc(g.name)}${LIB_SHELF_BLURB[g.name] ? `<small>${esc(LIB_SHELF_BLURB[g.name])}</small>` : ""}</span><span class="docs-count">${g.books.length}</span></summary>
+        <summary><span class="docs-group-name">${esc(g.name)}${LIB_SHELF_BLURB[g.name] ? `<small>${esc(LIB_SHELF_BLURB[g.name])}</small>` : ""}</span><span class="docs-count">${g.items.length}</span></summary>
         ${shelfBody(g)}
-      </details>`).join("")}`}
+      </details>`).join("")}
     `}
   `;
 
@@ -5156,6 +5172,9 @@ function renderResourceLibrary(main) {
   document.getElementById("resCourseSelect").addEventListener("change", (e) => {
     resourceLibraryCourse = e.target.value; resourceLibraryShelf = ""; libOpenShelves.clear(); libShowAll.clear(); redraw();
   });
+  main.querySelectorAll("[data-lib-kind]").forEach((b) => b.addEventListener("click", () => {
+    resourceLibraryKind = b.dataset.libKind; libShowAll.clear(); redraw();
+  }));
   main.querySelectorAll("[data-lib-shelf]").forEach((b) => b.addEventListener("click", () => {
     resourceLibraryShelf = b.dataset.libShelf; libShowAll.clear(); redraw(); window.scrollTo(0, 0);
   }));
@@ -5180,10 +5199,10 @@ function renderResourceLibrary(main) {
   }));
   const clear = document.getElementById("libClear");
   if (clear) clear.addEventListener("click", () => {
-    resourceLibraryQuery = ""; resourceLibraryCourse = ""; resourceLibraryShelf = ""; libOpenShelves.clear(); libShowAll.clear(); redraw();
+    resourceLibraryQuery = ""; resourceLibraryCourse = ""; resourceLibraryShelf = ""; resourceLibraryKind = ""; libOpenShelves.clear(); libShowAll.clear(); redraw();
   });
   const widen = document.getElementById("libWiden");
-  if (widen) widen.addEventListener("click", (e) => { e.preventDefault(); resourceLibraryShelf = ""; resourceLibraryCourse = ""; redraw(); });
+  if (widen) widen.addEventListener("click", (e) => { e.preventDefault(); resourceLibraryShelf = ""; resourceLibraryCourse = ""; resourceLibraryKind = ""; redraw(); });
 }
 
 function renderSettings(main) {
