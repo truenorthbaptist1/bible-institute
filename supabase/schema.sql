@@ -428,6 +428,13 @@ alter table public.profiles drop constraint if exists profiles_notify_email_chec
 alter table public.profiles add constraint profiles_notify_email_check
   check (notify_email in ('instant','important','daily','off'));
 alter table public.profiles alter column notify_email set default 'important';
+-- Oct 9 (night): a memory verse of the week for each course, set by its
+-- teacher (or an Admin) and shown to the class.
+alter table public.courses
+  add column if not exists memory_ref    text not null default '' check (length(memory_ref) <= 80),
+  add column if not exists memory_text   text not null default '' check (length(memory_text) <= 1200),
+  add column if not exists memory_set_at timestamptz;
+
 create or replace function public.email_kind_important(p_kind text)
 returns boolean language sql immutable as $$
   select coalesce(p_kind, '') in ('cancel','message','announcement','due','enrollment','signup','teacher')
