@@ -1695,3 +1695,69 @@ body { background-image: var(--paper), radial-gradient(1200px 380px at 50% -120p
 .week-class.week-canceled small { color: var(--danger, #a33); }
 .week-more { margin: 6px 2px 0; font-size: .8rem; color: var(--muted-foreground); }
 .attention-card .week-classes { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+/* Resource Library: shelves */
+.lib-search-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+.lib-field { min-width: 220px; }
+.lib-field-grow { flex: 1 1 320px; }
+.lib-field label { margin-top: 0; }
+.lib-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.lib-chip { border: 1px solid var(--border); background: var(--card); color: var(--foreground); border-radius: 999px; padding: 6px 12px; font: inherit; font-size: .82rem; font-weight: 600; cursor: pointer; min-height: 34px; }
+.lib-chip span { color: var(--muted-foreground); font-weight: 700; margin-left: 2px; }
+.lib-chip:hover { border-color: color-mix(in srgb, var(--gold) 55%, var(--border)); }
+.lib-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.lib-chip.active span { color: var(--gold-light); }
+.lib-chip-drive { border-style: dashed; }
+.lib-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: .86rem; }
+.lib-sum { font-weight: 700; margin-right: auto; }
+.lib-sort { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; color: var(--muted-foreground); }
+.lib-sort select { width: auto; padding: 5px 28px 5px 10px; margin: 0; font-size: .84rem; }
+.lib-policy { color: var(--muted-foreground); font-size: .84rem; margin: -6px 0 12px; }
+.lib-none { color: var(--muted-foreground); }
+.lib-shelves { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.lib-shelf-card { display: flex; flex-direction: column; gap: 3px; text-align: left; font: inherit; color: inherit; background: var(--card); border: 1px solid var(--border); border-left: 4px solid color-mix(in srgb, var(--gold) 70%, var(--border)); border-radius: 12px; padding: 12px 14px; cursor: pointer; min-height: 92px; }
+.lib-shelf-card:hover, .lib-shelf-card:focus-visible { border-color: var(--gold); box-shadow: var(--shadow); }
+.lib-shelf-card strong { font-family: "Source Serif 4", serif; font-size: 1.02rem; }
+.lib-shelf-card small { color: var(--muted-foreground); font-size: .8rem; line-height: 1.35; }
+.lib-shelf-count { margin-top: auto; padding-top: 6px; font-size: .75rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--gold); }
+.lib-shelf-drive { border-left-color: var(--primary); }
+.lib-shelf > summary .docs-group-name small { display: block; font-weight: 400; font-size: .8rem; color: var(--muted-foreground); margin-top: 1px; }
+.lib-books { list-style: none; margin: 0; padding: 4px 14px 8px; border-top: 1px solid var(--border); columns: 2 320px; column-gap: 28px; }
+.lib-book { break-inside: avoid; padding: 7px 0; border-bottom: 1px dashed color-mix(in srgb, var(--border) 70%, transparent); display: flex; flex-direction: column; gap: 1px; }
+.lib-title { font-weight: 600; font-size: .92rem; line-height: 1.3; }
+.lib-author { color: var(--muted-foreground); font-size: .8rem; }
+.lib-author-head { break-after: avoid; padding: 12px 0 2px; font-size: .74rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: var(--gold); }
+.lib-author-head:first-child { padding-top: 6px; }
+.lib-more { display: block; margin: 0 14px 12px; }
+.lib-books mark, .lib-drive mark { background: color-mix(in srgb, var(--gold) 30%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+@media (max-width: 560px) {
+  .lib-field { min-width: 0; width: 100%; }
+  .lib-shelves { grid-template-columns: 1fr 1fr; }
+  .lib-shelf-card { min-height: 0; }
+  .lib-shelf-card small { display: none; }
+}
+.lib-copies { display: inline-block; margin-left: 6px; font-size: .68rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; vertical-align: 1px; }
+/* Resource Library: church Drive folders */
+.lib-drive-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.lib-drive-group { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; text-align: left; font: inherit; color: inherit; padding: 0; }
+.lib-drive-head { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; text-decoration: none; color: inherit; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--primary) 5%, var(--card)); }
+.lib-drive-head:hover strong { color: var(--link); }
+.lib-drive-head strong, .lib-drive-picked strong { font-family: "Source Serif 4", serif; font-size: 1.02rem; }
+.lib-drive-head small, .lib-drive-picked small { color: var(--muted-foreground); font-size: .8rem; }
+.lib-open { font-size: .74rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; color: var(--gold); margin-top: 4px; }
+.lib-topic-links { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 14px; }
+.lib-topic-links a { font-size: .8rem; font-weight: 600; text-decoration: none; color: var(--foreground); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; }
+.lib-topic-links a:hover { border-color: var(--gold); color: var(--link); }
+.lib-drive-picked { cursor: pointer; padding: 12px 14px; gap: 3px; border-style: dashed; justify-content: flex-start; }
+.lib-drive-picked:hover { border-color: var(--gold); }
+.lib-folders { list-style: none; margin: 0 0 14px; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; }
+.lib-folder { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); text-decoration: none; color: inherit; height: 100%; }
+.lib-folder:hover { border-color: var(--gold); }
+.lib-folder-icon { flex-shrink: 0; width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; background: color-mix(in srgb, var(--gold) 15%, var(--card)); color: var(--gold); }
+.lib-folder-icon svg { width: 18px; height: 18px; }
+.lib-folder-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.lib-folder-text strong { font-size: .92rem; }
+.lib-folder-text small { color: var(--muted-foreground); font-size: .78rem; }
+.lib-folder .lib-open { margin: 0; white-space: nowrap; }
+.lib-folders mark { background: color-mix(in srgb, var(--gold) 30%, transparent); color: inherit; border-radius: 3px; }
+@media (max-width: 560px) { .lib-drive-groups, .lib-folders { grid-template-columns: 1fr; } }
