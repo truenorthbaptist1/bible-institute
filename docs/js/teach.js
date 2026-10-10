@@ -537,16 +537,67 @@ function openPlanEditor(c, r) {
 }
 
 // "Add lessons from files": one lesson per lesson number (Week 3 / Lesson 3 /
-// a leading 3), notes and slides with the same number going together.
+// a leading 3), notes and slides with the same number going together. Files
+// can come from this course's materials (already on the site) or be uploaded
+// from the device — or both at once.
+const PLAN_FILE_EXTS = ["pdf", "docx", "doc", "pptx", "ppt", "txt", "rtf", "odt"];
+function materialFileName(m) {
+  // The title is usually the original file name; if it lost its ending, borrow it from the stored file.
+  const ext = fileExt(m.title);
+  if (PLAN_FILE_EXTS.includes(ext)) return m.title;
+  const stored = fileExt(m.storagePath || "");
+  return PLAN_FILE_EXTS.includes(stored) ? `${m.title}.${stored}` : m.title;
+}
+function guessPlanKind(name) {
+  const ext = fileExt(name);
+  return ["ppt", "pptx"].includes(ext) || (ext === "pdf" && /slide|power ?point|presentation|ppt/i.test(name)) ? "slides" : "notes";
+}
+// A course material's file, fetched so it can be turned into slides.
+async function materialAsFile(m) {
+  const { data, error } = await sb.storage.from("materials").download(m.storagePath);
+  if (error || !data) throw new Error(`"${m.title}" couldn't be opened from the course materials.`);
+  const name = materialFileName(m);
+  const ext = fileExt(name);
+  const type = ext === "pdf" ? "application/pdf" : ext === "pptx" ? "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    : ext === "ppt" ? "application/vnd.ms-powerpoint" : (data.type || m.mimeType || "application/octet-stream");
+  return new File([data], name, { type });
+}
 function openPlanFromFiles(c) {
   const root = document.getElementById("modalRoot");
-  let picked = [];
+  const mats = c.materials.filter((m) => m.storagePath && PLAN_FILE_EXTS.includes(fileExt(materialFileName(m))))
+    .slice().sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
+  const used = new Set((c.plan || []).map((r) => r.notesId).filter(Boolean));
+  let fromDevice = []; // { file, kind }
+  const fromMats = new Map(); // material id → kind
   root.innerHTML = `
     <div class="modal-backdrop">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pfTitle" style="max-width:640px;">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pfTitle" style="max-width:660px;">
         <h2 id="pfTitle" style="font-size:1.15rem;margin:0 0 6px;">Add Lessons from Files</h2>
-        <p class="field-hint" style="margin:0 0 10px;">Pick your lesson notes and slide files together. Files are put in order by the number in their names (Week 1, Lesson 2…), and notes and slides with the same number become one lesson. Lesson notes are saved as Teachers-only documents.</p>
-        <input type="file" id="pfFiles" multiple accept=".pdf,.docx,.doc,.pptx,.ppt,.txt" aria-label="Choose files">
+        <p class="field-hint" style="margin:0 0 10px;">Pick lesson notes and slide files — from this course's materials, from your device, or both. They're put in order by the number in their names (Week 1, Lesson 2…), and notes and slides with the same number become one lesson.</p>
+        <div class="pf-tabs" role="tablist">
+          <button type="button" class="pf-tab active" role="tab" aria-selected="true" data-pf-tab="mats">${icon("book")} Course materials${mats.length ? ` (${mats.length})` : ""}</button>
+          <button type="button" class="pf-tab" role="tab" aria-selected="false" data-pf-tab="device">${icon("upload")} Upload from device</button>
+        </div>
+        <div class="pf-pane" id="pfPaneMats">
+          ${mats.length ? `
+            <div class="pf-mat-tools">
+              <input type="search" id="pfFilter" placeholder="Find a file…" aria-label="Find a file">
+              <button type="button" class="btn btn-ghost btn-sm" id="pfAll">Select all shown</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="pfNone">Clear</button>
+            </div>
+            <ul class="pf-mats" id="pfMats">
+              ${mats.map((m) => `<li data-name="${esc(m.title.toLowerCase())}"><label>
+                <input type="checkbox" data-pf-mat="${m.id}">
+                <span class="pf-mat-name">${esc(m.title)}</span>
+                ${m.teacherOnly ? `<span class="pf-tag">Teachers only</span>` : ""}
+                ${used.has(m.id) ? `<span class="pf-tag pf-tag-used">In the plan</span>` : ""}
+              </label></li>`).join("")}
+            </ul>` : `<p class="field-hint">This course has no documents or presentations in its materials yet. Use <strong>Upload from device</strong> instead.</p>`}
+        </div>
+        <div class="pf-pane" id="pfPaneDevice" hidden>
+          <input type="file" id="pfFiles" multiple accept=".pdf,.docx,.doc,.pptx,.ppt,.txt,.rtf,.odt" aria-label="Choose files">
+          <p class="field-hint" style="margin:6px 0 0;">New lesson notes are saved to the course materials as Teachers-only documents.</p>
+        </div>
         <div id="pfList"></div>
         <p class="field-hint" id="pfStatus" aria-live="polite"></p>
         <div class="form-actions">
@@ -556,44 +607,79 @@ function openPlanFromFiles(c) {
       </div>
     </div>`;
   const say = (t) => { const e = document.getElementById("pfStatus"); if (e) e.textContent = t; };
+  // Everything picked, materials first, as { name, kind, file?, mat? }.
+  const picked = () => [
+    ...mats.filter((m) => fromMats.has(m.id)).map((m) => ({ name: materialFileName(m), kind: fromMats.get(m.id), mat: m })),
+    ...fromDevice.map((p) => ({ name: p.file.name, kind: p.kind, file: p.file })),
+  ];
   const group = () => {
     const by = new Map();
     let loose = 0;
-    picked.forEach((p) => {
-      const num = lessonNumber(p.file.name);
+    picked().forEach((p) => {
+      const num = lessonNumber(p.name);
       const key = num === null ? `x${loose++}` : `n${num}`;
       if (!by.has(key)) by.set(key, { num, notes: null, slides: null, title: "" });
       const g = by.get(key);
-      if (p.kind === "slides" && !g.slides) g.slides = p.file;
-      else if (p.kind === "notes" && !g.notes) g.notes = p.file;
-      else by.set(`${key}-${p.file.name}`, { num, notes: p.kind === "notes" ? p.file : null, slides: p.kind === "slides" ? p.file : null, title: "" });
+      if (p.kind === "slides" && !g.slides) g.slides = p;
+      else if (p.kind === "notes" && !g.notes) g.notes = p;
+      else by.set(`${key}-${p.name}-${loose++}`, { num, notes: p.kind === "notes" ? p : null, slides: p.kind === "slides" ? p : null, title: "" });
     });
     const list = [...by.values()];
-    list.sort((a, b) => (a.num === null) - (b.num === null) || (a.num || 0) - (b.num || 0)
-      || ((a.notes || a.slides).name).localeCompare((b.notes || b.slides).name, undefined, { numeric: true }));
-    list.forEach((g) => { g.title = baseTitle((g.notes || g.slides).name) || (g.notes || g.slides).name; });
+    const nm = (g) => (g.notes || g.slides).name;
+    list.sort((a, b) => (a.num === null) - (b.num === null) || (a.num || 0) - (b.num || 0) || nm(a).localeCompare(nm(b), undefined, { numeric: true }));
+    list.forEach((g) => { g.title = baseTitle(nm(g)) || nm(g); });
     return list;
   };
   const draw = () => {
     const box = document.getElementById("pfList");
+    const all = picked();
     const lessons = group();
-    box.innerHTML = picked.length ? `
-      <table class="pf-table"><thead><tr><th>File</th><th>It's…</th></tr></thead><tbody>
-      ${picked.map((p, i) => `<tr><td>${esc(p.file.name)}</td><td><select data-pf="${i}" aria-label="What ${esc(p.file.name)} is">
+    box.innerHTML = all.length ? `
+      <table class="pf-table"><thead><tr><th>File</th><th>From</th><th>It's…</th></tr></thead><tbody>
+      ${all.map((p, i) => `<tr><td>${esc(p.mat ? p.mat.title : p.name)}</td><td class="pf-from">${p.mat ? "Materials" : "Device"}</td><td><select data-pf="${i}" aria-label="What ${esc(p.name)} is">
         <option value="notes" ${p.kind === "notes" ? "selected" : ""}>Lesson notes</option>
         <option value="slides" ${p.kind === "slides" ? "selected" : ""}>Slides</option></select></td></tr>`).join("")}
       </tbody></table>
       <p class="pf-sum"><strong>${lessons.length} lesson${lessons.length === 1 ? "" : "s"}:</strong> ${lessons.map((g) => esc(g.title)).join(" · ")}</p>` : "";
-    box.querySelectorAll("[data-pf]").forEach((s) => s.addEventListener("change", () => { picked[+s.dataset.pf].kind = s.value; draw(); }));
-    document.getElementById("pfSave").disabled = !picked.length;
+    box.querySelectorAll("[data-pf]").forEach((s) => s.addEventListener("change", () => {
+      const p = all[+s.dataset.pf];
+      if (p.mat) fromMats.set(p.mat.id, s.value);
+      else { const d = fromDevice.find((x) => x.file === p.file); if (d) d.kind = s.value; }
+      draw();
+    }));
+    document.getElementById("pfSave").disabled = !all.length;
   };
+  root.querySelectorAll("[data-pf-tab]").forEach((b) => b.addEventListener("click", () => {
+    root.querySelectorAll("[data-pf-tab]").forEach((x) => { const on = x === b; x.classList.toggle("active", on); x.setAttribute("aria-selected", on ? "true" : "false"); });
+    document.getElementById("pfPaneMats").hidden = b.dataset.pfTab !== "mats";
+    document.getElementById("pfPaneDevice").hidden = b.dataset.pfTab !== "device";
+  }));
+  root.querySelectorAll("[data-pf-mat]").forEach((cb) => cb.addEventListener("change", () => {
+    const m = mats.find((x) => x.id === cb.dataset.pfMat);
+    if (cb.checked) fromMats.set(m.id, guessPlanKind(materialFileName(m)));
+    else fromMats.delete(m.id);
+    draw();
+  }));
+  const filter = document.getElementById("pfFilter");
+  if (filter) {
+    filter.addEventListener("input", () => {
+      const q = filter.value.trim().toLowerCase();
+      root.querySelectorAll("#pfMats li").forEach((li) => { li.hidden = !!q && !li.dataset.name.includes(q); });
+    });
+    const setShown = (on) => {
+      root.querySelectorAll("#pfMats li").forEach((li) => {
+        if (li.hidden) return;
+        const cb = li.querySelector("[data-pf-mat]");
+        if (cb.checked !== on) { cb.checked = on; cb.dispatchEvent(new Event("change")); }
+      });
+    };
+    document.getElementById("pfAll").addEventListener("click", () => setShown(true));
+    document.getElementById("pfNone").addEventListener("click", () => setShown(false));
+  }
+  if (!mats.length) root.querySelector('[data-pf-tab="device"]').click();
   document.getElementById("pfClose").addEventListener("click", closeModal);
   document.getElementById("pfFiles").addEventListener("change", (e) => {
-    picked = [...e.target.files].map((file) => {
-      const ext = fileExt(file.name);
-      const kind = ["ppt", "pptx"].includes(ext) || (ext === "pdf" && /slide|power ?point|presentation|ppt/i.test(file.name)) ? "slides" : "notes";
-      return { file, kind };
-    });
+    fromDevice = [...e.target.files].map((file) => ({ file, kind: guessPlanKind(file.name) }));
     draw();
   });
   document.getElementById("pfSave").addEventListener("click", async () => {
@@ -605,8 +691,17 @@ function openPlanFromFiles(c) {
       for (const g of lessons) {
         i++;
         let notesId = null, deckId = null;
-        if (g.notes) { say(`Lesson ${i} of ${lessons.length}: uploading notes…`); const made = await DB.addMaterials(c.id, [g.notes], true); notesId = made[0] && made[0].id; }
-        if (g.slides) deckId = await createDeckFromSource(c, g.slides, (t) => say(`Lesson ${i} of ${lessons.length}: ${t}`));
+        if (g.notes && g.notes.mat) notesId = g.notes.mat.id; // already on the site — just link it
+        else if (g.notes) { say(`Lesson ${i} of ${lessons.length}: uploading notes…`); const made = await DB.addMaterials(c.id, [g.notes.file], true); notesId = made[0] && made[0].id; }
+        if (g.slides) {
+          let src = g.slides.file;
+          if (g.slides.mat) {
+            const same = (c.decks || []).find((d) => d.status === "ready" && d.title === (baseTitle(g.slides.name) || g.slides.name.replace(/\.[a-z0-9]+$/i, "")));
+            if (same) deckId = same.id; // these slides were already made from this file
+            else { say(`Lesson ${i} of ${lessons.length}: opening ${g.slides.mat.title}…`); src = await materialAsFile(g.slides.mat); }
+          }
+          if (!deckId) deckId = await createDeckFromSource(c, src, (t) => say(`Lesson ${i} of ${lessons.length}: ${t}`));
+        }
         rows.push({ title: g.title, notesId, deckId });
       }
       await DB.addPlanLessons(c.id, rows);
