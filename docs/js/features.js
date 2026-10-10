@@ -1137,7 +1137,7 @@ function tourSteps(mode) {
   ];
   else steps = [
     { title: hi, text: "This short tour shows you the teacher's side of the Institute. Tap <strong>Next</strong> to go step by step, or <strong>Skip</strong> any time — you can take it again from Help." },
-    { el: "#needsAttention", isNew: true, title: "Needs Your Attention", text: "Start here. Work to grade, attendance not taken, enrollment requests, unread messages, new sign-ups, and courses still being set up — tap any item to go straight there." },
+    { el: "#needsAttention", isNew: true, title: "Needs Your Attention", text: "Start here. Work to grade, attendance not taken, enrollment requests, unread messages, new sign-ups, and scheduled classes not yet set up — tap any item to go straight there." },
     { el: tile("catalogue"), title: "Courses", text: "Every course. Open one you teach to run it. At class time, <strong>Take Attendance</strong> appears right on this tile." },
     { isNew: true, art: "manageTabs", title: "Running a course", text: "A course opens into tabs: <strong>Overview</strong> (details, schedule, announcements, cancel a class), <strong>Students</strong> (roster and requests), <strong>Lectures</strong>, <strong>Materials</strong>, and <strong>Assignments</strong>. A new course shows a <strong>set-up checklist</strong> that ticks itself as you go. <strong>Copy for a New Term</strong> brings it all forward next time." },
     { isNew: true, art: "materials", title: "Course materials", text: "Add many documents at once; they group and sort themselves by name. Check <strong>Teachers only</strong> on answer keys — students never see them." },

@@ -258,8 +258,8 @@ function attentionItems() {
       text: days.length === 1 ? `Attendance not taken for ${fmtDay(last)}` : `Attendance not taken for ${days.length} class days`,
       sub: c.title, act: "Take Attendance" });
   });
-  // Enrollment requests in courses I can manage.
-  courses.filter((c) => !c.archived && iManage(c) && c.enrollmentRequests.length).forEach((c) => {
+  // Enrollment requests for the classes I teach (Admins also see classes with no teacher yet).
+  courses.filter((c) => !c.archived && (iTeach(c) || (isAdmin() && !c.facultyId)) && c.enrollmentRequests.length).forEach((c) => {
     const n = c.enrollmentRequests.length;
     items.push({ kind: "requests", course: c, n, text: `${n} enrollment request${n === 1 ? "" : "s"}`, sub: c.title, act: "Review" });
   });
@@ -267,8 +267,9 @@ function attentionItems() {
   if (unread) items.push({ kind: "messages", n: unread, text: `${unread} unread message${unread === 1 ? "" : "s"}`, sub: "From your students", act: "Read" });
   const waiting = pendingSignups().filter((u) => u.emailVerified).length;
   if (waiting) items.push({ kind: "signups", n: waiting, text: `${waiting} new sign-up${waiting === 1 ? "" : "s"} waiting for approval`, sub: "Settings", act: "Review" });
-  // Courses I teach whose set-up isn't finished.
-  taught.filter((c) => !courseSetupDone(c)).forEach((c) => {
+  // Classes I teach that are actually being offered (scheduled, or with
+  // students) but aren't fully set up. Courses not on the schedule stay quiet.
+  taught.filter((c) => (c.schedule.startDate || c.studentIds.length) && !courseSetupDone(c)).forEach((c) => {
     const left = courseSetupSteps(c).filter((s) => !s.done).length;
     items.push({ kind: "setup", course: c, n: left, text: `Finish setting up ${c.title}`, sub: `${left} step${left === 1 ? "" : "s"} left`, act: "Continue" });
   });
