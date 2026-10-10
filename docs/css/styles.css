@@ -1761,3 +1761,20 @@ body { background-image: var(--paper), radial-gradient(1200px 380px at 50% -120p
 .lib-folder .lib-open { margin: 0; white-space: nowrap; }
 .lib-folders mark { background: color-mix(in srgb, var(--gold) 30%, transparent); color: inherit; border-radius: 3px; }
 @media (max-width: 560px) { .lib-drive-groups, .lib-folders { grid-template-columns: 1fr; } }
+
+/* Resource Library: Drive items on the shelves */
+.lib-kinds { display: inline-flex; gap: 2px; margin-top: 12px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: var(--muted); flex-wrap: wrap; }
+.lib-kind-btn { border: none; background: transparent; font: inherit; font-size: .82rem; font-weight: 700; color: var(--muted-foreground); padding: 6px 14px; border-radius: 999px; cursor: pointer; min-height: 32px; }
+.lib-kind-btn.active { background: var(--card); color: var(--foreground); box-shadow: var(--shadow); }
+.lib-online { padding: 0; }
+.lib-online-link { display: flex; align-items: center; gap: 10px; padding: 7px 0; text-decoration: none; color: inherit; }
+.lib-online-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.lib-online-link:hover .lib-title { color: var(--link); }
+.lib-open-btn { flex-shrink: 0; font-size: .74rem; font-weight: 800; letter-spacing: .03em; color: var(--link); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; }
+.lib-online-link:hover .lib-open-btn { border-color: var(--gold); }
+.lib-kind { display: inline-block; font-size: .64rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; color: #fff; background: var(--primary); border-radius: 4px; padding: 1px 5px; margin-right: 4px; vertical-align: 1px; }
+.lib-kind-a, .lib-kind-c { background: #1d7a74; }
+.lib-kind-v { background: #8c2f43; }
+.lib-kind-w, .lib-kind-g { background: #3f6a82; }
+.lib-kind-s { background: #b0512b; }
+.lib-note { color: var(--muted-foreground); font-size: .78rem; font-style: italic; }
