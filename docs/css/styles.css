@@ -1598,6 +1598,86 @@ body { background-image: var(--paper), radial-gradient(1200px 380px at 50% -120p
 /* rotating photos: slow cross-fade with a gentle drift */
 .slides { position: absolute; inset: 0; }
 .slide { position: absolute; inset: 0; background-position: center 58%; background-size: cover; background-repeat: no-repeat; opacity: 0; transition: opacity 1.8s ease; transform: scale(1.06); }
-.slide.on { opacity: 1; animation: slide-drift 11s ease-out both; }
+.slide.on { opacity: 1; animation: slide-drift 14s ease-out both; }
 @keyframes slide-drift { from { transform: scale(1.06); } to { transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { .slide { transition: none; transform: none; } .slide.on { animation: none; } }
+
+/* the main menu: tinted tiles with a large watermark icon and a live line */
+.menu-tile { --hue: var(--primary); position: relative; overflow: hidden; display: flex; flex-direction: column; min-height: 178px; padding: 22px 22px 20px;
+  background: radial-gradient(130% 120% at 100% 100%, color-mix(in srgb, var(--hue) 13%, var(--card)) 0%, var(--card) 62%);
+  border-color: color-mix(in srgb, var(--hue) 18%, var(--border)); }
+.menu-tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--hue); opacity: .85; }
+.menu-tile .icon-badge { background: var(--hue); border-color: transparent; color: #fff; box-shadow: 0 6px 16px -6px color-mix(in srgb, var(--hue) 70%, transparent); }
+.menu-tile .icon-badge svg > :first-child { fill: #fff; fill-opacity: .18; }
+.menu-tile h3 { font-family: "Source Serif 4", Georgia, serif; font-size: 1.22rem; margin-bottom: 4px; }
+.menu-tile > p:not(.tile-live) { flex: 1; }
+.menu-mark { position: absolute; right: -14px; bottom: -18px; width: 118px; height: 118px; color: var(--hue); opacity: .09; pointer-events: none; transition: transform .35s ease, opacity .35s; }
+.menu-mark svg { width: 100%; height: 100%; stroke-width: 1.4; }
+.menu-tile:hover .menu-mark { transform: rotate(-6deg) scale(1.06); opacity: .14; }
+.tile-live { display: inline-flex; align-items: center; gap: 7px; margin-top: 12px !important; font-size: .82rem !important; font-weight: 700; color: color-mix(in srgb, var(--hue) 75%, var(--foreground)) !important; }
+.tile-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--hue) 20%, transparent); flex-shrink: 0; }
+.menu-go { position: absolute; right: 18px; top: 18px; font-weight: 800; color: var(--hue); opacity: 0; transform: translateX(-4px); transition: opacity .2s, transform .2s; }
+.menu-tile:hover .menu-go, .menu-tile:focus-visible .menu-go { opacity: 1; transform: none; }
+.menu-tile .tile-badge ~ .menu-go { display: none; }
+:root[data-theme="dark"] .menu-tile { background: radial-gradient(130% 120% at 100% 100%, color-mix(in srgb, var(--hue) 22%, var(--card)) 0%, var(--card) 62%); }
+:root[data-theme="dark"] .tile-live { color: color-mix(in srgb, var(--hue) 45%, #fff) !important; }
+@media (max-width: 780px) {
+  .menu-tile { min-height: 0; padding: 16px 14px 14px; }
+  .menu-tile h3 { font-size: 1.05rem; }
+  .menu-mark { width: 84px; height: 84px; }
+  .menu-tile .tile-live { margin-top: 8px !important; font-size: .76rem !important; }
+}
+
+/* memory verse */
+.memory-card { border-left: 4px solid var(--gold); background: linear-gradient(135deg, color-mix(in srgb, var(--gold) 8%, var(--card)), var(--card) 70%); }
+.memory-head { display: flex; align-items: center; gap: 8px; font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--gold); }
+.memory-head svg { width: 16px; height: 16px; }
+.memory-text { margin: 10px 0 8px; font-family: "Source Serif 4", Georgia, serif; font-style: italic; font-size: 1.12rem; line-height: 1.55; }
+.memory-ref { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; padding: 0; font: inherit; font-weight: 700; color: var(--link); cursor: pointer; }
+.memory-ref svg { width: 14px; height: 14px; }
+.memory-row { display: flex; gap: 8px; }
+.memory-row input { flex: 1; min-width: 0; }
+.memory-preview, .memory-current { margin: 10px 0 4px; padding: 12px 14px; border-radius: 12px; background: var(--muted); }
+.memory-preview .memory-text, .memory-current .memory-text { margin: 0 0 6px; font-size: 1rem; }
+.memory-current-ref { margin: 0; font-size: .85rem; color: var(--muted-foreground); }
+.week-memory { display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 1px dashed color-mix(in srgb, var(--gold) 45%, var(--border)); border-radius: 12px; padding: 10px 14px; margin-bottom: 8px; cursor: pointer; }
+.week-memory-text { font-family: "Source Serif 4", Georgia, serif; font-style: italic; line-height: 1.45; }
+.week-memory strong { font-size: .82rem; color: var(--link); }
+:root[data-theme="dark"] .memory-ref, :root[data-theme="dark"] .week-memory strong { color: var(--gold-light); }
+
+/* class at a glance */
+.glance-card { margin-bottom: 8px; }
+.glance-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.glance-head h2 { margin: 0; font-family: "Source Serif 4", Georgia, serif; font-size: 1.2rem; }
+.glance-faces { display: flex; flex-wrap: wrap; margin: 12px 0 14px; }
+.glance-faces > span { margin-right: -6px; border-radius: 50%; box-shadow: 0 0 0 2px var(--card); display: inline-flex; }
+.glance-more { width: 34px; height: 34px; border-radius: 50%; background: var(--muted); color: var(--muted-foreground); font-size: .75rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.glance-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+@media (max-width: 700px) { .glance-grid { grid-template-columns: 1fr; gap: 14px; } }
+.glance-label { font-size: .72rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 8px; }
+.glance-bar { display: grid; grid-template-columns: 92px 1fr 26px; align-items: center; gap: 8px; font-size: .84rem; margin-bottom: 5px; }
+.glance-bar-track { height: 10px; border-radius: 5px; background: var(--muted); overflow: hidden; }
+.glance-bar-track span { display: block; height: 100%; border-radius: 5px; background: var(--primary); }
+.glance-bar:nth-child(1) .glance-bar-track span { background: var(--success); }
+.glance-bar:nth-child(4) .glance-bar-track span { background: var(--destructive); }
+.glance-bar-none .glance-bar-track span { background: var(--border); }
+.glance-bar-n { text-align: right; font-weight: 700; }
+.glance-att { display: flex; align-items: baseline; gap: 8px; }
+.glance-att strong { font-size: 1.6rem; font-family: "Source Serif 4", Georgia, serif; }
+.glance-att span { color: var(--muted-foreground); font-size: .85rem; }
+.glance-spark { width: 100%; max-width: 260px; height: 40px; margin-top: 4px; }
+.glance-flags { list-style: none; margin: 0; padding: 0; }
+.glance-flags li { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.glance-flags li:first-child { border-top: none; }
+.glance-flag-name { font-weight: 600; }
+.glance-why { display: flex; gap: 4px; flex-wrap: wrap; flex: 1; }
+
+/* course complete */
+.complete-card { display: flex; gap: 16px; align-items: center; border: 1px solid color-mix(in srgb, var(--gold) 45%, var(--border)); background: linear-gradient(120deg, color-mix(in srgb, var(--gold) 14%, var(--card)), var(--card) 65%); margin-bottom: 18px; }
+.complete-seal { width: 64px; height: 64px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--gold-light); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 4px color-mix(in srgb, var(--gold) 45%, transparent); }
+.complete-seal svg { width: 40px; height: 40px; }
+.complete-eyebrow { font-size: .72rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--gold); }
+.complete-body h3 { margin: 2px 0 4px; font-family: "Source Serif 4", Georgia, serif; font-size: 1.25rem; }
+.complete-body p { margin: 0; }
+.complete-verse { margin-top: 8px !important; font-family: "Source Serif 4", Georgia, serif; font-style: italic; color: var(--muted-foreground); }
+.complete-verse span { font-style: normal; font-weight: 700; font-size: .8rem; color: var(--gold); }
