@@ -123,13 +123,14 @@ function takeIncomingLink() {
 // Notifications settings (My Profile): phone + email + due-date reminders.
 // ---------------------------------------------------------------------------
 const EMAIL_CHOICES = [
-  ["instant", "Right away", "A short email a minute or two after it happens"],
+  ["important", "Important only", "Right away for cancellations, messages, announcements, and due-date reminders"],
+  ["instant", "Everything", "An email a minute or two after anything happens, grades and new lectures too"],
   ["daily", "Daily summary", "One email each morning (7 AM)"],
   ["off", "No emails", "Only the bell on the site (and your phone, if on)"],
 ];
 function emailChooserHtml() {
   const me = users.find((u) => u.id === currentUser.id) || {};
-  const cur = me.notifyEmail || "instant";
+  const cur = me.notifyEmail || "important";
   return `
     <div class="due-pref" id="emailPref">
       <div class="cal-modal-label" style="margin:18px 0 8px;">Email ${esc(currentUser.email ? `(${currentUser.email})` : "")}</div>
@@ -146,7 +147,7 @@ function wireEmailChooser(wrap) {
   wrap.querySelectorAll("[data-email-pref]").forEach((b) => b.addEventListener("click", () => {
     const v = b.dataset.emailPref;
     run(() => DB.updateProfile(currentUser.id, { notify_email: v }), () => renderReminderCard(),
-      { success: v === "instant" ? "You'll get an email when something happens." : v === "daily" ? "You'll get one summary email each morning." : "Emails are off." });
+      { success: v === "important" ? "You'll get an email for the important things." : v === "instant" ? "You'll get an email when anything happens." : v === "daily" ? "You'll get one summary email each morning." : "Emails are off." });
   }));
   const t = wrap.querySelector("#testEmailBtn");
   if (t) t.addEventListener("click", () => run(async () => {
@@ -196,8 +197,8 @@ function openCancelClassModal(c, presetDate, after) {
       { success: `Class on ${parseDay(d).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" })} is canceled. Students have been notified.` });
   });
 }
-function restoreClassDay(c, ds, after) {
-  if (!confirm(`Put the ${parseDay(ds).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} class back on? Students will be told it's back on.`)) return;
+async function restoreClassDay(c, ds, after) {
+  if (!(await askConfirm(`Put the ${parseDay(ds).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} class back on? Students will be told it's back on.`))) return;
   run(() => DB.restoreClass(c.id, ds), after || null, { success: "The class is back on. Students have been notified." });
 }
 // Manage page card: upcoming class days, with Cancel / Put Back On.
@@ -280,8 +281,8 @@ function renderAnnouncementsCard(c) {
     if (!body) { document.getElementById("annBody").focus(); return; }
     run(() => DB.postAnnouncement(c.id, body), null, { success: c.studentIds.length ? `Posted. ${c.studentIds.length} student${c.studentIds.length === 1 ? " has" : "s have"} been notified.` : "Posted." });
   });
-  wrap.querySelectorAll("[data-del-ann]").forEach((b) => b.addEventListener("click", () => {
-    if (!confirm("Delete this announcement? Students will no longer see it.")) return;
+  wrap.querySelectorAll("[data-del-ann]").forEach((b) => b.addEventListener("click", async () => {
+    if (!(await askConfirm("Delete this announcement? Students will no longer see it."))) return;
     run(() => DB.deleteAnnouncement(b.dataset.delAnn), null, { success: "Announcement deleted." });
   }));
 }
@@ -426,7 +427,7 @@ function renderTranscript(main) {
   const inProgress = role === "student" || isAdmin() ? coursesInProgress(ref) : [];
   const canEdit = isAdmin();
   main.innerHTML = `
-    <button class="back-link" id="backLink">&larr; ${viewingOther ? "Back to Transcripts" : "Back to Dashboard"}</button>
+    <button class="back-link" id="backLink">&larr; ${viewingOther ? "Back to Transcripts" : role === "student" ? "Back to My Grades" : "Back to Dashboard"}</button>
     <div class="page-header">
       <div class="eyebrow">${viewingOther ? staffEyebrow() + " · Transcripts" : "My Transcript"}</div>
       <h1>${viewingOther ? esc(p.name) : "Your Transcript"}</h1>
@@ -476,7 +477,7 @@ function renderTranscript(main) {
       <div class="ts-foot">Grading scale: A+ 97–100 · A 94–96 · A− 90–93 · B+ 87–89 · B 84–86 · B− 80–83 · C+ 77–79 · C 74–76 · C− 70–73 · F below 70 · P Pass · I Incomplete · W Withdrew · AU Audit. GPA on a 4.0 scale (A+/A 4.0, A− 3.7, B+ 3.3, B 3.0, B− 2.7, C+ 2.3, C 2.0, C− 1.7, F 0); P, I, W, and AU don't count toward it. Some earlier courses also used D grades (D+ 1.3, D 1.0, D− 0.7).</div>
     </div>`;
   document.getElementById("backLink").addEventListener("click", () => {
-    if (viewingOther) { transcriptStudentRef = null; view = "transcripts"; } else view = "home";
+    if (viewingOther) { transcriptStudentRef = null; view = "transcripts"; } else view = role === "student" ? "grades" : "home";
     renderNav(); renderMain();
   });
   document.getElementById("trPdf").addEventListener("click", () => downloadTranscriptPdf([ref]));
@@ -584,8 +585,8 @@ function openTranscriptEntryModal(entry, person) {
     }, null, { success: entry ? "Transcript updated." : "Course added to the transcript." });
   });
   const del = document.getElementById("teDelete");
-  if (del) del.addEventListener("click", () => {
-    if (!confirm(`Remove ${entry.courseTitle} from ${person.name}'s transcript? This can't be undone.`)) return;
+  if (del) del.addEventListener("click", async () => {
+    if (!(await askConfirm(`Remove ${entry.courseTitle} from ${person.name}'s transcript? This can't be undone.`))) return;
     run(async () => { await DB.deleteTranscriptEntry(entry.id); closeModal(); }, null, { success: "Removed from the transcript." });
   });
 }
@@ -924,9 +925,9 @@ function renderPastRecords(main) {
   wirePastImport(main);
   const s = document.getElementById("prSearch");
   if (s) s.addEventListener("input", () => { pastRecordsQuery = s.value; const pos = s.selectionStart; renderPastRecords(main); const n = document.getElementById("prSearch"); n.focus(); n.setSelectionRange(pos, pos); });
-  main.querySelectorAll("[data-pr-remove]").forEach((b) => b.addEventListener("click", () => {
+  main.querySelectorAll("[data-pr-remove]").forEach((b) => b.addEventListener("click", async () => {
     const r = pastRecords.find((x) => x.id === b.dataset.prRemove);
-    if (!r || !confirm(`Remove ${r.courseTitle} (${r.term || "no term"}) for ${r.studentName}? It won't go on anyone's transcript.`)) return;
+    if (!r || !(await askConfirm(`Remove ${r.courseTitle} (${r.term || "no term"}) for ${r.studentName}? It won't go on anyone's transcript.`))) return;
     run(() => DB.deletePastRecord(r.id), null, { success: "Removed." });
   }));
   main.querySelectorAll("[data-pr-link]").forEach((b) => b.addEventListener("click", () => {
@@ -1000,9 +1001,9 @@ function wirePastImport(main) {
   const cancel = document.getElementById("prCancel");
   if (cancel) cancel.addEventListener("click", () => { pastImport = null; redraw(); });
   const commit = document.getElementById("prCommit");
-  if (commit) commit.addEventListener("click", () => {
+  if (commit) commit.addEventListener("click", async () => {
     const r = pastImport.result;
-    if (!confirm(`Import ${r.new + r.attach} past record${r.new + r.attach === 1 ? "" : "s"}?${r.attach ? ` ${r.attach} go straight onto transcripts of people who already have accounts.` : ""}`)) return;
+    if (!(await askConfirm(`Import ${r.new + r.attach} past record${r.new + r.attach === 1 ? "" : "s"}?${r.attach ? ` ${r.attach} go straight onto transcripts of people who already have accounts.` : ""}`))) return;
     let saved;
     run(async () => { saved = await DB.importPastRecords(pastImport.rows, true); pastImport = null; }, null,
       { success: "Past records imported." }).then((ok) => {
@@ -1037,10 +1038,10 @@ function openLinkPastModal(p) {
   const pick = document.getElementById("lpPick");
   document.getElementById("lpSearch").addEventListener("input", (e) => { pick.innerHTML = options(e.target.value.trim().toLowerCase()); });
   document.getElementById("lpClose").addEventListener("click", closeModal);
-  document.getElementById("lpSave").addEventListener("click", () => {
+  document.getElementById("lpSave").addEventListener("click", async () => {
     const u = accounts.find((x) => x.id === pick.value);
     if (!u) { toast("Pick the account first."); pick.focus(); return; }
-    if (!confirm(`Put ${p.records.length} past course${p.records.length === 1 ? "" : "s"} on ${u.name}'s transcript?`)) return;
+    if (!(await askConfirm(`Put ${p.records.length} past course${p.records.length === 1 ? "" : "s"} on ${u.name}'s transcript?`))) return;
     run(async () => { await DB.linkPastRecords(p.records.map((r) => r.id), u.id); closeModal(); }, null,
       { success: `Added to ${u.name}'s transcript.` });
   });
@@ -1109,7 +1110,7 @@ function tourArt(kind) {
 
 // Steps marked isNew also make up the short "What's new" tour that people
 // who already took the full tour are shown once.
-const WHATS_NEW_SINCE = "2026-10-09T12:00:00Z"; // raise when adding new isNew steps
+const WHATS_NEW_SINCE = "2026-10-09T23:45:00Z"; // raise when adding new isNew steps
 function tourSteps(mode) {
   const first = (currentUser.name || "").trim().split(/\s+/)[0];
   const tile = (k) => `.tile[data-goto="${k}"]`;
@@ -1117,29 +1118,28 @@ function tourSteps(mode) {
   let steps;
   if (role === "student") steps = [
     { title: hi, text: "This short tour shows you around the True North Baptist Church Bible Institute. Tap <strong>Next</strong> to go step by step, or <strong>Skip</strong> any time — you can take it again from Help." },
+    { el: "#thisWeek", isNew: true, title: "This Week", text: "Start here. Your next class, everything due in the next seven days (with a ✓ once it's turned in), and the next lecture to watch. Tap any item to go straight to it." },
     { el: tile("courses"), title: "My Courses", text: "Your classes live here. Classes you can join are listed too — tap <strong>Request Enrollment</strong>." },
     { isNew: true, art: "tabs", title: "Inside each course", text: "A course opens into tabs: <strong>Overview</strong> (teacher, schedule, where it meets, announcements), <strong>Lectures</strong>, <strong>Materials</strong>, and <strong>Assignments</strong>." },
     { isNew: true, art: "materials", title: "Materials, in order", text: "Handouts are grouped — Syllabus, Quizzes, Study Questions, Lessons and more — listed week by week, and searchable. Tap any one to read it right in the page." },
     { isNew: true, art: "attend", title: "Attend from anywhere", text: "In hybrid and online courses, choose how you'll attend: in the classroom, <strong>live online</strong>, or by <strong>recorded lecture</strong>. Online attendance is counted for you — and if you miss class, watching the recording within 7 days makes it up." },
     { isNew: true, art: "lectures", title: "Lectures in series order", text: "The Lectures tab lists each class first to last. A bar shows how much you've watched, and <strong>Up next</strong> marks where to pick up." },
-    { el: tile("calendar"), isNew: true, title: "Calendar", text: "Every class day and due date in one place. Tap a day to see what's due — and tap <strong>Add to My Phone's Calendar</strong> to keep it all in your phone." },
-    { el: tile("submit"), title: "Submit Work", text: "Turn in assignments by attaching a file (or a photo of handwritten work). Each assignment's worksheet or quiz is attached right to it — weekly quizzes come out one week at a time." },
-    { isNew: true, art: "writing", title: "Write it right here", text: "No word processor at home? Write your paper in the site. Tap <strong>📖 Scripture</strong> to drop in any KJV passage, and your draft is saved as you type." },
-    { el: tile("grades"), title: "My Grades", text: "Your running grade in each course, with every score and your teacher's comments." },
-    { el: tile("transcript"), title: "My Transcript", text: "Your permanent record of finished courses — including ones taken before the site. Download it as a PDF any time." },
+    { el: tile("calendar"), title: "Calendar", text: "Every class day and due date in one place. Tap a day to see what's due — and tap <strong>Add to My Phone's Calendar</strong> to keep it all in your phone." },
+    { isNew: true, art: "writing", title: "Turning in work", text: "Open an assignment and attach a file (or a photo of handwritten work) — or write it right here. Tap <strong>📖 Scripture</strong> to drop in any KJV passage; your draft is saved as you type." },
+    { el: tile("messages"), isNew: true, title: "Messages", text: "Private conversations with your teachers, and each class's discussion board — together in one place." },
+    { el: tile("grades"), isNew: true, title: "Grades", text: "Every score and your teacher's comments — and <strong>My Transcript</strong>, your permanent record, at the top." },
     { el: tile("studyBible"), title: "Study Bible", text: "The whole King James Bible with Strong's Concordance. Tap any word to study the original Hebrew or Greek; search, highlight, and follow cross references." },
-    { el: tile("messages"), title: "Send Message", text: "A private conversation with your teacher." },
-    { el: tile("discussion"), title: "Discussion Board", text: "Talk through the lessons with your classmates." },
-    { el: tile("resourceLibrary"), isNew: true, title: "Resource Library", text: "Books and studies from the church library and Drive — and the <strong>Lecture Archive</strong> of past courses' recorded classes, open for study." },
+    { el: tile("resourceLibrary"), isNew: true, title: "Library", text: "Books and studies from the church library and Drive — and the <strong>Lecture Archive</strong> of past courses' recorded classes, open for study." },
     { el: "#notifBell", title: "Notifications", text: "New messages, grades, announcements, and class cancellations show up here." },
-    { el: "#myProfileBtn", isNew: true, art: "phone", title: "My Profile", text: "Add your photo and details. Under <strong>Notifications</strong>, get updates by email and on your phone, and reminders before work is due." },
+    { el: "#myProfileBtn", isNew: true, art: "phone", title: "My Profile", text: "Tap your name to add your photo and details. Under <strong>Notifications</strong>, choose your emails and phone alerts, and reminders before work is due." },
     { el: "#textSizeToggle", isNew: true, title: "Easy on the eyes", text: "Tap <strong>Aa</strong> for larger text. The moon beside it switches to night view; the site always starts in day view when you sign in." },
     { el: "#helpBtn", isNew: true, art: "search", title: "Help is always here", text: "Tap <strong>?</strong> and ask in your own words — the best answers come up as you type. You can take this tour again there too. May the Lord bless your studies!" },
   ];
   else steps = [
     { title: hi, text: "This short tour shows you the teacher's side of the Institute. Tap <strong>Next</strong> to go step by step, or <strong>Skip</strong> any time — you can take it again from Help." },
+    { el: "#needsAttention", isNew: true, title: "Needs Your Attention", text: "Start here. Work to grade, attendance not taken, enrollment requests, unread messages, new sign-ups, and courses still being set up — tap any item to go straight there." },
     { el: tile("catalogue"), title: "Courses", text: "Every course. Open one you teach to run it. At class time, <strong>Take Attendance</strong> appears right on this tile." },
-    { isNew: true, art: "manageTabs", title: "Running a course", text: "A course opens into tabs: <strong>Overview</strong> (details, schedule, announcements, cancel a class), <strong>Students</strong> (roster and requests), <strong>Lectures</strong>, <strong>Materials</strong>, and <strong>Assignments</strong>. <strong>Copy for a New Term</strong> brings it all forward next time." },
+    { isNew: true, art: "manageTabs", title: "Running a course", text: "A course opens into tabs: <strong>Overview</strong> (details, schedule, announcements, cancel a class), <strong>Students</strong> (roster and requests), <strong>Lectures</strong>, <strong>Materials</strong>, and <strong>Assignments</strong>. A new course shows a <strong>set-up checklist</strong> that ticks itself as you go. <strong>Copy for a New Term</strong> brings it all forward next time." },
     { isNew: true, art: "materials", title: "Course materials", text: "Add many documents at once; they group and sort themselves by name. Check <strong>Teachers only</strong> on answer keys — students never see them." },
     { isNew: true, art: "weekly", title: "Assignments with their documents", text: "Attach a worksheet or quiz to each assignment. Set up a weekly series and the quizzes are handed out one per week, in order." },
     { isNew: true, art: "lectures", title: "Lectures & live classes", text: "For hybrid and online courses, paste the YouTube playlist link. New recordings appear on their own, in lesson order, and online students are told. Live classes and online attendance take care of themselves." },

@@ -1183,18 +1183,15 @@ function renderView() {
 }
 
 function renderDashboard(main) {
+  // Kept short on purpose: everything else is one tap from these, from This
+  // Week above them, or from the buttons at the top (profile, help).
   const tiles = [
-    { key: "courses", i: "book", label: "My Courses", desc: "Open your enrolled classes" },
-    { key: "calendar", i: "calendar", label: "Calendar", desc: "Class days and due dates, all in one place" },
-    { key: "studyBible", i: "bible", label: "Study Bible", desc: "Read the KJV with Strong's Concordance" },
-    { key: "grades", i: "cap", label: "My Grades", desc: "Scores and progress" },
-    { key: "transcript", i: "scroll", label: "My Transcript", desc: "Your permanent record — download a PDF" },
-    { key: "messages", i: "mail", label: "Send Message", desc: "Reach a faculty member" },
-    { key: "submit", i: "upload", label: "Submit Work", desc: "Turn in worksheets and papers" },
-    { key: "discussion", i: "chat", label: "Discussion Board", desc: "Talk with your classmates" },
-    { key: "resourceLibrary", i: "search", label: "Resource Library", desc: "Search the Drive and church library by topic or course" },
-    { key: "profile", i: "user", label: "My Profile", desc: "Your photo, contact details, and notifications" },
-    { key: "help", i: "help", label: "Help & Tour", desc: "How everything works" },
+    { key: "courses", i: "book", label: "My Courses", desc: "Your classes — lectures, materials, and assignments" },
+    { key: "calendar", i: "calendar", label: "Calendar", desc: "Class days and due dates" },
+    { key: "messages", i: "mail", label: "Messages", desc: "Your teachers and class discussion" },
+    { key: "grades", i: "cap", label: "Grades", desc: "Scores, comments, and your transcript" },
+    { key: "studyBible", i: "bible", label: "Study Bible", desc: "The KJV with Strong's Concordance" },
+    { key: "resourceLibrary", i: "search", label: "Library", desc: "Books, studies, and past lectures" },
   ];
   const unread = unreadMessageCount();
   main.innerHTML = `
@@ -1202,9 +1199,10 @@ function renderDashboard(main) {
       <div class="eyebrow">Student Dashboard</div>
       <h1>Welcome${currentUser && currentUser.name ? `, ${esc(currentUser.name.trim().split(/\s+/)[0])}` : " to the Institute"}</h1>
     </div>
+    ${thisWeekCardHtml()}
     ${recentAnnouncementsHtml()}
     ${profileNudge()}
-    <div class="grid">
+    <div class="grid grid-six">
       ${tiles
         .map(
           (t) => `
@@ -1223,6 +1221,7 @@ function renderDashboard(main) {
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } });
   });
+  wireThisWeek(main);
   wireRecentAnnouncements(main);
   maybeStartTour();
   wireProfileNudge();
@@ -1438,6 +1437,7 @@ function renderFacultyHome(main) {
       <div class="eyebrow">${staffEyebrow()}</div>
       <h1>Welcome Professor</h1>
     </div>
+    ${attentionCardHtml()}
     ${profileNudge()}
     <div class="grid">
       ${tiles
@@ -1468,6 +1468,7 @@ function renderFacultyHome(main) {
     e.stopPropagation();
     openAttendance(b.dataset.takeAtt, todayStr(), "home");
   }));
+  wireAttention(main);
   // The Take Attendance button appears on its own as class time nears.
   const sig = attNow.map((c) => c.id).join(",");
   viewTimers.push(setInterval(() => {
@@ -1659,8 +1660,8 @@ function renderCatalogue(main) {
       const c = courses.find((x) => x.id === btn.dataset.archiveToggle);
       const archiving = !c.archived;
       const hadMessages = c.messages && c.messages.length > 0;
-      const go = () => {
-      if (archiving && hadMessages && !confirm(`Archive "${c.title}"?\n\nThis permanently deletes the course's private student–teacher messages (export any you want to keep first). Materials, grades, and the discussion board are kept.`)) return;
+      const go = async () => {
+      if (archiving && hadMessages && !(await askConfirm(`Archive "${c.title}"?\n\nThis permanently deletes the course's private student–teacher messages (export any you want to keep first). Materials, grades, and the discussion board are kept.`))) return;
       run(async () => {
         await DB.setArchived(c.id, archiving);
         flashMessage = archiving
@@ -1684,8 +1685,8 @@ function renderCourse(main) {
   const tabs = [
     { id: "overview", label: "Overview" },
     ...(hasLectures ? [{ id: "lectures", label: "Lectures", count: playable || "" }] : []),
-    { id: "materials", label: "Materials", count: docUnits(c.materials).length || "" },
-    { id: "assignments", label: "Assignments", count: open.length || "", alert: open.some((x) => x.a.due < todayStr()) },
+    ...(c.materials.length ? [{ id: "materials", label: "Materials", count: docUnits(c.materials).length || "" }] : []),
+    ...(c.assignments.length ? [{ id: "assignments", label: "Assignments", count: open.length || "", alert: open.some((x) => x.a.due < todayStr()) }] : []),
   ];
   const upcoming = open.slice().sort((x, y) => x.a.due.localeCompare(y.a.due)).slice(0, 3);
   main.innerHTML = `
@@ -1703,27 +1704,28 @@ function renderCourse(main) {
       ${courseAnnouncementsHtml(c)}
       <div class="overview-grid">
         ${nextLectureHtml(c)}
-        <div class="card overview-card">
+        ${c.assignments.length ? `<div class="card overview-card">
           <div class="overview-head"><h3>${icon("note")} Assignments</h3><a href="#" data-goto-tab="assignments">All ${c.assignments.length}</a></div>
           ${upcoming.length ? `<ul class="assignments-list compact">${upcoming.map(({ a, sub }) => studentAssignmentRow(c, a, sub, { compact: true })).join("")}</ul>`
-            : `<p class="field-hint" style="margin:0;">${c.assignments.length ? "✓ Nothing waiting on you right now." : "No assignments yet."}</p>`}
-        </div>
-        <div class="card overview-card">
+            : `<p class="field-hint" style="margin:0;">✓ Nothing waiting on you right now.</p>`}
+        </div>` : ""}
+        ${c.materials.length ? `<div class="card overview-card">
           <div class="overview-head"><h3>${icon("book")} Course Materials</h3><a href="#" data-goto-tab="materials">All ${docUnits(c.materials).length}</a></div>
           ${(() => {
             const syl = docGroups(c.materials).find((g) => g.id === "syllabus");
             return syl ? `<ul class="docs-list">${syl.units.slice(0, 2).map((u) => `<li class="doc-row"><div class="doc-main"><strong class="doc-name">${esc(u.base)}</strong></div><div class="doc-open">${u.files.map((f) => `<button type="button" class="btn btn-ghost btn-sm" data-open-material="${f.id}">${u.files.length === 1 ? "Open" : docKind(f)}</button>`).join("")}</div></li>`).join("")}</ul>`
-              : `<p class="field-hint" style="margin:0;">${c.materials.length ? `${docUnits(c.materials).length} documents — syllabus, lessons, readings and more.` : "No documents yet."}</p>`;
+              : `<p class="field-hint" style="margin:0;">${docUnits(c.materials).length} documents — syllabus, lessons, readings and more.</p>`;
           })()}
-        </div>
+        </div>` : ""}
+        ${!c.assignments.length && !c.materials.length && !hasLectures ? `<p class="field-hint" style="margin:0;">Your teacher hasn't posted anything for this course yet. Check back soon.</p>` : ""}
       </div>
     </section>
     ${hasLectures ? `<section ${panelAttrs(key, "lectures")}>${courseAttendHtml(c, "list")}</section>` : ""}
-    <section ${panelAttrs(key, "materials")}>
+    ${c.materials.length ? `<section ${panelAttrs(key, "materials")}>
       <div class="section-title"><h2>Course Materials</h2></div>
       <div class="card">${materialsBrowserHtml(c)}</div>
-    </section>
-    <section ${panelAttrs(key, "assignments")}>
+    </section>` : ""}
+    ${c.assignments.length ? `<section ${panelAttrs(key, "assignments")}>
       <div class="section-title"><h2>Assignments</h2></div>
       <div class="card">
         <ul class="assignments-list">
@@ -1746,7 +1748,7 @@ function renderCourse(main) {
           }).join("")}
         </ul>
       </div>
-    </section>
+    </section>` : ""}
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "courses"; renderNav(); renderMain(); });
   main.querySelectorAll(".overview-card [data-open-material]").forEach((btn) => {
@@ -1861,8 +1863,8 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
   }
   syncMethodUI();
   document.querySelectorAll('input[name="submitMethod"]').forEach((r) => r.addEventListener("change", syncMethodUI));
-  document.getElementById("submitCancel").addEventListener("click", () => {
-    if (method() === "editor" && editor.isDirty() && !confirm("Close without saving?\n\nYour writing is kept as a draft on this device, and you'll be offered it the next time you open this assignment here.")) return;
+  document.getElementById("submitCancel").addEventListener("click", async () => {
+    if (method() === "editor" && editor.isDirty() && !(await askConfirm("Close without saving?\n\nYour writing is kept as a draft on this device, and you'll be offered it the next time you open this assignment here."))) return;
     closeModal();
   });
   const afterSave = onSaved || (() => renderMain());
@@ -2210,7 +2212,7 @@ function renderPhoneCalendarBody(token) {
     catch (e) { const i = document.getElementById("pcLink"); i.focus(); i.select(); toast("Press and hold (or Ctrl+C) to copy the selected link."); }
   });
   document.getElementById("pcReset").addEventListener("click", async () => {
-    if (!confirm("Make a new calendar link? The old link will stop working — any phone or computer that added it will need the new one.")) return;
+    if (!(await askConfirm("Make a new calendar link? The old link will stop working — any phone or computer that added it will need the new one."))) return;
     try { renderPhoneCalendarBody(await DB.resetCalendarToken()); toast("New link ready. Add it to your calendar again.", "success"); }
     catch (e) { toast(friendlyError(e)); }
   });
@@ -2381,6 +2383,11 @@ function renderMyGrades(main) {
       <h1>My Grades</h1>
       <p>Your grades only — as each one is posted, and a running grade for each course.</p>
     </div>
+    <button type="button" class="card transcript-link" id="openTranscript">
+      <span class="icon-badge hue-wine">${icon("scroll")}</span>
+      <span><strong>My Transcript</strong><small>Your permanent record of finished courses — download it as a PDF.</small></span>
+      <span class="week-go">Open</span>
+    </button>
     ${myCourses.length === 0 ? `
     <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("cap")}</div>
@@ -2438,6 +2445,7 @@ function renderMyGrades(main) {
     ` : ""}
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
+  document.getElementById("openTranscript").addEventListener("click", () => { view = "transcript"; renderNav(); renderMain(); });
 }
 
 // Faculty: everything turned in across every course, waiting on a grade,
@@ -2649,11 +2657,11 @@ function openGradeModal(course, assignment, studentId, onSaved) {
   document.getElementById("gradeCancel").addEventListener("click", closeModal);
   const openBtn = document.getElementById("gradeOpenFile");
   if (openBtn) openBtn.addEventListener("click", () => openFileViewer({ bucket: "submissions", path: sub.storagePath, title: sub.fileName, subtitle: `${userName(studentId)} · ${assignment.title}`, mimeType: sub.mimeType, returnFocus: openBtn }));
-  document.getElementById("gradeSave").addEventListener("click", () => {
+  document.getElementById("gradeSave").addEventListener("click", async () => {
     const scoreInput = document.getElementById("gradeScore");
     const score = parseFloat(scoreInput.value);
     if (isNaN(score) || score < 0) { toast("Enter a score of 0 or more."); scoreInput.focus(); return; }
-    if (score > assignment.points && !confirm(`${score} is more than the ${assignment.points} points possible. Save it anyway (e.g. extra credit)?`)) return;
+    if (score > assignment.points && !(await askConfirm(`${score} is more than the ${assignment.points} points possible. Save it anyway (e.g. extra credit)?`))) return;
     const feedback = document.getElementById("gradeFeedback").value.trim();
     run(async () => {
       await DB.grade({ assignmentId: assignment.id, studentId, score, feedback });
@@ -2715,7 +2723,7 @@ function renderDiscussionBoard(main) {
   const c = courses.find((x) => x.id === activeCourseId);
   if (!c.discussion) c.discussion = [];
   main.innerHTML = `
-    <button class="back-link" id="backLink">&larr; Back to Discussion Board</button>
+    <button class="back-link" id="backLink">&larr; ${role === "student" ? "Back to Messages" : "Back to Discussion Board"}</button>
     <div class="page-header">
       <span class="pill pill-navy">${esc(c.level)} Level</span>
       <h1 style="margin-top:10px;">${esc(c.title)}</h1>
@@ -2729,7 +2737,7 @@ function renderDiscussionBoard(main) {
     </div>` : ""}
     <div id="dbPosts"></div>
   `;
-  document.getElementById("backLink").addEventListener("click", () => { view = "discussion"; renderNav(); renderMain(); });
+  document.getElementById("backLink").addEventListener("click", () => { view = role === "student" ? "messages" : "discussion"; renderNav(); renderMain(); });
   if (role === "faculty") {
     document.getElementById("dbPostBtn").addEventListener("click", () => {
       const ta = document.getElementById("dbNewPost");
@@ -2804,15 +2812,15 @@ function renderDiscussionPosts(c) {
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
   });
   wrap.querySelectorAll("[data-delete-post]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (!confirm("Delete this post and all of its replies?")) return;
+    btn.addEventListener("click", async () => {
+      if (!(await askConfirm("Delete this post and all of its replies?"))) return;
       run(() => DB.deletePost(btn.dataset.deletePost));
     });
   });
   wrap.querySelectorAll("[data-delete-reply]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const [, rid] = btn.dataset.deleteReply.split("|");
-      if (!confirm("Delete this reply?")) return;
+      if (!(await askConfirm("Delete this reply?"))) return;
       run(() => DB.deletePost(rid));
     });
   });
@@ -2912,9 +2920,10 @@ function renderMessages(main) {
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">
       <div class="eyebrow">${role === "student" ? "Student Dashboard" : staffEyebrow()}</div>
-      <h1>${role === "student" ? "Send Message" : "Message Inbox"}</h1>
-      <p>${role === "student" ? "A private conversation with each of your instructors — classmates can't see it, and you can't message other students." : "One private conversation per student, per class you teach."}</p>
+      <h1>${role === "student" ? "Messages" : "Message Inbox"}</h1>
+      <p>${role === "student" ? "Private conversations with your teachers, and each class's discussion." : "One private conversation per student, per class you teach."}</p>
     </div>
+    ${role === "student" ? `<div class="section-title"><h2>Your teachers</h2><span class="field-hint" style="margin:0;">Private — only you and the teacher see these</span></div>` : ""}
     ${rows.length === 0 ? `
     <div class="card empty-state">
       <div class="icon-badge" style="margin:0 auto 14px;">${icon("mail")}</div>
@@ -2941,6 +2950,7 @@ function renderMessages(main) {
           .join("")}
       </ul>
     </div>`}
+    ${role === "student" ? studentDiscussionSectionHtml() : ""}
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
   main.querySelectorAll("[data-thread]").forEach((el) => {
@@ -2953,6 +2963,28 @@ function renderMessages(main) {
       renderMain();
     });
   });
+  main.querySelectorAll("[data-board]").forEach((el) => {
+    const open = () => { activeCourseId = el.dataset.board; view = "discussionBoard"; renderNav(); renderMain(); };
+    el.addEventListener("click", open);
+    el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } });
+  });
+}
+// Students' Messages page also lists each class's discussion board.
+function studentDiscussionSectionHtml() {
+  const list = courses.filter((c) => isLive(c) && c.studentIds.includes(currentStudentId));
+  if (!list.length) return "";
+  return `
+    <div class="section-title"><h2>Class discussion</h2><span class="field-hint" style="margin:0;">Everyone in the class can read and reply</span></div>
+    <div class="grid grid-compact">
+      ${list.map((c) => {
+        const count = (c.discussion || []).reduce((n, p) => n + 1 + p.replies.length, 0);
+        return `<div class="tile tile-compact" data-board="${c.id}" tabindex="0" role="button">
+          ${icon("chat")}
+          <h3>${esc(c.title)}</h3>
+          <p class="tile-meta">${count} post${count === 1 ? "" : "s"}</p>
+        </div>`;
+      }).join("")}
+    </div>`;
 }
 
 function renderMessageThread(main) {
@@ -3149,12 +3181,13 @@ function renderManage(main) {
     ${tabsHtml(mkey, [
       { id: "setup", label: "Overview" },
       { id: "students", label: "Students", count: c.studentIds.length + c.enrollmentRequests.length || "", alert: c.enrollmentRequests.length > 0 },
-      { id: "lectures", label: "Lectures", count: c.lessons.filter((l) => l.status !== "removed").length || "" },
+      ...(courseHasLectures(c) ? [{ id: "lectures", label: "Lectures", count: c.lessons.filter((l) => l.status !== "removed").length || "" }] : []),
       { id: "materials", label: "Materials", count: docUnits(c.materials).length || "" },
       { id: "assignments", label: "Assignments", count: groupAssignments(c.assignments).length || "" },
     ])}
 
     <section ${panelAttrs(mkey, "setup")}>
+    ${setupChecklistHtml(c)}
     <div class="section-title"><h2>Teacher</h2></div>
     <div class="card" id="mgTeacherCard"></div>
 
@@ -3201,10 +3234,10 @@ function renderManage(main) {
     <div class="card" id="mgAnnounceCard"></div>
     </section>
 
-    <section ${panelAttrs(mkey, "lectures")}>
+    ${courseHasLectures(c) ? `<section ${panelAttrs(mkey, "lectures")}>
     <div class="section-title"><h2>Lectures &amp; Live Class</h2></div>
     <div class="card" id="mgLecturesCard"></div>
-    </section>
+    </section>` : ""}
 
     <section ${panelAttrs(mkey, "students")}>
     <div id="mgEnrollRequestsSection"></div>
@@ -3239,6 +3272,7 @@ function renderManage(main) {
     </section>
   `;
   wireTabs(mkey, main);
+  wireSetupChecklist(c, main);
 
   document.getElementById("backLink").addEventListener("click", () => { view = "catalogue"; renderNav(); renderMain(); });
   document.getElementById("mgAddAssignment").addEventListener("click", () => openAddAssignmentModal(c));
@@ -3277,7 +3311,7 @@ function renderManage(main) {
   renderAttendanceCard(c);
   renderEnrollmentRequests(c);
   renderRosterList(c);
-  renderLecturesCard(c);
+  if (courseHasLectures(c)) renderLecturesCard(c);
   renderMaterialsList(c);
   renderAssignmentsList(c);
 
@@ -3328,7 +3362,7 @@ function openEditCourseModal(course) {
   document.getElementById("ecCancel").addEventListener("click", closeModal);
   wireAttSettings("ec");
   wireFormatSettings("ec");
-  document.getElementById("ecSave").addEventListener("click", () => {
+  document.getElementById("ecSave").addEventListener("click", async () => {
     const nameInput = document.getElementById("ecName");
     const name = nameInput.value.trim();
     if (!name) { nameInput.focus(); return; }
@@ -3346,7 +3380,7 @@ function openEditCourseModal(course) {
     catch (e) { toast(e.message); if (e.field) document.getElementById(e.field).focus(); return; }
     const playlistChanged = patch.playlist_id !== course.playlistId;
     if (playlistChanged && course.playlistId && course.lessons.some((l) => l.fromPlaylist && l.status !== "removed")
-        && !confirm(patch.playlist_id ? "Switch this course to the new playlist? Lectures from the old playlist will be taken off the course (students' progress on them is kept)." : "Remove the playlist? Its lectures will be taken off the course.")) return;
+        && !(await askConfirm(patch.playlist_id ? "Switch this course to the new playlist? Lectures from the old playlist will be taken off the course (students' progress on them is kept)." : "Remove the playlist? Its lectures will be taken off the course."))) return;
     run(async () => {
       await DB.updateCourse(course.id, patch);
       if (playlistChanged || patch.live_video_id !== course.liveVideoId) await DB.requestPlaylistSync(course.id).catch(() => {});
@@ -3538,10 +3572,10 @@ function renderAssignmentsList(c) {
     btn.addEventListener("click", () => openAssignmentDocsModal(c, c.assignments.filter((a) => a.seriesId === btn.dataset.seriesDocs)));
   });
   wireDocChips(c, wrap);
-  const deleteAssignments = (items, label) => {
+  const deleteAssignments = async (items, label) => {
     const turnedIn = items.reduce((n, a) => n + (a.submissions || []).filter((s) => s.status === "submitted" || s.status === "graded").length, 0);
     const warn = turnedIn ? `\n\n${turnedIn} submission${turnedIn === 1 ? "" : "s"} and any grades on ${items.length === 1 ? "it" : "them"} will be permanently deleted.` : "";
-    if (!confirm(`Delete ${label}?${warn}`)) return;
+    if (!(await askConfirm(`Delete ${label}?${warn}`))) return;
     run(() => DB.deleteAssignments(items.map((a) => a.id)), null, { success: "Deleted." });
   };
   wrap.querySelectorAll("[data-delete-assignment]").forEach((btn) => {
@@ -3685,7 +3719,7 @@ function openAddAssignmentModal(course) {
   document.querySelectorAll('input[name="asgAvail"]').forEach((r) => r.addEventListener("change", syncLockFieldsUI));
 
   document.getElementById("asgCancel").addEventListener("click", closeModal);
-  document.getElementById("asgSave").addEventListener("click", () => {
+  document.getElementById("asgSave").addEventListener("click", async () => {
     const titleInput = document.getElementById("asgTitle");
     const title = titleInput.value.trim();
     if (!title) { titleInput.focus(); return; }
@@ -3723,7 +3757,7 @@ function openAddAssignmentModal(course) {
     }
     const units = picker.units();
     if (type !== "standalone" && units.length && plan && plan.mode === "order" && units.length > rows.length
-        && !confirm(`${units.length - rows.length} of the documents won't be attached — there are only ${rows.length} weeks.\n\nSave anyway?`)) return;
+        && !(await askConfirm(`${units.length - rows.length} of the documents won't be attached — there are only ${rows.length} weeks.\n\nSave anyway?`))) return;
     run(async () => {
       if (units.length) {
         const ids = await picker.commit();
@@ -4086,8 +4120,8 @@ function renderAttendance(main) {
       { success: `Attendance saved for ${fmtDay(date, { weekday: "long", month: "short", day: "numeric" })}.` });
   });
   const clr = document.getElementById("attClear");
-  if (clr) clr.addEventListener("click", () => {
-    if (!confirm(`Clear attendance for ${fmtDay(date, { weekday: "long", month: "short", day: "numeric" })}? This day will go back to "Not taken yet".`)) return;
+  if (clr) clr.addEventListener("click", async () => {
+    if (!(await askConfirm(`Clear attendance for ${fmtDay(date, { weekday: "long", month: "short", day: "numeric" })}? This day will go back to "Not taken yet".`))) return;
     run(() => DB.clearAttendance(c.id, date), () => { attDraft = null; renderMain(); }, { success: "That day's attendance was cleared." });
   });
 }
@@ -4359,7 +4393,7 @@ function renderTeacherCard(c) {
     </div>
     <p class="field-hint" style="margin-top:8px;">${hint}</p>`;
 
-  document.getElementById("mgSaveTeacher").addEventListener("click", () => {
+  document.getElementById("mgSaveTeacher").addEventListener("click", async () => {
     const newId = document.getElementById("mgTeacher").value || null;
     if ((newId || null) === (t ? t.id : null)) { toast("That's already this course's teacher.", "success"); return; }
     const newName = newId ? userName(newId) : "no teacher";
@@ -4367,7 +4401,7 @@ function renderTeacherCard(c) {
     const msg = handingOff
       ? `Hand "${c.title}" to ${newName}?\n\nYou'll no longer see this course's grades, private messages, or discussion board.${sa ? "" : " You won't be able to manage the course either, and once it starts only an Admin can change its teacher."}`
       : `Make ${newName === "no teacher" ? "this course unassigned" : newName + " the teacher of \"" + c.title + "\""}?\n\n${newId ? "They'll see the course's full grade book, messages, and discussion board" + (t ? `, and ${t.name} no longer will.` : ".") : "The Admins will receive its messages and enrollment requests until a teacher is chosen."}`;
-    if (!confirm(msg)) return;
+    if (!(await askConfirm(msg))) return;
     run(() => DB.updateCourse(c.id, { faculty_id: newId }), () => {
       // Handing your own course away may mean you can no longer manage it.
       if (!iManage(courses.find((x) => x.id === c.id))) { view = "catalogue"; activeCourseId = null; renderNav(); }
@@ -4500,13 +4534,13 @@ function renderRosterList(c) {
     <button class="btn btn-gold btn-sm" id="mgAddStudent" style="margin-top:14px;">+ Add Student</button>
   `;
   wrap.querySelectorAll("[data-remove-student]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const removedId = btn.dataset.removeStudent;
       // A student's private messages with this course's instructor go
       // with their enrollment — once they're off the roster, there's no
       // relationship left for the thread to belong to. Their submitted
       // work and grades are kept (and return if they're re-added).
-      if (!confirm(`Remove ${userName(removedId)} from ${c.title}?\n\nTheir private messages for this course will be deleted. Their submitted work and grades are kept.`)) return;
+      if (!(await askConfirm(`Remove ${userName(removedId)} from ${c.title}?\n\nTheir private messages for this course will be deleted. Their submitted work and grades are kept.`))) return;
       run(() => DB.unenroll(c.id, removedId));
     });
   });
@@ -5076,14 +5110,14 @@ function renderUserList() {
 
   wrap.querySelectorAll("[data-role-toggle]").forEach((toggle) => {
     toggle.querySelectorAll("button").forEach((btn) => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         const u = users.find((x) => x.id === toggle.dataset.roleToggle);
         const level = btn.dataset.level;
         if (userLevel(u) === level) return;
         const self = currentUser && u.id === currentUser.id;
-        if (self && !confirm(`Change your own level to ${LEVEL_LABEL[level]}? You'll lose Admin access${level === "student" ? ", including faculty pages" : ""} and can't undo this yourself.`)) return;
-        if (!self && level === "admin" && !confirm(`Make ${u.name} an Admin? Admins can change anyone's level, turn off or delete accounts, and delete courses.`)) return;
-        if (!self && level === "faculty" && userLevel(u) === "student" && !confirm(`Make ${u.name} Faculty? Faculty can create and run courses, see the student list, and approve new sign-ups.`)) return;
+        if (self && !(await askConfirm(`Change your own level to ${LEVEL_LABEL[level]}? You'll lose Admin access${level === "student" ? ", including faculty pages" : ""} and can't undo this yourself.`))) return;
+        if (!self && level === "admin" && !(await askConfirm(`Make ${u.name} an Admin? Admins can change anyone's level, turn off or delete accounts, and delete courses.`))) return;
+        if (!self && level === "faculty" && userLevel(u) === "student" && !(await askConfirm(`Make ${u.name} Faculty? Faculty can create and run courses, see the student list, and approve new sign-ups.`))) return;
         const patch = level === "admin" ? { role: "faculty", super_admin: true } : { role: level, super_admin: false };
         run(() => DB.updateProfile(u.id, patch), () => {
           // Changing your own level takes effect right away.
@@ -5105,10 +5139,10 @@ function renderUserList() {
   });
 
   wrap.querySelectorAll("[data-inactive]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const u = users.find((x) => x.id === btn.dataset.inactive);
       const self = currentUser && u.id === currentUser.id;
-      if (self && !confirm("Make your own account inactive? You'll be signed out and won't be able to sign back in until another Admin reactivates you.")) return;
+      if (self && !(await askConfirm("Make your own account inactive? You'll be signed out and won't be able to sign back in until another Admin reactivates you."))) return;
       run(() => DB.updateProfile(u.id, { status: "inactive" }), () => {
         // Deactivating your own account signs you out immediately.
         if (self) { signOut("Your account is now inactive."); return; }
@@ -5328,8 +5362,8 @@ function renderProfile(main) {
   });
   const removeBtn = document.getElementById("removePhotoBtn");
   if (removeBtn) {
-    removeBtn.addEventListener("click", () => {
-      if (!confirm(isSelf ? "Remove your profile photo?" : `Remove ${u.name}'s profile photo?`)) return;
+    removeBtn.addEventListener("click", async () => {
+      if (!(await askConfirm(isSelf ? "Remove your profile photo?" : `Remove ${u.name}'s profile photo?`))) return;
       run(() => DB.removeAvatar(u.id, u.avatarPath), () => { renderAccountPill(); renderMain(); }, { success: "Photo removed." });
     });
   }

@@ -13,6 +13,12 @@
 // What's new — newest first. who: "all" | "student" | "faculty" | "admin"
 // ---------------------------------------------------------------------------
 const WHATS_NEW = [
+  { date: "2026-10-09", who: "student", title: "This Week", text: "The top of your Dashboard now shows your next class, what's due in the next seven days, and the next lecture to watch — one tap each." },
+  { date: "2026-10-09", who: "student", title: "A simpler Dashboard", text: "Six tiles instead of eleven: Messages now holds your teachers and class discussion, and Grades holds your transcript. Your profile is under your name at the top." },
+  { date: "2026-10-09", who: "faculty", title: "Needs Your Attention", text: "The top of your Dashboard lists work to grade, attendance not taken, requests, messages, and sign-ups — one tap each." },
+  { date: "2026-10-09", who: "faculty", title: "Course set-up checklist", text: "New courses show a short checklist that ticks itself as you go." },
+  { date: "2026-10-09", who: "all", title: "Fewer emails", text: "New accounts get email for the important things only. Change it any time in My Profile → Notifications." },
+  { date: "2026-10-09", who: "all", title: "Clearer “Are you sure?”", text: "Confirmations now appear in a small box on the page." },
   { date: "2026-10-09", who: "all", title: "Courses open in tabs", text: "Each course page is now split into tabs — Overview, Lectures, Materials, and Assignments — so everything is one tap away." },
   { date: "2026-10-09", who: "all", title: "Tidier course materials", text: "Documents are grouped (Syllabus, Quizzes, Exams, Study Questions, Lessons, Presentations, Textbooks…), sorted in order, and searchable. A Word and PDF copy of the same document share one row." },
   { date: "2026-10-09", who: "all", title: "Lectures in series order", text: "Recorded lectures are listed first to last by lesson number, with “Up next” marking where you left off." },
@@ -44,7 +50,9 @@ function whatsNewFor() {
 const HELP_TOPICS = [
   // ----- Students ---------------------------------------------------------
   { id: "start", title: "Getting started", who: "student", items: [
-    ["What's on my Dashboard?", "Each tile opens one part of the Institute: <strong>My Courses</strong> (your classes, and ones you can join), <strong>Calendar</strong>, <strong>Study Bible</strong>, <strong>My Grades</strong>, <strong>My Transcript</strong>, <strong>Send Message</strong>, <strong>Submit Work</strong>, <strong>Discussion Board</strong>, <strong>Resource Library</strong>, <strong>My Profile</strong>, and <strong>Help &amp; Tour</strong>. Recent announcements from your teachers show at the top.", "home main page tiles"],
+    ["What's on my Dashboard?", "At the top, <strong>This Week</strong> shows your next class, everything due in the next seven days (with a ✓ once it's turned in), and the next lecture to watch — tap any of them to go straight there. Below are six tiles: <strong>My Courses</strong>, <strong>Calendar</strong>, <strong>Messages</strong> (your teachers and class discussion), <strong>Grades</strong> (with your transcript), <strong>Study Bible</strong>, and <strong>Library</strong>. Your name at the top opens My Profile; <strong>?</strong> opens Help.", "home main page tiles this week"],
+    ["What is This Week?", "The card at the top of your Dashboard. It lists your next class (or a red <strong>Live now</strong> button when class is streaming), what's due in the next seven days, anything overdue, and the next lecture to watch. Tap an item to open it. <strong>See all assignments</strong> lists every assignment in every course.", "this week due soon next class todo"],
+    ["How do I open My Profile?", "Tap your name (or photo) at the top of the page.", "profile settings account name"],
     ["How do I sign up for a class?", "Open <strong>My Courses</strong>. Classes you can join are listed under <strong>Available</strong> — tap <strong>Request Enrollment</strong>. Your teacher approves it and you'll get a notification. Changed your mind? Tap <strong>Withdraw</strong> while it's still waiting. If the class has already started, ask the teacher to add you.", "enroll join register"],
     ["I signed up but can't get in yet.", "New accounts are approved by the Institute before they open, to keep the site for our church family. First confirm your email (look for our message — check spam too), then you'll be let in as soon as you're approved. The waiting page checks for you by itself.", "pending approval waiting confirm"],
     ["Can I use the site on my phone?", "Yes — it's made to fit a phone. For the best experience, add it to your Home Screen: on iPhone, Safari → <strong>Share</strong> → <strong>Add to Home Screen</strong>; on Android, Chrome's menu → <strong>Add to Home screen</strong> (or Install app). It then opens like an app.", "mobile app install android iphone"],
@@ -53,7 +61,7 @@ const HELP_TOPICS = [
   { id: "courses", title: "Inside a course", who: "student", items: [
     ["How is a course page laid out?", "Every course opens into tabs: <strong>Overview</strong> (teacher, schedule, where it meets, announcements), <strong>Lectures</strong> (recorded classes, for hybrid and online courses), <strong>Materials</strong> (the syllabus and handouts), and <strong>Assignments</strong> (what's due, with its documents).", "tabs overview layout"],
     ["Where are the handouts and syllabus?", "On the course's <strong>Materials</strong> tab. They're grouped — Syllabus, Quizzes, Exams, Study Questions, Lessons, Presentations, Textbooks, Guides &amp; Forms — and listed in order (Week 1, Week 2…). Use the search box to find one by name. Tap a document to read it right in the page; when there's a Word and a PDF copy, both are on the same row.", "materials documents handout syllabus pdf word download"],
-    ["Where's this week's quiz or worksheet?", "Open the assignment (from the course's <strong>Assignments</strong> tab, the Calendar, or Submit Work) — its document is attached right there. Weekly quizzes come out one week at a time, in order.", "quiz worksheet weekly study questions"],
+    ["Where's this week's quiz or worksheet?", "Open the assignment (from the course's <strong>Assignments</strong> tab, the Calendar, or This Week) — its document is attached right there. Weekly quizzes come out one week at a time, in order.", "quiz worksheet weekly study questions"],
     ["Can I read documents without downloading them?", "Yes. PDFs and Word documents open inside the page. There's also a download button if you'd like a copy to print.", "open view read print"],
     ["How will I know if class is canceled?", "If your teacher cancels a class (snow, illness, or anything else), you're told right away — on the bell, and by phone and email if you've turned those on. The day is marked <strong>Canceled</strong> on your Calendar and in your phone's calendar.", "cancel snow weather storm sick no class"],
     ["Where do announcements show?", "On your Dashboard (most recent first), on the course's Overview tab, and in your notifications.", "news announcement"],
@@ -70,18 +78,18 @@ const HELP_TOPICS = [
     ["What's the Lecture Archive?", "In the <strong>Resource Library</strong>: recorded lectures from past courses, open to every student for study. Watching there doesn't count toward any course.", "archive old lectures past"],
   ]},
   { id: "work", title: "Turning in work", who: "student", items: [
-    ["How do I turn in an assignment?", "Open <strong>Submit Work</strong> (or tap the assignment on the Calendar or your course page). Attach a file — a PDF, Word document, or a photo of handwritten work — or write it right in the editor, then tap <strong>Turn In</strong>. You can replace it any time until it's graded.", "submit hand in upload homework"],
+    ["How do I turn in an assignment?", "Tap the assignment in <strong>This Week</strong> on your Dashboard (or on the Calendar, or your course's Assignments tab). Attach a file — a PDF, Word document, or a photo of handwritten work — or write it right in the editor, then tap <strong>Turn In</strong>. You can replace it any time until it's graded.", "submit hand in upload homework"],
     ["Can I take a picture of handwritten work?", "Yes. On a phone, tap to attach and choose your camera or photos. Make sure the page is well lit and readable.", "photo picture camera scan"],
     ["Can I save my writing and finish later?", "Yes. As you write in the editor, a draft is saved on that device. Tap <strong>Save as In Progress</strong> to keep it with your account so you can finish on another device; your teacher won't grade it until you tap <strong>Turn In</strong>.", "draft save later"],
     ["What does “Opens” or “Locked” mean?", "Some assignments open on a certain day. Until then they show <strong>Opens</strong> with the date.", "locked opens closed"],
     ["Can I turn something in late?", "The site lets you turn in work after the due date unless your teacher has said otherwise; it's marked with the date you turned it in. Ask your teacher about their late policy.", "late overdue past due"],
-    ["How do I know it went through?", "The assignment shows <strong>Turned in</strong> with the date, and you'll see it in Submit Work. When it's graded you'll get a notification.", "confirm submitted received"],
+    ["How do I know it went through?", "The assignment shows <strong>Turned in</strong> with the date, and This Week shows a ✓ beside it. When it's graded you'll get a notification.", "confirm submitted received"],
   ]},
   { id: "grades", title: "Grades & transcript", who: "student", items: [
     ["Where do I see my grades?", "<strong>My Grades</strong> shows each course's running grade, every score, and your teacher's comments.", "score marks"],
     ["How are letter grades figured?", "The same scale as the Institute's paper grade sheets: A+ 97–100, A 94–96, A− 90–93, B+ 87–89, B 84–86, B− 80–83, C+ 77–79, C 74–76, C− 70–73, and F below 70.", "scale percent letter"],
     ["Does attendance count toward my grade?", "In some courses. When it does, the course page shows what share of the grade it is.", "attendance percent"],
-    ["What is My Transcript?", "Your permanent record of finished courses — the final grade and credits. Your teacher records it when the course ends. Download it as a PDF any time.", "transcript record credits certificate"],
+    ["What is My Transcript?", "Your permanent record of finished courses — the final grade and credits. Open <strong>Grades</strong> and tap <strong>My Transcript</strong> at the top. Your teacher records it when the course ends. Download it as a PDF any time.", "transcript record credits certificate"],
     ["I took classes before the site. Are they on my transcript?", "They should be — past grade sheets were brought in under your email. Sign up with the email the church has for you; once you're approved, those courses appear. Something missing or wrong? Write to the church office.", "past old previous courses before"],
   ]},
   // ----- Everyone ---------------------------------------------------------
@@ -89,6 +97,7 @@ const HELP_TOPICS = [
     ["How do I use the Study Bible?", "Open <strong>Study Bible</strong> and type a reference (“John 3:16”, “Rom 8:28-39”, “Ps 23”) or pick a book and chapter. It's the King James Version (1769). The words the translators added are shown in <em>italics</em>, just as in a printed KJV.", "kjv read verse chapter"],
     ["How do I study a word in the Greek or Hebrew?", "Tap any word. The study panel shows its <strong>Strong's</strong> number, the original word and its meaning, and how the KJV translates it. Tap <strong>See every occurrence</strong> to read every verse where that word appears.", "strongs greek hebrew original concordance word study"],
     ["How do I search the Bible?", "Type words instead of a reference. Choose all words, the exact phrase, or any word, and limit it to the Old Testament, New Testament, or one book. End a word with * to catch every form — <em>believ*</em> finds believe, believed, believeth.", "search find word concordance"],
+    ["What does “Are you sure?” mean?", "Before anything that can't easily be undone — deleting, removing, archiving — the site asks first in a small box. Tap the red button to go ahead, or <strong>Cancel</strong> (or press Esc) to leave things as they are.", "confirm sure delete undo"],
     ["Are there cross references?", "Yes — tap a verse number, then <strong>⇄ Cross references</strong> to see related verses and jump to them.", "cross reference related"],
     ["Can I highlight verses?", "Yes — tap a verse number, then <strong>☆ Highlight</strong>. <strong>★ My Highlights</strong> lists them all in one place.", "highlight mark favorite"],
   ]},
@@ -98,7 +107,7 @@ const HELP_TOPICS = [
     ["What if my computer dies while I'm writing?", "Your draft is saved on that device as you type. Open the same assignment again and it's there. Use <strong>Save as In Progress</strong> to keep it with your account too.", "lost crash autosave"],
   ]},
   { id: "notify", title: "Notifications, reminders & calendar", who: "all", items: [
-    ["How will I know when something happens?", "The bell at the top shows new messages, grades, announcements, enrollment news, and class cancellations. You can also get them <strong>by email</strong> (right away or once a day) and <strong>on your phone</strong> — set that up in <strong>My Profile → Notifications</strong>.", "bell alert notify email"],
+    ["How will I know when something happens?", "The bell at the top shows new messages, grades, announcements, enrollment news, and class cancellations. You can also get them <strong>by email</strong> and <strong>on your phone</strong>. New accounts get email for the important things only — cancellations, messages, announcements, and due-date reminders; change that (to everything, a daily summary, or none) in <strong>My Profile → Notifications</strong> (tap your name at the top).", "bell alert notify email"],
     ["Can I get reminders before things are due?", "Students: in <strong>My Profile → Notifications</strong>, choose to be reminded the evening before, the morning it's due, or both. You're only reminded about work you haven't turned in.", "reminder due remind"],
     ["How do I turn on phone notifications?", "In <strong>My Profile → Notifications</strong>, tap <strong>Turn On Phone Notifications</strong> and allow them. Tap <strong>Send a Test</strong> to make sure it works. Each phone or computer is turned on separately.", "push phone notification"],
     ["Phone notifications on iPhone", "Apple requires the site on your Home Screen first: in Safari tap <strong>Share</strong> → <strong>Add to Home Screen</strong>, open the <strong>TNBBI</strong> icon, sign in, then turn notifications on in My Profile. (iOS 16.4 or newer.)", "iphone ios apple push"],
@@ -107,22 +116,24 @@ const HELP_TOPICS = [
     ["How do I clear notifications?", "Open the bell and tap <strong>Clear all</strong>, or tap one to open it.", "clear dismiss"],
   ]},
   { id: "people", title: "Messages, discussion & library", who: "all", items: [
-    ["How do I message my teacher?", "Students: <strong>Send Message</strong> starts a private conversation with your teacher. Only the two of you see it. Teachers read them in <strong>Message Inbox</strong>. <strong>Export Thread</strong> saves a copy of a conversation.", "message email contact teacher private"],
-    ["What's the Discussion Board?", "A place for each class to talk through the lessons together. Everyone in the class can read and reply; please keep it gracious and on the subject (Colossians 4:6).", "discussion forum talk classmates"],
-    ["What's in the Resource Library?", "Books, articles, and studies from the church's Google Drive and the church library, searchable by topic or by course — plus the Lecture Archive of past recorded classes.", "library books resources drive"],
+    ["How do I message my teacher?", "Students: open <strong>Messages</strong> and tap your teacher under <strong>Your teachers</strong>. It's a private conversation — only the two of you see it. Teachers read them in <strong>Message Inbox</strong>. <strong>Export Thread</strong> saves a copy of a conversation.", "message email contact teacher private"],
+    ["What's the Discussion Board?", "A place for each class to talk through the lessons together. Students find it in <strong>Messages</strong>, under <strong>Class discussion</strong>. Everyone in the class can read and reply; please keep it gracious and on the subject (Colossians 4:6).", "discussion forum talk classmates"],
+    ["What's in the Library?", "Books, articles, and studies from the church's Google Drive and the church library, searchable by topic or by course — plus the Lecture Archive of past recorded classes.", "library books resources drive"],
   ]},
   { id: "account", title: "Your account & display", who: "all", items: [
     ["I forgot my password.", "On the sign-in page, tap <strong>Forgot password?</strong> and we'll email you a link to set a new one. If you signed up with Google, just use <strong>Sign in with Google</strong>.", "password reset forgot login"],
     ["How do I sign in with Google?", "Tap <strong>Sign in with Google</strong> on the sign-in page and pick your account. Use the same Google account each time so your work stays together.", "google sign in login"],
-    ["How do I change my photo or details?", "Open <strong>My Profile</strong> → <strong>Edit Profile</strong>. Add a photo, phone, address, home church, and a few words about yourself.", "profile photo picture edit"],
+    ["How do I change my photo or details?", "Tap your name at the top to open <strong>My Profile</strong>, then <strong>Edit Profile</strong>. Add a photo, phone, address, home church, and a few words about yourself.", "profile photo picture edit"],
     ["Who can see my profile?", "Classmates see your name, photo, home church, and About me. Only you and the faculty see your phone number and address.", "privacy who sees"],
     ["How do I make the text bigger?", "Tap the <strong>Aa</strong> button at the top of the page. Each tap makes the text a little larger, then back to normal.", "font size large zoom bigger"],
     ["Day view and night view", "The site always opens in <strong>day view</strong> when you sign in. Tap the <strong>moon</strong> at the top for night view (easier on the eyes in the evening) and the <strong>sun</strong> to go back. Night view lasts until you sign out.", "dark mode night light theme"],
-    ["Who do I ask for help?", "Students: send your teacher a message from <strong>Send Message</strong>. Anyone can write to the church office at truenorthbaptist1@gmail.com.", "contact support office"],
+    ["Who do I ask for help?", "Students: send your teacher a message from <strong>Messages</strong>. Anyone can write to the church office at truenorthbaptist1@gmail.com.", "contact support office"],
   ]},
   // ----- Faculty ----------------------------------------------------------
   { id: "f-courses", title: "Setting up a course", who: "faculty", items: [
-    ["Where do I manage a course?", "<strong>Courses</strong> → tap the course. Its page has tabs: <strong>Overview</strong> (details, schedule, announcements, class days), <strong>Students</strong> (roster, requests, attendance), <strong>Lectures</strong>, <strong>Materials</strong>, and <strong>Assignments</strong>.", "manage course page tabs"],
+    ["Where do I manage a course?", "<strong>Courses</strong> → tap the course. Its page has tabs: <strong>Overview</strong> (details, schedule, announcements, class days), <strong>Students</strong> (roster, requests, attendance), <strong>Lectures</strong> (hybrid and online courses), <strong>Materials</strong>, and <strong>Assignments</strong>.", "manage course page tabs"],
+    ["What is the Course set-up checklist?", "At the top of a new course's Overview tab: teacher, schedule, where it meets, playlist (online courses), syllabus, assignments, and students. Each step ticks itself as you do it, and <strong>Go</strong> takes you to the right place. It disappears once everything is done.", "checklist setup steps new course"],
+    ["What is Needs Your Attention?", "The card at the top of your Dashboard: work waiting to be graded, attendance not taken in the last two weeks, enrollment requests, unread messages, new sign-ups, and courses still being set up. Tap any item to go straight there. When it says you're all caught up, there's nothing waiting.", "attention todo dashboard grade waiting"],
     ["How do I add a course?", "<strong>Courses</strong> → <strong>+ Add Course</strong>. Give it a title, description, credits, format (in person, hybrid, or online), and the teacher. Set the schedule afterward.", "new course create"],
     ["How do I set the class schedule?", "On the course's Overview tab, set the days of the week, start time, first day, and number of weeks, then <strong>Save Schedule</strong>. Class days appear on everyone's calendar. Mark a single day <strong>No class this day</strong> for holidays.", "schedule days times semester"],
     ["Where does the class meet?", "<strong>Edit Course Details</strong> has a place for the room or address and an online meeting link. Students see them on their course page and calendars.", "location room address zoom link"],
@@ -356,7 +367,7 @@ function renderHelp(main) {
       </div>` : `
       <div class="card empty-state help-none">
         <p><strong>No answer matched that.</strong> Try other words — for example “quiz”, “video”, or “password” — or browse the topics.</p>
-        <p>${role === "student" ? "You can also ask your teacher with <strong>Send Message</strong>, or write" : "Or write"} to the church office at <a href="mailto:truenorthbaptist1@gmail.com">truenorthbaptist1@gmail.com</a>.</p>
+        <p>${role === "student" ? "You can also ask your teacher in <strong>Messages</strong>, or write" : "Or write"} to the church office at <a href="mailto:truenorthbaptist1@gmail.com">truenorthbaptist1@gmail.com</a>.</p>
         <button class="btn btn-ghost btn-sm" id="helpClear">Show All Topics</button>
       </div>`;
     const clear = document.getElementById("helpClear");

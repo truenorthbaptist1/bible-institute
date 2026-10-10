@@ -101,7 +101,7 @@ function profileToUser(p) {
     bio: p.bio || "",
     avatarPath: p.avatar_path || null,
     dueReminders: p.due_reminders || "evening",
-    notifyEmail: p.notify_email || "instant",
+    notifyEmail: p.notify_email || "important",
     tourSeenAt: p.tour_seen_at || null,
   };
 }

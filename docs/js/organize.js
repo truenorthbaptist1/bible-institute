@@ -191,10 +191,10 @@ function wireMaterialsBrowser(c, root, opts = {}) {
     const m = find(cb.dataset.teacherOnly);
     run(() => DB.setMaterialTeacherOnly(m, cb.checked), null, { success: cb.checked ? `"${m.title}" is now for teachers only.` : `"${m.title}" is now visible to the whole class.` });
   }));
-  box.querySelectorAll("[data-remove-material]").forEach((b) => b.addEventListener("click", () => {
+  box.querySelectorAll("[data-remove-material]").forEach((b) => b.addEventListener("click", async () => {
     const m = find(b.dataset.removeMaterial);
     const used = c.assignments.filter((a) => (a.materialIds || []).includes(m.id)).length;
-    if (!confirm(`Remove "${m.title}" from ${c.title}? ${m.teacherOnly ? "Teachers" : "Students"} will no longer be able to open it.${used ? `\n\nIt's attached to ${used} assignment${used === 1 ? "" : "s"}; it will be taken off ${used === 1 ? "it" : "them"} too.` : ""}`)) return;
+    if (!(await askConfirm(`Remove "${m.title}" from ${c.title}? ${m.teacherOnly ? "Teachers" : "Students"} will no longer be able to open it.${used ? `\n\nIt's attached to ${used} assignment${used === 1 ? "" : "s"}; it will be taken off ${used === 1 ? "it" : "them"} too.` : ""}`))) return;
     run(() => DB.removeMaterial(m), null, { success: "Removed." });
   }));
 }

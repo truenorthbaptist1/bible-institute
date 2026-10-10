@@ -805,9 +805,9 @@ function renderLecturesCard(c) {
     run(() => DB.updateLesson(inp.dataset.lessonDate, { class_date: inp.value || null }), null, { success: "Class day saved." })));
   q("[data-lesson-auto]").forEach((b) => b.addEventListener("click", () =>
     run(() => DB.updateLesson(b.dataset.lessonAuto, { class_date: null }), null, { success: "Back to the automatic class day." })));
-  q("[data-remove-lesson]").forEach((b) => b.addEventListener("click", () => {
+  q("[data-remove-lesson]").forEach((b) => b.addEventListener("click", async () => {
     const l = find(b.dataset.removeLesson);
-    if (!confirm(`Remove "${l.title || "this video"}" from the course? Students' progress on it goes too.`)) return;
+    if (!(await askConfirm(`Remove "${l.title || "this video"}" from the course? Students' progress on it goes too.`))) return;
     run(() => DB.deleteLesson(l.id), null, { success: "Removed." });
   }));
   q("[data-replace-lesson]").forEach((b) => b.addEventListener("click", () => openReplaceLessonModal(c, find(b.dataset.replaceLesson))));
