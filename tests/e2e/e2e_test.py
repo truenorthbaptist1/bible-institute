@@ -150,7 +150,15 @@ def settle(page):
     page.wait_for_function("!document.body.classList.contains('is-busy')", timeout=15000)
     page.wait_for_timeout(100)
 
+# The header has no page buttons (Oct 10); the crest goes home, and the
+# other pages are reached from the dashboard menu tiles.
+NAV_TILES = {"Calendar": "Calendar", "Resource Library": "Library", "Study Bible": "Study Bible"}
 def nav(page, label):
+    if label == "Dashboard":
+        page.click("#brandHome"); settle(page); return
+    if label in NAV_TILES:
+        page.click("#brandHome"); settle(page)
+        page.locator(".tile h3", has_text=NAV_TILES[label]).first.click(); settle(page); return
     page.locator("#navPills button", has_text=label).click(); settle(page)
 
 def tile(page, label):
