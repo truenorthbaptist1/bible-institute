@@ -501,7 +501,12 @@ function renderAuthScreen() {
   wrap.style.display = "";
   const tabs = authMode === "signin" || authMode === "signup";
   wrap.innerHTML = `
-    <div class="auth-wrap">
+    <div class="auth-wrap auth-photo">
+      ${slidesHtml(photoOrder("signin"))}
+      <div class="auth-verse">
+        <p>“Study to shew thyself approved unto God, a workman that needeth not to be ashamed, rightly dividing the word of truth.”</p>
+        <span>2 Timothy 2:15</span>
+      </div>
       <div class="auth-card">
         <div class="auth-logo">
           <img src="brand/tnbbi-logo-color.png" alt="True North Baptist Church Bible Institute crest">
@@ -532,6 +537,7 @@ function renderAuthScreen() {
   wrap.querySelectorAll("[data-mode]").forEach((b) => {
     b.addEventListener("click", () => { authMode = b.dataset.mode; authError = ""; authInfo = ""; renderAuthScreen(); });
   });
+  wireAuthSlides(wrap);
   wireAuthFormHandlers();
 }
 
@@ -1195,10 +1201,7 @@ function renderDashboard(main) {
   ];
   const unread = unreadMessageCount();
   main.innerHTML = `
-    <div class="page-header">
-      <div class="eyebrow">Student Dashboard</div>
-      <h1>Welcome${currentUser && currentUser.name ? `, ${esc(currentUser.name.trim().split(/\s+/)[0])}` : " to the Institute"}</h1>
-    </div>
+    ${heroHtml("student")}
     ${thisWeekCardHtml()}
     ${recentAnnouncementsHtml()}
     ${profileNudge()}
@@ -1221,6 +1224,7 @@ function renderDashboard(main) {
     el.addEventListener("click", open);
     el.addEventListener("keydown", (e) => { if (e.target === el && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } });
   });
+  wireHero(main);
   wireThisWeek(main);
   wireRecentAnnouncements(main);
   maybeStartTour();
@@ -1381,7 +1385,7 @@ function renderCourses(main) {
     </div>` : `
     ${enrolled.length ? `
     <div class="section-title"><h2>Enrolled</h2></div>
-    <div class="grid">${enrolled.map(courseTile).join("")}</div>` : ""}
+    <div class="grid ccard-grid">${enrolled.map(studentCourseCardHtml).join("")}</div>` : ""}
     ${pending.length ? `
     <div class="section-title"><h2>Pending Approval</h2></div>
     <div class="card"><ul class="assignments-list">${pending.map((c) => requestRow(c, "pending")).join("")}</ul></div>` : ""}
@@ -1433,10 +1437,7 @@ function renderFacultyHome(main) {
   const pendingEnroll = pendingEnrollmentCount();
   const attNow = attendanceDueNow();
   main.innerHTML = `
-    <div class="page-header">
-      <div class="eyebrow">${staffEyebrow()}</div>
-      <h1>Welcome Professor</h1>
-    </div>
+    ${heroHtml("teacher")}
     ${attentionCardHtml()}
     ${profileNudge()}
     <div class="grid">
@@ -1469,6 +1470,7 @@ function renderFacultyHome(main) {
     openAttendance(b.dataset.takeAtt, todayStr(), "home");
   }));
   wireAttention(main);
+  wireHero(main);
   // The Take Attendance button appears on its own as class time nears.
   const sig = attNow.map((c) => c.id).join(",");
   viewTimers.push(setInterval(() => {
@@ -1617,7 +1619,8 @@ function renderCatalogue(main) {
           const pendingCount = pendingRequestsFor(c).length;
           const mine = iTeach(c) && courseTeacher(c);
           return `
-        <div class="tile tile-compact ${iManage(c) ? "" : "tile-readonly"}" data-course="${c.id}" tabindex="0" role="button">
+        <div class="tile tile-compact tile-covered ${iManage(c) ? "" : "tile-readonly"}" data-course="${c.id}" tabindex="0" role="button">
+          ${courseCoverHtml(c)}
           ${pendingCount && iManage(c) ? `<span class="tile-badge" title="${pendingCount} enrollment request${pendingCount === 1 ? "" : "s"}">${pendingCount}</span>` : ""}
           <div style="display:flex;gap:4px;flex-wrap:wrap;">
             <span class="pill pill-navy">${esc(c.level)} Level</span>
@@ -1893,7 +1896,7 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
       await DB.saveSubmission({ courseId: course.id, assignment, studentId, status: "submitted", file, writtenContent: html, previous: sub });
       if (html) editor.clearDraft();
       closeModal();
-    }, afterSave, { success: "Turned in — it's now waiting in your instructor's grading queue." });
+    }, () => { if (afterSave) afterSave(); else renderMain(); celebrateTurnIn(assignment.title); });
   });
 }
 
