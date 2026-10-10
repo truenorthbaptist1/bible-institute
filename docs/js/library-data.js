@@ -763,3 +763,58 @@ const COURSE_SUBJECTS = {
 };
 
 const LIBRARY_CHECKOUT_POLICY = "Books may be borrowed for up to two weeks. Ask the librarian at the church office to check one out — the digital list here is for browsing what's available, not an online checkout system.";
+
+// The church's Google Drive resource folders, linked (not copied): four
+// top-level resource folders (Discipleship Classes and the PowerPoint
+// Library are left out on purpose) and the topic folders inside them. Opening
+// one takes the reader to that folder in Google Drive, so whatever is added
+// there later shows up without changing the site. The folders are shared
+// "anyone with the link can view" (set Oct 10, 2026).
+// courseIds: the classes a folder especially supports (an editorial guess,
+// shown first when that class is picked).
+const DRIVE_ROOT = (id) => `https://drive.google.com/drive/folders/${id}`;
+const driveFolders = [
+  { name: "TNBC Doctrinal Resources", id: "1_DXGzCqahdI__ukJLGPwBcFR0NyuOzmf", blurb: "Articles and studies on Bible doctrine, topic by topic", topics: [
+    { name: "Alcohol", id: "1X2N4bttZLhKzuzgZmPiH5Th-Z2jAUQ-A" },
+    { name: "Baptist Distinctives", id: "1WwyUGakK5LpqQunTl9Z3grEMG1EbodrT", courseIds: ["c3", "c6"] },
+    { name: "Bible Preservation", id: "1bBPA4DeYhC-p-imKiRKXcxTaCxN8sJ0b", courseIds: ["c3", "c5"] },
+    { name: "Children & Family", id: "1ACvIQEAUfiHez7E4Bi8pP5R1ZnCIR7Ok" },
+    { name: "Christian Apparel", id: "1-sCY0IwevDjAPIZFk56hjkBJu9N0GCHN" },
+    { name: "Devotional Archive", id: "1nTIMq4_LR7fpFvtNhA4XPRRr6USvLvxH" },
+    { name: "End Times", id: "1Uj9nB4hT0n80n9knc9tX52nbp3YSx2dP" },
+    { name: "Evangelism", id: "1fcwc_lVRk6VVdjQWUsTrGlWD_uqXRYxJ" },
+    { name: "False Doctrine & Religion", id: "13iPqxfbbsjthbtns5oCQsgH6wB95bs_B", courseIds: ["c6"] },
+    { name: "Repentance", id: "15WHmjoMq-YGHSERCL239eTvkA2zCd3qX" },
+    { name: "Sacred Music", id: "18zTZAD4zuO5XlCo-O6eGPAo_2Q9EzgCD" },
+    { name: "Salvation", id: "1VLET-btQvz2qDPolqyxy5obB6zCAYuVc" },
+    { name: "Sanctification", id: "1Fsih-CDovZx1EwBC9066G0ZDCWWgNn6Y" },
+    { name: "Separation", id: "1_E2KvDV_qtfWMp_BLDg-i5SPyJksliJR" },
+    { name: "The Church", id: "1Ct8IMecUyXUm5EfGQ0URXhfsMTs9sK_N", courseIds: ["c3", "c6"] },
+  ] },
+  { name: "TNBC Bible Study Resources", id: "1atLM2DWBhvTpALGcjpBtLuNKCPFDRzdM", blurb: "Book studies, study methods, commentaries and Greek", topics: [
+    { name: "Bible Book Studies", id: "1qo0o9N0_ujmpTT_xX-8snzzSOkRxjmBY", courseIds: ["c8"] },
+    { name: "Commentaries", id: "17Yh4vZ-OdJ4A3ywYA7t2RE_CsLSkZLdf", courseIds: ["c1", "c8"] },
+    { name: "Greek Course", id: "1Uw52yUEG3n3zybF44E1_wghKNLFmiYA2", courseIds: ["c1", "c5"] },
+    { name: "Studies for New Believers", id: "15KmqPN9yqKgi3EJF9R3fdv3qLMkAekYZ" },
+    { name: "The Effectual Bible Student Series", id: "1-RNH1vUEriBXkNejzItbNXJ25PPe4Lbp", courseIds: ["c1"] },
+    { name: "Understanding The Bible For Yourself Series", id: "1KMgivhIxhVd80mvtcJCXv0rfDHKPXTvu", courseIds: ["c1"] },
+  ] },
+  { name: "TNBC Evangelism Resources", id: "1hzI1GjuBFmI_mXOQXInlt-vJU7PJ5jJq", blurb: "Tracts, soul-winning training and missions", topics: [
+    { name: "Bible Study Outlines", id: "19nL9q9W2R7yBDjKIaK3zgSt6aZzNFKKE", courseIds: ["c2"] },
+    { name: "Correspondence Bible Studies", id: "10K-sIAKs_7YzVp8WQS-tKzwQMeQho21M" },
+    { name: "Español", id: "1Qt356Mcqr8n2XBdodM74AfgzqtyFUDQy" },
+    { name: "Evangelism Training", id: "1wj4GIeN7mqYs-sqiYAVQiPmpKankQDcO" },
+    { name: "Evangelistic Tracts", id: "1yZp0I_5BrYLXRu-n-6UQKpmi5Irey4VQ" },
+    { name: "Facebook Digital Ministry", id: "1LhcxGjJV4W3ln0kQ3WgNMIcpT91_MWUf" },
+    { name: "Foreign Missions Information", id: "1RDs7d-Bmi4Bx7AJDQZNJLrcAioKWpOCI" },
+  ] },
+  { name: "TNBC Audio Library", id: "1FEM4Okpm0VgXo9sYR5fuDiB3b-lXavds", blurb: "Sermons, the KJV audio Bible and sacred music", topics: [
+    { name: "KJV Audio Bible", id: "1Vl5nHag_AFfHhBiuyU9TaExktl9VTAhv" },
+    { name: "Sacred Music Collection", id: "1CChlHhdaCIJWB9OfefzdtzURD5ixjep1" },
+    { name: "Sermons & Messages", id: "12OPsYjhGLqBj8oOXYwU39Nvq_4HAI1_F", courseIds: ["c2"] },
+    { name: "Song Leading", id: "1zH6GxDd7kwE1Pm-zpFl3e8NesJHOktxl" },
+    { name: "Spanish Practice", id: "1EtHdoeO8CkNAiB_GnmDWMBnfzfgRF8Ys" },
+    { name: "Stories for Children", id: "1oHHYm5yQi1juWHAbz_QPERUszepA-DyY" },
+    { name: "TNBC Choir", id: "17VF-njVfl5MGaUdK0MlLbFMIv0q4J6Zn" },
+  ] },
+];

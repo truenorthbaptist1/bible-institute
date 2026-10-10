@@ -13,6 +13,7 @@
 // What's new — newest first. who: "all" | "student" | "faculty" | "admin"
 // ---------------------------------------------------------------------------
 const WHATS_NEW = [
+  { date: "2026-10-10", who: "all", title: "Library shelves", text: "The Library is now arranged by shelf. Browse a shelf, or search and see the matches grouped shelf by shelf, sorted by title or author. The church's Google Drive folders are linked there too." },
   { date: "2026-10-10", who: "student", title: "Upcoming classes", text: "This Week now lists every class you need to be at in the next seven days — canceled ones are marked." },
   { date: "2026-10-10", who: "faculty", title: "Classes you're teaching", text: "Needs Your Attention now lists your own classes for the next seven days. On class day, tap one to take attendance." },
   { date: "2026-10-10", who: "all", title: "Getting around", text: "Tap the crest at the top left to go to the Dashboard from anywhere. The browser's Back button now steps back through the site instead of leaving it." },
@@ -122,7 +123,9 @@ const HELP_TOPICS = [
   { id: "people", title: "Messages, discussion & library", who: "all", items: [
     ["How do I message my teacher?", "Students: open <strong>Messages</strong> and tap your teacher under <strong>Your teachers</strong>. It's a private conversation — only the two of you see it. Teachers read them in <strong>Message Inbox</strong>. <strong>Export Thread</strong> saves a copy of a conversation.", "message email contact teacher private"],
     ["What's the Discussion Board?", "A place for each class to talk through the lessons together. Students find it in <strong>Messages</strong>, under <strong>Class discussion</strong>. Everyone in the class can read and reply; please keep it gracious and on the subject (Colossians 4:6).", "discussion forum talk classmates"],
-    ["What's in the Library?", "Books, articles, and studies from the church's Google Drive and the church library, searchable by topic or by course — plus the Lecture Archive of past recorded classes.", "library books resources drive"],
+    ["What's in the Library?", "About 700 books from the church library, arranged on shelves by subject (Doctrine, History, Bible Preservation…), plus links to the church's Google Drive folders (Doctrinal, Bible Study, Evangelism and Audio) and documents picked for the courses — and the Lecture Archive of past recorded classes.", "library books resources drive"],
+    ["A Drive folder asks me to request access", "The church's Drive folders are open to anyone with the link, so that shouldn't happen. If it does, tell your teacher which folder it was so the church office can fix its sharing.", "drive access permission request denied google"],
+    ["How do I find a book?", "Open <strong>Library</strong> and tap a shelf to browse it, or type a title, author or topic. Picking one of your classes shows the shelves that go with it, most useful first. Results are grouped by shelf — tap a shelf to open it, or tap a shelf name in the row of buttons to see only that shelf. <strong>Sort by Author</strong> lists each author's books together. To borrow a book, ask the librarian at the church office.", "find book search shelf author borrow check out"],
   ]},
   { id: "account", title: "Your account & display", who: "all", items: [
     ["I forgot my password.", "On the sign-in page, tap <strong>Forgot password?</strong> and we'll email you a link to set a new one. If you signed up with Google, just use <strong>Sign in with Google</strong>.", "password reset forgot login"],
