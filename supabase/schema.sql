@@ -420,6 +420,19 @@ alter table public.profiles
   add column if not exists last_digest_on date,
   add column if not exists tour_seen_at   timestamptz;
 
+-- Oct 9: a fourth email choice, "important" (the default for new accounts):
+-- right away, but only for what someone shouldn't miss — class cancellations,
+-- private messages, announcements, due-date reminders, enrollment news, and
+-- (for faculty) new sign-ups. Everything else stays on the bell.
+alter table public.profiles drop constraint if exists profiles_notify_email_check;
+alter table public.profiles add constraint profiles_notify_email_check
+  check (notify_email in ('instant','important','daily','off'));
+alter table public.profiles alter column notify_email set default 'important';
+create or replace function public.email_kind_important(p_kind text)
+returns boolean language sql immutable as $$
+  select coalesce(p_kind, '') in ('cancel','message','announcement','due','enrollment','signup','teacher')
+$$;
+
 -- Every bell notification can carry a link (where tapping it goes) and is
 -- delivered to the person's phone and/or email once. Notifications that
 -- existed before this update count as already delivered, so nobody gets a
@@ -1181,7 +1194,8 @@ begin
   update notifications n set emailed_at = p_now
     from profiles p
    where p.id = n.user_id and n.emailed_at is null
-     and (n.read or p.notify_email = 'off' or p.status <> 'active' or coalesce(p.email, '') = '');
+     and (n.read or p.notify_email = 'off' or p.status <> 'active' or coalesce(p.email, '') = ''
+          or (p.notify_email = 'important' and not public.email_kind_important(n.kind)));
 
   return query
   with digest_users as (
@@ -1194,7 +1208,7 @@ begin
     select n.id, (p.notify_email = 'daily') as is_digest
       from notifications n join profiles p on p.id = n.user_id
      where n.emailed_at is null and p.status = 'active'
-       and ((p.notify_email = 'instant' and n.created_at <= p_now - interval '2 minutes')
+       and ((p.notify_email in ('instant','important') and n.created_at <= p_now - interval '2 minutes')
          or (p.notify_email = 'daily' and p.id in (select id from digest_users)))
      for update of n skip locked
   ), marked as (
