@@ -23,6 +23,7 @@ let notifications = [];
 let transcripts = []; // transcript entries this person may see (own; a teacher's courses; all for Admins)
 let pastRecords = []; // Admins only: grades from before the site, waiting for (or already on) a transcript
 let bibleHighlightRows = [];
+const deckUrlCache = {}; // `${deckId}:${size}:${version}` → { urls, expires }
 let dataLoadedAt = 0;
 
 // Turn database/network errors into sentences a person can act on.
@@ -148,7 +149,7 @@ async function fetchOwnProfile(uid) {
 async function loadAll() {
   const fac = currentUser.role === "faculty";
   const [cs, enr, reqs, mats, asg, subs, posts, msgs, notifs, hls, people, mine, attDays, attMarks, cancels, anns, trans, past,
-         lessonRows, lessonDates, viewRows, syncRows, asgDocs] = await Promise.all([
+         lessonRows, lessonDates, viewRows, syncRows, asgDocs, deckRows, planRows, extraRows, liveRows] = await Promise.all([
     selectAll("courses", "*", "title"),
     selectAll("enrollments", "*"),
     selectAll("enrollment_requests", "*", "requested_at"),
@@ -183,6 +184,12 @@ async function loadAll() {
     fac ? selectAll("playlist_sync", "*").catch(() => []) : Promise.resolve([]),
     // Added Oct 9 (later): documents attached to assignments.
     selectAll("assignment_materials", "*", "position").catch(() => []),
+    // Added Oct 10: slide decks, the lesson plan, extra class days, and
+    // what's being taught right now.
+    selectAll("slide_decks", "*", "created_at").catch(() => []),
+    selectAll("course_plan", "*", "position").catch(() => []),
+    selectAll("class_extra_days", "*", "class_date").catch(() => []),
+    selectAll("teach_live", "*").catch(() => []),
   ]);
 
   // Your role changed since this page loaded: switch to the new role and
@@ -252,6 +259,12 @@ async function loadAll() {
       discussion: [],
       messages: [],
       enrollmentRequests: [],
+      // Teaching with slides (Oct 10)
+      slidesShare: r.slides_share || "after",  // after | before | never
+      decks: [],
+      plan: [],
+      extraDays: {},   // date → note (a make-up or moved class)
+      live: null,      // what's being taught right now (teach_live)
     };
     byCourse[c.id] = c;
     return c;
@@ -372,8 +385,29 @@ async function loadAll() {
       });
     });
   }
+  // Teaching with slides
+  deckRows.forEach((d) => byCourse[d.course_id] && byCourse[d.course_id].decks.push(deckFromRow(d)));
+  planRows.slice().sort((x, y) => x.position - y.position || x.created_at.localeCompare(y.created_at))
+    .forEach((r) => byCourse[r.course_id] && byCourse[r.course_id].plan.push(planFromRow(r)));
+  extraRows.forEach((x) => { if (byCourse[x.course_id]) byCourse[x.course_id].extraDays[x.class_date] = x.note || ""; });
+  liveRows.forEach((t) => { if (byCourse[t.course_id]) byCourse[t.course_id].live = liveFromRow(t); });
   bibleHighlightRows = hls;
   dataLoadedAt = Date.now();
+}
+
+function deckFromRow(d) {
+  return { id: d.id, courseId: d.course_id, title: d.title, source: d.source || "pdf", count: d.slide_count || 0,
+           status: d.status || "ready", version: d.version || 1, createdAt: d.created_at };
+}
+function planFromRow(r) {
+  return { id: r.id, courseId: r.course_id, position: r.position, title: r.title, notesId: r.notes_material_id || null,
+           deckId: r.deck_id || null, status: r.status || "planned", taughtOn: r.taught_on || null,
+           resumeSlide: r.resume_slide || 1, stoppedSlide: r.stopped_slide || null, continuedFrom: r.continued_from || null };
+}
+function liveFromRow(t) {
+  return { courseId: t.course_id, active: !!t.active, planId: t.plan_id || null, deckId: t.deck_id || null, slide: t.slide || 1,
+           blanked: !!t.blanked, pinned: t.pinned_question || null, classDate: t.class_date || null, startedAt: t.started_at || null,
+           teacherId: t.teacher_id || null, key: t.channel_key || "", updatedAt: t.updated_at || null };
 }
 
 async function refreshNotifications() {
@@ -476,6 +510,115 @@ const DB = {
     const opts = downloadName ? { download: downloadName } : undefined;
     const data = must(await sb.storage.from(bucket).createSignedUrl(path, 60 * 60, opts));
     return data.signedUrl;
+  },
+
+  // --- teaching with slides (Oct 10) ----------------------------------------
+  async addPlanLessons(courseId, list, afterPosition = null) {
+    // list: [{ title, notesId, deckId }] — added at the end (or after a position).
+    const c = courses.find((x) => x.id === courseId);
+    let pos = afterPosition === null ? Math.max(0, ...((c && c.plan) || []).map((r) => r.position)) : afterPosition;
+    if (afterPosition !== null) {
+      for (const r of (c.plan || []).filter((x) => x.position > afterPosition)) {
+        must(await sb.from("course_plan").update({ position: r.position + list.length }).eq("id", r.id));
+      }
+    }
+    const rows = list.map((x) => ({ course_id: courseId, position: ++pos, title: x.title.trim().slice(0, 300) || "Lesson",
+                                    notes_material_id: x.notesId || null, deck_id: x.deckId || null }));
+    return rows.length ? must(await sb.from("course_plan").insert(rows).select("id")) : [];
+  },
+  async updatePlanLesson(id, patch) {
+    const row = {};
+    if ("title" in patch) row.title = patch.title.trim().slice(0, 300);
+    if ("notesId" in patch) row.notes_material_id = patch.notesId || null;
+    if ("deckId" in patch) row.deck_id = patch.deckId || null;
+    if ("status" in patch) row.status = patch.status;
+    if ("taughtOn" in patch) row.taught_on = patch.taughtOn || null;
+    if ("resumeSlide" in patch) row.resume_slide = Math.max(1, patch.resumeSlide || 1);
+    if ("position" in patch) row.position = patch.position;
+    must(await sb.from("course_plan").update(row).eq("id", id));
+  },
+  async deletePlanLesson(id) {
+    must(await sb.from("course_plan").delete().eq("id", id));
+  },
+  // Put the plan in this order (ids, first to last).
+  async reorderPlan(courseId, ids) {
+    const c = courses.find((x) => x.id === courseId);
+    for (let i = 0; i < ids.length; i++) {
+      const r = c && c.plan.find((x) => x.id === ids[i]);
+      if (!r || r.position !== i + 1) must(await sb.from("course_plan").update({ position: i + 1 }).eq("id", ids[i]));
+    }
+  },
+  async setSlidesShare(courseId, value) {
+    must(await sb.from("courses").update({ slides_share: value }).eq("id", courseId));
+  },
+  async createDeck(courseId, title, source, count) {
+    const rows = must(await sb.from("slide_decks").insert({ course_id: courseId, title: title.slice(0, 300) || "Slides", source, slide_count: count, status: "converting" }).select("id"));
+    return rows[0].id;
+  },
+  async finishDeck(deckId, count, status = "ready") {
+    must(await sb.from("slide_decks").update({ slide_count: count, status }).eq("id", deckId));
+  },
+  async uploadSlide(courseId, deckId, name, blob) {
+    must(await sb.storage.from("slides").upload(`${courseId}/${deckId}/${name}`, blob, { contentType: blob.type || "image/jpeg", upsert: true }));
+  },
+  async deleteDeck(deck) {
+    must(await sb.from("slide_decks").delete().eq("id", deck.id));
+    const paths = [];
+    for (let n = 1; n <= Math.max(deck.count, 1); n++) paths.push(`${deck.courseId}/${deck.id}/${n}.jpg`, `${deck.courseId}/${deck.id}/${n}-s.jpg`);
+    for (let i = 0; i < paths.length; i += 100) await sb.storage.from("slides").remove(paths.slice(i, i + 100));
+  },
+  // Signed links to every picture of a deck ("s" = small, for phones and
+  // the iPad; "l" = large, for the TV). Kept until close to expiring.
+  async deckUrls(deck, size) {
+    const key = `${deck.id}:${size}:${deck.version}`;
+    const hit = deckUrlCache[key];
+    if (hit && hit.expires - Date.now() > 30 * 60 * 1000) return hit.urls;
+    const paths = [];
+    for (let n = 1; n <= deck.count; n++) paths.push(`${deck.courseId}/${deck.id}/${n}${size === "s" ? "-s" : ""}.jpg`);
+    if (!paths.length) return [];
+    const data = must(await sb.storage.from("slides").createSignedUrls(paths, 6 * 60 * 60));
+    const urls = paths.map((p) => { const d = (data || []).find((x) => x && x.path === p); return d && d.signedUrl ? d.signedUrl : null; });
+    deckUrlCache[key] = { urls, expires: Date.now() + 6 * 60 * 60 * 1000 };
+    return urls;
+  },
+  async slideNotes(deckId) {
+    const { data } = await sb.from("slide_notes").select("notes").eq("deck_id", deckId).maybeSingle();
+    return (data && Array.isArray(data.notes)) ? data.notes : [];
+  },
+  async saveSlideNotes(deckId, notes) {
+    must(await sb.from("slide_notes").upsert({ deck_id: deckId, notes }, { onConflict: "deck_id" }));
+  },
+  async teachStart(courseId, planId) {
+    return liveFromRow(must(await sb.rpc("teach_start", { p_course: courseId, p_plan: planId || null })));
+  },
+  async teachUpdate(courseId, patch) {
+    const row = { updated_at: new Date().toISOString() };
+    if ("slide" in patch) row.slide = patch.slide;
+    if ("blanked" in patch) row.blanked = !!patch.blanked;
+    if ("pinned" in patch) row.pinned_question = patch.pinned || null;
+    if ("deckId" in patch) row.deck_id = patch.deckId || null;
+    must(await sb.from("teach_live").update(row).eq("course_id", courseId));
+  },
+  async teachEnd(courseId, outcome, slide) {
+    return must(await sb.rpc("teach_end", { p_course: courseId, p_outcome: outcome, p_slide: slide || null }));
+  },
+  async teachLive(courseId) {
+    const data = must(await sb.from("teach_live").select("*").eq("course_id", courseId).maybeSingle());
+    return data ? liveFromRow(data) : null;
+  },
+  async questions(courseId, since) {
+    let q = sb.from("live_chat").select("*").eq("course_id", courseId).order("created_at", { ascending: true });
+    if (since) q = q.gte("created_at", since);
+    return must(await q);
+  },
+  async markQuestion(id, answered) {
+    must(await sb.rpc("mark_question", { p_id: id, p_answered: !!answered }));
+  },
+  async addClassDay(courseId, date, note) {
+    must(await sb.rpc("add_class_day", { p_course: courseId, p_date: date, p_note: note || "" }));
+  },
+  async removeClassDay(courseId, date) {
+    must(await sb.rpc("remove_class_day", { p_course: courseId, p_date: date }));
   },
 
   // --- assignments & submissions -------------------------------------------
@@ -732,6 +875,31 @@ const DB = {
         if (links.length) must(await sb.from("assignment_materials").insert(links));
       }
     } catch (e) { console.warn("copy assignment documents:", e); }
+    // The lesson plan and its slides come along, fresh (nothing taught yet).
+    // A lesson that was split across two classes ("continued") is one again.
+    try {
+      const newDeck = {};
+      for (const d of (course.decks || []).filter((x) => x.status === "ready")) {
+        try {
+          const rows = must(await sb.from("slide_decks").insert({ course_id: id, title: d.title, source: d.source, slide_count: d.count, status: "converting" }).select("id"));
+          const nd = rows[0].id;
+          for (let n = 1; n <= d.count; n++) {
+            for (const suf of ["", "-s"]) must(await sb.storage.from("slides").copy(`${course.id}/${d.id}/${n}${suf}.jpg`, `${id}/${nd}/${n}${suf}.jpg`));
+          }
+          must(await sb.from("slide_decks").update({ status: "ready" }).eq("id", nd));
+          const notes = await this.slideNotes(d.id).catch(() => []);
+          if (notes.length) await this.saveSlideNotes(nd, notes).catch(() => {});
+          newDeck[d.id] = nd;
+        } catch (e) { console.warn("copy slides:", e); filesFailed++; }
+      }
+      const plan = (course.plan || []).filter((r) => !r.continuedFrom);
+      if (plan.length) {
+        must(await sb.from("course_plan").insert(plan.map((r, i) => ({
+          course_id: id, position: i + 1, title: r.title.replace(/\s*\(continued\)$/, ""),
+          notes_material_id: (r.notesId && newMat[r.notesId]) || null, deck_id: (r.deckId && newDeck[r.deckId]) || null,
+        }))));
+      }
+    } catch (e) { console.warn("copy lesson plan:", e); }
     return { id, filesFailed };
   },
   async recordFinalGrades(courseId, entries) {

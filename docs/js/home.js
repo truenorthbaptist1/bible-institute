@@ -199,11 +199,12 @@ function upcomingClassesHtml(classes, who) {
       const online = who === "student" && effTrack(c, currentStudentId) === "live";
       const where = canceled ? "Canceled" : online ? "Watch online, live" : (c.location || "");
       const today = date === todayStr();
-      const attend = who === "teacher" && today && !canceled && takesClassroomAttendance(c);
+      const teachNow = who === "teacher" && today && !canceled;
+      const lesson = teachNow && typeof teachTarget === "function" ? teachTarget(c) : null;
       return `<li><button type="button" class="week-row week-class ${canceled ? "week-canceled" : ""} ${today && !canceled ? "week-today" : ""}" ${who === "teacher" ? `data-attn-class="${c.id}|${date}"` : `data-week-course="${c.id}"`}>
         <span class="week-mark" aria-hidden="true">${icon(canceled ? "cancel" : "calendar")}</span>
-        <span class="week-text"><strong>${esc(c.title)}</strong><small>${esc(classTimeText(at))}${where ? ` · ${esc(where)}` : ""}</small></span>
-        <span class="week-go">${attend ? "Take Attendance" : canceled ? "" : esc(word || "Open")}</span>
+        <span class="week-text"><strong>${esc(c.title)}</strong><small>${esc(classTimeText(at))}${where ? ` · ${esc(where)}` : ""}${lesson ? ` · ${esc(lesson.title)}` : ""}</small></span>
+        <span class="week-go">${teachNow ? (c.live && c.live.active ? "Back to Teach" : "Teach") : canceled ? "" : esc(word || "Open")}</span>
       </button></li>`;
     }).join("")}</ul>
     ${more > 0 ? `<p class="week-more">+ ${more} more this week — see the Calendar.</p>` : ""}
@@ -379,8 +380,9 @@ function wireAttention(main) {
     const [cid, date] = b.dataset.attnClass.split("|");
     const c = courses.find((x) => x.id === cid);
     if (!c) return;
-    if (date === todayStr() && !isCanceled(c, date) && takesClassroomAttendance(c)) return openAttendance(cid, date, "home");
-    go("manage", cid, "setup");
+    // Class day: Teach mode (attendance is one tap away in it).
+    if (date === todayStr() && !isCanceled(c, date)) return openTeach(cid, null, "home");
+    go("manage", cid, "plan");
   }));
 }
 

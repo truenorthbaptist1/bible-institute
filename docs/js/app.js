@@ -270,9 +270,10 @@ let pendingAttendanceLink = readAttendanceLink(location.href);
 function readAttendanceLink(href) {
   try {
     const q = new URL(href, location.origin).searchParams;
-    if (q.get("attendance") || q.get("assignment") || q.get("calendar")) {
+    if (q.get("attendance") || q.get("assignment") || q.get("calendar") || q.get("present")) {
       const v = q.get("attendance") ? { course: q.get("attendance"), date: q.get("date") || "" }
         : q.get("assignment") ? { assignment: q.get("assignment") }
+        : q.get("present") ? { present: q.get("present") }
         : { calendar: q.get("calendar") };
       try { sessionStorage.setItem(ATT_LINK_KEY, JSON.stringify(v)); } catch (e) { /* private mode */ }
       return v;
@@ -287,8 +288,14 @@ function handlePendingAttendanceLink() {
   pendingAttendanceLink = null;
   try { sessionStorage.removeItem(ATT_LINK_KEY); } catch (e) { /* ignore */ }
   const url = new URL(location.href);
-  ["attendance", "date", "assignment", "calendar"].forEach((k) => url.searchParams.delete(k));
+  ["attendance", "date", "assignment", "calendar", "present"].forEach((k) => url.searchParams.delete(k));
   history.replaceState(null, "", url.pathname + url.search + url.hash);
+  if (link.present) {
+    const pc = courses.find((x) => x.id === link.present);
+    if (!pc || role !== "faculty" || !iManage(pc)) { toast("The TV screen is for the course's teacher — sign in with the teacher's account."); return; }
+    openPresent(pc.id);
+    return;
+  }
   if (link.calendar) {
     calendarCursor = /^\d{4}-\d{2}-\d{2}$/.test(link.calendar) ? link.calendar : todayStr();
     view = "calendar"; activeCourseId = null; renderNav(); renderMain();
@@ -320,7 +327,7 @@ function handlePendingAttendanceLink() {
 function followLink(href) {
   try {
     const q = new URL(href, location.origin).searchParams;
-    if (q.get("attendance") || q.get("assignment") || q.get("calendar")) {
+    if (q.get("attendance") || q.get("assignment") || q.get("calendar") || q.get("present")) {
       pendingAttendanceLink = readAttendanceLink(href);
       handlePendingAttendanceLink();
       return;
@@ -1126,8 +1133,8 @@ function safeHtml(html) {
 // loaded), so what one person changes — a new enrollment, a grade, a
 // reply — shows up for everyone else without reloading the browser.
 const STALE_MS = 3000;
-const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance", "lecture", "live"];
-const FACULTY_ONLY_VIEWS = ["transcripts", "pastRecords", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome"];
+const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance", "lecture", "live", "teach", "present"];
+const FACULTY_ONLY_VIEWS = ["transcripts", "pastRecords", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome", "teach", "present"];
 const STUDENT_ONLY_VIEWS = ["courses", "course", "grades", "submit"];
 
 function renderMain() {
@@ -1155,6 +1162,8 @@ function drawView() {
   // Leaving a lecture or the live class stops its player (and saves progress).
   if (view !== "lecture" && typeof stopLecture === "function") stopLecture();
   if (view !== "live" && typeof stopLive === "function") stopLive();
+  if (view !== "teach" && typeof stopTeach === "function") stopTeach();
+  if (view !== "present" && typeof stopPresent === "function") stopPresent();
   // A page whose course was deleted or archived elsewhere, or a page this
   // role can't use, falls back to the dashboard instead of breaking.
   if ((COURSE_VIEWS.includes(view) && !courses.some((c) => c.id === activeCourseId))
@@ -1168,7 +1177,7 @@ function drawView() {
   if (role !== "student" && activeCourseId) {
     const ac = courses.find((x) => x.id === activeCourseId);
     const needsTeach = ["gradeSheet", "discussionBoard", "messageThread", "attendance"].includes(view);
-    if ((view === "manage" && !iManage(ac)) || (needsTeach && !iTeach(ac))) {
+    if (((view === "manage" || view === "teach" || view === "present") && !iManage(ac)) || (needsTeach && !iTeach(ac))) {
       view = view === "manage" ? "catalogue" : "home";
       activeCourseId = null;
       renderNav();
@@ -1179,6 +1188,8 @@ function drawView() {
   if (view === "course") return renderCourse(main);
   if (view === "lecture") return renderLecture(main);
   if (view === "live") return renderLiveClass(main);
+  if (view === "teach") return renderTeach(main);
+  if (view === "present") return renderPresent(main);
   if (view === "lectureArchive") return renderLectureArchive(main);
   if (view === "manage") return renderManage(main);
   if (view === "library" || view === "resourceLibrary") return renderResourceLibrary(main);
@@ -1707,6 +1718,7 @@ function renderCourse(main) {
       ${memoryCardHtml(c)}
       ${courseAnnouncementsHtml(c)}
       <div class="overview-grid">
+        ${planStudentCardHtml(c)}
         ${nextLectureHtml(c)}
         ${c.assignments.length ? `<div class="card overview-card">
           <div class="overview-head"><h3>${icon("note")} Assignments</h3><a href="#" data-goto-tab="assignments">All ${c.assignments.length}</a></div>
@@ -1755,6 +1767,7 @@ function renderCourse(main) {
     </section>` : ""}
   `;
   document.getElementById("backLink").addEventListener("click", () => { view = "courses"; renderNav(); renderMain(); });
+  wirePlanStudentCard(c, main);
   main.querySelectorAll(".overview-card [data-open-material]").forEach((btn) => {
     btn.addEventListener("click", () => openMaterialViewer(c, c.materials.find((m) => m.id === btn.dataset.openMaterial)));
   });
@@ -3186,6 +3199,7 @@ function renderManage(main) {
 
     ${tabsHtml(mkey, [
       { id: "setup", label: "Overview" },
+      { id: "plan", label: "Lesson plan", count: (c.plan || []).length || "" },
       { id: "students", label: "Students", count: c.studentIds.length + c.enrollmentRequests.length || "", alert: c.enrollmentRequests.length > 0 },
       ...(courseHasLectures(c) ? [{ id: "lectures", label: "Lectures", count: c.lessons.filter((l) => l.status !== "removed").length || "" }] : []),
       { id: "materials", label: "Materials", count: docUnits(c.materials).length || "" },
@@ -3241,6 +3255,10 @@ function renderManage(main) {
 
     <div class="section-title"><h2>Memory Verse of the Week</h2></div>
     <div class="card" id="mgMemoryCard"></div>
+    </section>
+
+    <section ${panelAttrs(mkey, "plan")}>
+    <div id="planPanel"></div>
     </section>
 
     ${courseHasLectures(c) ? `<section ${panelAttrs(mkey, "lectures")}>
@@ -3324,6 +3342,7 @@ function renderManage(main) {
   renderEnrollmentRequests(c);
   renderRosterList(c);
   if (courseHasLectures(c)) renderLecturesCard(c);
+  renderPlanPanel(c);
   renderMaterialsList(c);
   renderAssignmentsList(c);
 
@@ -3897,10 +3916,12 @@ let attDraft = null; // { courseId, date, held, marks: { studentId: status } }
 function classDates(c) {
   return scheduledDates(c).filter((d) => !isCanceled(c, d));
 }
-// Every scheduled class day, canceled or not, from the schedule.
+// Every scheduled class day, canceled or not, from the schedule — plus any
+// extra day the teacher added (a make-up or moved class).
 function scheduledDates(c) {
   const s = c.schedule;
-  if (!s || !s.startDate || !s.days || !s.days.length) return [];
+  const extra = Object.keys(c.extraDays || {});
+  if (!s || !s.startDate || !s.days || !s.days.length) return extra.sort();
   const start = parseDay(s.startDate);
   const out = [];
   for (let i = 0; i < (s.weeks || 52) * 7; i++) {
@@ -3908,7 +3929,7 @@ function scheduledDates(c) {
     d.setDate(start.getDate() + i);
     if (s.days.includes(DAY_NAMES[d.getDay()])) out.push(localISO(d));
   }
-  return out;
+  return extra.length ? [...new Set([...out, ...extra])].sort() : out;
 }
 // Scheduled days plus any extra day attendance was taken (a make-up class).
 function attendanceDates(c) {
@@ -4023,7 +4044,7 @@ function readAttSettings(p) {
 function renderAttendance(main) {
   const c = courses.find((x) => x.id === activeCourseId);
   const today = todayStr();
-  const backLabel = { calendar: "Calendar", manage: "Course", attendanceHome: "Attendance", home: "Dashboard" }[attendanceBackView] || "Dashboard";
+  const backLabel = { calendar: "Calendar", manage: "Course", attendanceHome: "Attendance", home: "Dashboard", teach: "Teach mode" }[attendanceBackView] || "Dashboard";
   const header = `
     <button class="back-link" id="backLink">&larr; Back to ${backLabel}</button>
     <div class="page-header">
@@ -4031,7 +4052,7 @@ function renderAttendance(main) {
       <h1>${esc(c.title)}</h1>
       <p>${esc(scheduleLine(c) || "No class schedule set yet")}${c.att.on ? ` · ${c.att.weight ? `${c.att.weight}% of the final grade` : "recorded, not graded"} · Late = ${c.att.lateCredit}%` : ""}</p>
     </div>`;
-  const goBack = () => { view = attendanceBackView || "home"; if (view !== "manage") activeCourseId = null; renderNav(); renderMain(); };
+  const goBack = () => { view = attendanceBackView || "home"; if (view !== "manage" && view !== "teach") activeCourseId = null; renderNav(); renderMain(); };
 
   if (!c.att.on) {
     main.innerHTML = `${header}

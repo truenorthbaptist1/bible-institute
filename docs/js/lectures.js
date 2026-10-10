@@ -575,7 +575,7 @@ function openLiveClass(courseId, back) {
   window.scrollTo(0, 0);
 }
 function stopLive() {
-  if (liveState) { liveState.timers.forEach(clearInterval); liveState = null; }
+  if (liveState) { liveState.timers.forEach(clearInterval); if (liveState.stopFollow) liveState.stopFollow(); liveState = null; }
   destroyPlayer();
 }
 function renderLiveClass(main) {
@@ -597,6 +597,7 @@ function renderLiveClass(main) {
         <div class="live-main">
           ${teacher ? `<button class="btn btn-ghost btn-sm" id="toggleVideo" style="margin-bottom:10px;">${icon("video")} Show the stream</button>` : ""}
           <div class="video-shell" id="liveShell" ${teacher ? "hidden" : ""}><div id="livePlayer"></div><div class="video-msg show" id="liveMsg">Waiting for the stream…</div></div>
+          ${teacher ? "" : followCardHtml()}
           ${teacher ? `<div class="card" id="liveWatchers"><p class="field-hint" style="margin:0;">Who's watching appears here during class.</p></div>` : `
           <div class="card watch-card" id="liveCount">
             <p class="watch-text" id="liveCountText">${c.att.on ? `Watch here for at least <strong>${st.needed} minutes</strong> of the class to be counted present.` : "Enjoy the class!"}</p>
@@ -604,7 +605,7 @@ function renderLiveClass(main) {
           </div>`}
         </div>
         <div class="live-chat card">
-          <div class="live-chat-head"><strong>${icon("chat")} Class chat</strong><small>${teacher ? "Students' questions during class" : "Ask the teacher a question"}</small></div>
+          <div class="live-chat-head"><strong>${icon("chat")} ${teacher ? "Class questions" : "Ask the teacher a question"}</strong><small>${teacher ? "Students' questions during class — each student sees only their own" : "Only the teacher sees your question, unless he shows it on the screen."}</small></div>
           <div class="live-chat-list" id="chatList" aria-live="polite"><p class="field-hint chat-empty">No messages yet.</p></div>
           <form class="live-chat-form" id="chatForm">
             <input type="text" id="chatInput" maxlength="500" placeholder="${teacher ? "Reply to the class…" : "Type a question…"}" autocomplete="off" enterkeyhint="send" aria-label="Message" />
@@ -655,6 +656,9 @@ function renderLiveClass(main) {
   findStream();
   st.timers.push(setInterval(findStream, 30000));
   st.timers.push(setInterval(status, 30000));
+
+  // --- the slides, following the teacher (Teach mode) ---
+  if (!teacher) startFollowAlong(c, st);
 
   // --- live attendance: once a minute while the stream plays here ---
   if (!teacher && c.studentIds.includes(currentUser.id)) {
@@ -717,6 +721,20 @@ function renderLiveClass(main) {
     if (liveState !== st) return;
     try { draw(await DB.liveChat(c.id, st.lastChat)); } catch (e) { /* try again */ }
   };
+  // A student's own questions: show which ones the teacher has answered.
+  if (!teacher) st.timers.push(setInterval(async () => {
+    if (liveState !== st || !list) return;
+    try {
+      const rows = await DB.questions(c.id, null);
+      rows.forEach((q) => {
+        const el = list.querySelector(`.chat-msg[data-id="${q.id}"]`);
+        if (!el || q.author_id !== currentUser.id) return;
+        const tag = el.querySelector(".chat-answered");
+        if (q.answered_at && !tag) el.querySelector(".chat-who").insertAdjacentHTML("beforeend", ` <span class="pill pill-green chat-answered">Answered</span>`);
+        else if (!q.answered_at && tag) tag.remove();
+      });
+    } catch (e) { /* next time */ }
+  }, 15000));
   poll();
   st.timers.push(setInterval(poll, 4000));
   document.getElementById("chatForm").addEventListener("submit", async (e) => {
