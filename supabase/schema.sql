@@ -465,6 +465,17 @@ create table if not exists public.class_cancellations (
   primary key (course_id, class_date)
 );
 
+-- An extra class day (Oct 10, 2026): a make-up class, or a class moved to
+-- a different day (the old day is canceled, the new one added here).
+create table if not exists public.class_extra_days (
+  course_id  text not null references public.courses(id) on delete cascade,
+  class_date date not null,
+  note       text not null default '' check (length(note) <= 300),
+  added_by   uuid references public.profiles(id) on delete set null,
+  added_at   timestamptz not null default now(),
+  primary key (course_id, class_date)
+);
+
 -- A teacher's note to the whole class.
 create table if not exists public.announcements (
   id         uuid primary key default gen_random_uuid(),
@@ -716,12 +727,15 @@ language sql stable security definer set search_path = public as $$
    where c.id = p_course and c.sched_start is not null
      and to_char(d, 'Dy') = any (c.sched_days)
 $$;
--- The days a course actually meets: its scheduled days, minus any the
--- teacher canceled.
+-- The days a course actually meets: its scheduled days plus any extra
+-- days the teacher added (a make-up or moved class), minus any canceled.
 create or replace function public.course_class_dates(p_course text) returns setof date
 language sql stable security definer set search_path = public as $$
-  select d from public.course_scheduled_dates(p_course) d
-   where not exists (select 1 from class_cancellations x where x.course_id = p_course and x.class_date = d)
+  select d from (select d from public.course_scheduled_dates(p_course) d
+                 union
+                 select class_date from class_extra_days where course_id = p_course) s(d)
+   where not exists (select 1 from class_cancellations x where x.course_id = p_course and x.class_date = s.d)
+   order by 1
 $$;
 
 -- Can the signed-in person see this other person at all? Faculty see
@@ -1293,7 +1307,8 @@ begin
   if p_date < public.local_today() then
     raise exception 'That class day has already passed.';
   end if;
-  if not exists (select 1 from public.course_scheduled_dates(p_course) d where d = p_date) then
+  if not exists (select 1 from public.course_scheduled_dates(p_course) d where d = p_date)
+     and not exists (select 1 from class_extra_days x where x.course_id = p_course and x.class_date = p_date) then
     raise exception 'That isn''t one of this course''s class days.';
   end if;
   select title into v_title from courses where id = p_course;
@@ -1724,7 +1739,8 @@ begin
   foreach t in array array['profiles','courses','enrollments','enrollment_requests','materials','assignments',
       'submissions','discussion_posts','messages','notifications','bible_highlights','attendance_days',
       'attendance','class_cancellations','announcements','transcript_entries','past_records',
-      'lessons','lesson_views','live_presence','assignment_materials'] loop
+      'lessons','lesson_views','live_presence','assignment_materials',
+      'class_extra_days','slide_decks','slide_notes','course_plan'] loop
     execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x', t) into rows;
     v := v || jsonb_build_object(t, rows);
   end loop;
@@ -2071,6 +2087,7 @@ alter table public.attendance_reminders enable row level security;
 alter table public.assignment_reminders enable row level security;
 alter table public.calendar_feeds       enable row level security;
 alter table public.class_cancellations  enable row level security;
+alter table public.class_extra_days     enable row level security;
 alter table public.announcements        enable row level security;
 alter table public.transcript_entries   enable row level security;
 alter table public.past_records         enable row level security;
@@ -2948,3 +2965,364 @@ create policy amat_update on public.assignment_materials for update to authentic
               and public.material_course(material_id) = public.assignment_course(assignment_id));
 create policy amat_delete on public.assignment_materials for delete to authenticated
   using (public.manages_course(public.assignment_course(assignment_id)));
+
+-- ===========================================================================
+-- Teaching with slides (Oct 10, 2026)
+-- ===========================================================================
+-- • Lesson plan: each course keeps an ordered list of lessons, one per class
+--   meeting. Dates are never typed — the site pairs lessons with the class
+--   days in order, so a canceled or moved class shifts everything after it.
+-- • Slide decks: a presentation turned into one picture per slide when it's
+--   uploaded (bucket "slides", path <course>/<deck>/<n>.jpg and <n>-s.jpg).
+-- • Teach mode: the teacher's iPad moves the slides; the classroom TV and
+--   every online student follow along (teach_live, one row per course).
+-- • Questions: online students ask through the class chat. A student sees
+--   only their own questions, the teacher's messages, and a question the
+--   teacher puts on the screen; the teacher sees them all and marks them
+--   answered.
+-- ===========================================================================
+
+-- When students may page through a course's slides on their own:
+--   after  — once that lesson has been taught (default)
+--   before — any time
+--   never  — only while the teacher is presenting them live
+alter table public.courses
+  add column if not exists slides_share text not null default 'after'
+    check (slides_share in ('after','before','never'));
+
+create table if not exists public.slide_decks (
+  id          uuid primary key default gen_random_uuid(),
+  course_id   text not null references public.courses(id) on delete cascade,
+  title       text not null check (length(trim(title)) between 1 and 300),
+  source      text not null default 'pdf' check (source in ('pdf','pptx','gslides')),
+  slide_count int  not null default 0 check (slide_count between 0 and 400),
+  status      text not null default 'ready' check (status in ('converting','ready','failed')),
+  version     int  not null default 1,
+  created_by  uuid default auth.uid() references public.profiles(id) on delete set null,
+  created_at  timestamptz not null default now()
+);
+create index if not exists idx_slide_decks_course on public.slide_decks(course_id);
+
+-- Speaker notes from the presentation, one per slide — the teacher's only.
+create table if not exists public.slide_notes (
+  deck_id uuid primary key references public.slide_decks(id) on delete cascade,
+  notes   jsonb not null default '[]'::jsonb check (jsonb_typeof(notes) = 'array')
+);
+
+create table if not exists public.course_plan (
+  id                uuid primary key default gen_random_uuid(),
+  course_id         text not null references public.courses(id) on delete cascade,
+  position          int  not null default 0,
+  title             text not null check (length(trim(title)) between 1 and 300),
+  notes_material_id uuid references public.materials(id) on delete set null,
+  deck_id           uuid references public.slide_decks(id) on delete set null,
+  -- planned | taught | partial (stopped partway; it carries on in the next row)
+  status            text not null default 'planned' check (status in ('planned','taught','partial')),
+  taught_on         date,
+  resume_slide      int  not null default 1 check (resume_slide >= 1),
+  stopped_slide     int,
+  continued_from    uuid references public.course_plan(id) on delete set null,
+  created_at        timestamptz not null default now()
+);
+create index if not exists idx_course_plan_course on public.course_plan(course_id, position);
+
+-- The class being taught right now (one row per course, kept between classes
+-- so the classroom TV can wait on it). channel_key names the instant-update
+-- channel; only the course's class and teachers can read it.
+create table if not exists public.teach_live (
+  course_id       text primary key references public.courses(id) on delete cascade,
+  active          boolean not null default false,
+  plan_id         uuid references public.course_plan(id) on delete set null,
+  deck_id         uuid references public.slide_decks(id) on delete set null,
+  slide           int  not null default 1 check (slide >= 1),
+  blanked         boolean not null default false,
+  pinned_question uuid references public.live_chat(id) on delete set null,
+  class_date      date,
+  started_at      timestamptz,
+  teacher_id      uuid references public.profiles(id) on delete set null,
+  channel_key     text not null default md5(random()::text || clock_timestamp()::text),
+  updated_at      timestamptz not null default now()
+);
+
+-- A question the teacher has dealt with.
+alter table public.live_chat add column if not exists answered_at timestamptz;
+
+alter table public.slide_decks enable row level security;
+alter table public.slide_notes enable row level security;
+alter table public.course_plan enable row level security;
+alter table public.teach_live  enable row level security;
+grant select, insert, update, delete on public.slide_decks, public.slide_notes, public.course_plan, public.teach_live to authenticated;
+grant select on public.class_extra_days to authenticated;
+revoke insert, update, delete on public.class_extra_days from authenticated;
+
+create or replace function public.deck_course(p_deck uuid) returns text
+language sql stable security definer set search_path = public as $$
+  select course_id from slide_decks where id = p_deck
+$$;
+-- May the class see this deck's pictures right now?
+create or replace function public.deck_open_to_class(p_deck uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from slide_decks d join courses c on c.id = d.course_id
+     where d.id = p_deck and d.status = 'ready'
+       and (c.slides_share = 'before'
+            or (c.slides_share = 'after' and exists (select 1 from course_plan p
+                  where p.deck_id = d.id and p.status in ('taught','partial')))
+            or exists (select 1 from teach_live t where t.deck_id = d.id and t.active))
+  )
+$$;
+revoke execute on function public.deck_course(uuid) from public, anon;
+revoke execute on function public.deck_open_to_class(uuid) from public, anon;
+grant execute on function public.deck_course(uuid) to authenticated;
+grant execute on function public.deck_open_to_class(uuid) to authenticated;
+
+drop policy if exists decks_select on public.slide_decks;
+drop policy if exists decks_insert on public.slide_decks;
+drop policy if exists decks_update on public.slide_decks;
+drop policy if exists decks_delete on public.slide_decks;
+create policy decks_select on public.slide_decks for select to authenticated
+  using (public.is_faculty() or public.is_super_admin()
+         or (public.is_enrolled(course_id) and public.deck_open_to_class(id)));
+create policy decks_insert on public.slide_decks for insert to authenticated with check (public.manages_course(course_id));
+create policy decks_update on public.slide_decks for update to authenticated
+  using (public.manages_course(course_id)) with check (public.manages_course(course_id));
+create policy decks_delete on public.slide_decks for delete to authenticated using (public.manages_course(course_id));
+
+drop policy if exists snotes_all on public.slide_notes;
+create policy snotes_all on public.slide_notes for all to authenticated
+  using (public.manages_course(public.deck_course(deck_id)))
+  with check (public.manages_course(public.deck_course(deck_id)));
+
+drop policy if exists plan_select on public.course_plan;
+drop policy if exists plan_insert on public.course_plan;
+drop policy if exists plan_update on public.course_plan;
+drop policy if exists plan_delete on public.course_plan;
+create policy plan_select on public.course_plan for select to authenticated
+  using (public.is_faculty() or public.is_super_admin() or public.is_enrolled(course_id));
+create policy plan_insert on public.course_plan for insert to authenticated
+  with check (public.manages_course(course_id)
+              and (deck_id is null or public.deck_course(deck_id) = course_id)
+              and (notes_material_id is null or public.material_course(notes_material_id) = course_id));
+create policy plan_update on public.course_plan for update to authenticated
+  using (public.manages_course(course_id))
+  with check (public.manages_course(course_id)
+              and (deck_id is null or public.deck_course(deck_id) = course_id)
+              and (notes_material_id is null or public.material_course(notes_material_id) = course_id));
+create policy plan_delete on public.course_plan for delete to authenticated using (public.manages_course(course_id));
+
+drop policy if exists tlive_select on public.teach_live;
+drop policy if exists tlive_insert on public.teach_live;
+drop policy if exists tlive_update on public.teach_live;
+create policy tlive_select on public.teach_live for select to authenticated
+  using (public.manages_course(course_id) or public.is_enrolled(course_id));
+create policy tlive_insert on public.teach_live for insert to authenticated
+  with check (public.manages_course(course_id) and (deck_id is null or public.deck_course(deck_id) = course_id));
+create policy tlive_update on public.teach_live for update to authenticated
+  using (public.manages_course(course_id))
+  with check (public.manages_course(course_id) and (deck_id is null or public.deck_course(deck_id) = course_id));
+-- (Rows are never deleted by people; the course's deletion clears them.)
+revoke delete on public.teach_live from authenticated;
+
+drop policy if exists extra_select on public.class_extra_days;
+create policy extra_select on public.class_extra_days for select to authenticated
+  using (public.is_enrolled(course_id) or public.manages_course(course_id));
+
+-- The class chat during Teach mode is for questions: a student sees their
+-- own, anything a teacher wrote, and a question shown on the screen.
+create or replace function public.chat_author_is_teacher(p_author uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from profiles where id = p_author and role = 'faculty')
+$$;
+create or replace function public.chat_on_screen(p_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from teach_live where pinned_question = p_id and active)
+$$;
+revoke execute on function public.chat_author_is_teacher(uuid) from public, anon;
+revoke execute on function public.chat_on_screen(uuid) from public, anon;
+grant execute on function public.chat_author_is_teacher(uuid) to authenticated;
+grant execute on function public.chat_on_screen(uuid) to authenticated;
+drop policy if exists chat_select on public.live_chat;
+create policy chat_select on public.live_chat for select to authenticated
+  using (public.manages_course(course_id)
+         or (public.is_enrolled(course_id)
+             and (author_id = auth.uid() or public.chat_author_is_teacher(author_id) or public.chat_on_screen(id))));
+
+-- Mark a question answered (or not).
+create or replace function public.mark_question(p_id uuid, p_answered boolean) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_course text;
+begin
+  select course_id into v_course from live_chat where id = p_id;
+  if v_course is null or not public.manages_course(v_course) then
+    raise exception 'Only this course''s teacher can do that.';
+  end if;
+  update live_chat set answered_at = case when p_answered then now() end where id = p_id;
+end $$;
+
+-- Add a class day (a make-up, or the new day of a moved class) / take one
+-- off again. Students are told either way.
+create or replace function public.add_class_day(p_course text, p_date date, p_note text default '')
+returns void
+language plpgsql security definer set search_path = public as $$
+declare v_title text;
+begin
+  if not public.manages_course(p_course) then
+    raise exception 'Only this course''s teacher or an Admin can add a class day.';
+  end if;
+  if p_date is null or p_date < public.local_today() then
+    raise exception 'Pick a day that hasn''t passed yet.';
+  end if;
+  if exists (select 1 from public.course_class_dates(p_course) d where d = p_date) then
+    raise exception 'That day is already a class day.';
+  end if;
+  -- A canceled regular day can simply come back.
+  delete from class_cancellations where course_id = p_course and class_date = p_date;
+  if not exists (select 1 from public.course_scheduled_dates(p_course) d where d = p_date) then
+    insert into class_extra_days (course_id, class_date, note, added_by)
+    values (p_course, p_date, left(trim(coalesce(p_note, '')), 300), auth.uid())
+    on conflict (course_id, class_date) do nothing;
+  end if;
+  select title into v_title from courses where id = p_course;
+  insert into notifications (user_id, subject, link, kind)
+  select e.student_id, 'Class added: ' || v_title || ' on ' || to_char(p_date, 'FMDay, FMMonth FMDD')
+           || coalesce(nullif(' — ' || left(trim(coalesce(p_note, '')), 200), ' — '), ''),
+         '/?calendar=' || p_date, 'cancel'
+    from enrollments e join profiles p on p.id = e.student_id and p.status = 'active'
+   where e.course_id = p_course;
+end $$;
+
+create or replace function public.remove_class_day(p_course text, p_date date) returns void
+language plpgsql security definer set search_path = public as $$
+declare v_title text;
+begin
+  if not public.manages_course(p_course) then
+    raise exception 'Only this course''s teacher or an Admin can change this.';
+  end if;
+  delete from class_extra_days where course_id = p_course and class_date = p_date;
+  if not found then return; end if;
+  if p_date >= public.local_today() then
+    select title into v_title from courses where id = p_course;
+    insert into notifications (user_id, subject, link, kind)
+    select e.student_id, 'Class removed: ' || v_title || ' on ' || to_char(p_date, 'FMDay, FMMonth FMDD'),
+           '/?calendar=' || p_date, 'cancel'
+      from enrollments e join profiles p on p.id = e.student_id and p.status = 'active'
+     where e.course_id = p_course;
+  end if;
+end $$;
+
+-- Start teaching a lesson: the iPad, the TV and online students all switch
+-- to it. Opens the slides where the lesson left off.
+create or replace function public.teach_start(p_course text, p_plan uuid) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare r course_plan%rowtype; t teach_live%rowtype;
+begin
+  if not public.manages_course(p_course) then
+    raise exception 'Only this course''s teacher or an Admin can teach it.';
+  end if;
+  if p_plan is not null then
+    select * into r from course_plan where id = p_plan and course_id = p_course;
+    if not found then raise exception 'That lesson isn''t part of this course.'; end if;
+  end if;
+  insert into teach_live (course_id, active, plan_id, deck_id, slide, blanked, pinned_question, class_date, started_at, teacher_id, updated_at)
+  values (p_course, true, p_plan, r.deck_id, coalesce(r.resume_slide, 1), false, null, public.local_today(), now(), auth.uid(), now())
+  on conflict (course_id) do update
+    set active = true, plan_id = excluded.plan_id, deck_id = excluded.deck_id, slide = excluded.slide,
+        blanked = false, pinned_question = null, class_date = excluded.class_date,
+        -- coming back to the same lesson the same day keeps the class clock
+        started_at = case when teach_live.active and teach_live.plan_id is not distinct from excluded.plan_id
+                          then teach_live.started_at else now() end,
+        teacher_id = excluded.teacher_id, updated_at = now()
+  returning * into t;
+  return to_jsonb(t);
+end $$;
+
+-- End class. p_outcome: finished — the lesson is done;
+--                       continue — stopped at p_slide; the rest of the lesson
+--                                  becomes the next class's lesson;
+--                       pause    — just stop presenting (nothing recorded).
+-- Returns the id of the continuation lesson, if one was made.
+create or replace function public.teach_end(p_course text, p_outcome text, p_slide int default null) returns uuid
+language plpgsql security definer set search_path = public as $$
+declare t teach_live%rowtype; r course_plan%rowtype; v_new uuid; v_title text;
+begin
+  if not public.manages_course(p_course) then
+    raise exception 'Only this course''s teacher or an Admin can do that.';
+  end if;
+  if p_outcome not in ('finished','continue','pause') then raise exception 'Unknown choice.'; end if;
+  select * into t from teach_live where course_id = p_course;
+  update teach_live set active = false, pinned_question = null, blanked = false, updated_at = now() where course_id = p_course;
+  if p_outcome = 'pause' or t.plan_id is null then return null; end if;
+  select * into r from course_plan where id = t.plan_id;
+  if not found then return null; end if;
+  if p_outcome = 'finished' then
+    update course_plan set status = 'taught', taught_on = coalesce(t.class_date, public.local_today()), stopped_slide = null
+     where id = r.id;
+    return null;
+  end if;
+  update course_plan set status = 'partial', taught_on = coalesce(t.class_date, public.local_today()),
+                         stopped_slide = greatest(coalesce(p_slide, t.slide, 1), 1)
+   where id = r.id;
+  -- If this lesson already carries on in the next row, just move its start.
+  select id into v_new from course_plan where continued_from = r.id and status = 'planned' limit 1;
+  if v_new is not null then
+    update course_plan set resume_slide = greatest(coalesce(p_slide, t.slide, 1), 1) where id = v_new;
+    return v_new;
+  end if;
+  update course_plan set position = position + 1 where course_id = p_course and position > r.position;
+  v_title := regexp_replace(r.title, '\s*\(continued\)$', '');
+  insert into course_plan (course_id, position, title, notes_material_id, deck_id, resume_slide, continued_from)
+  values (p_course, r.position + 1, left(v_title || ' (continued)', 300), r.notes_material_id, r.deck_id,
+          greatest(coalesce(p_slide, t.slide, 1), 1), r.id)
+  returning id into v_new;
+  return v_new;
+end $$;
+
+revoke execute on function public.mark_question(uuid, boolean) from public, anon;
+revoke execute on function public.add_class_day(text, date, text) from public, anon;
+revoke execute on function public.remove_class_day(text, date) from public, anon;
+revoke execute on function public.teach_start(text, uuid) from public, anon;
+revoke execute on function public.teach_end(text, text, int) from public, anon;
+grant execute on function public.mark_question(uuid, boolean) to authenticated;
+grant execute on function public.add_class_day(text, date, text) to authenticated;
+grant execute on function public.remove_class_day(text, date) to authenticated;
+grant execute on function public.teach_start(text, uuid) to authenticated;
+grant execute on function public.teach_end(text, text, int) to authenticated;
+
+-- Slide pictures. Small JPEGs; teachers manage them, the class sees a deck
+-- when deck_open_to_class allows it.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('slides', 'slides', false, 5242880, array['image/jpeg','image/webp','image/png'])
+on conflict (id) do update
+  set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+
+create or replace function public.slide_path_deck(p_name text) returns uuid
+language sql immutable as $$
+  select case when (storage.foldername(p_name))[2] ~ '^[0-9a-f-]{36}$'
+              then ((storage.foldername(p_name))[2])::uuid end
+$$;
+drop policy if exists tnbbi_slides_read   on storage.objects;
+drop policy if exists tnbbi_slides_insert on storage.objects;
+drop policy if exists tnbbi_slides_update on storage.objects;
+drop policy if exists tnbbi_slides_delete on storage.objects;
+create policy tnbbi_slides_read on storage.objects for select to authenticated
+  using (bucket_id = 'slides' and (public.is_faculty() or public.is_super_admin()
+         or (public.is_enrolled((storage.foldername(name))[1])
+             and public.deck_course(public.slide_path_deck(name)) = (storage.foldername(name))[1]
+             and public.deck_open_to_class(public.slide_path_deck(name)))));
+create policy tnbbi_slides_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'slides' and public.manages_course((storage.foldername(name))[1]));
+create policy tnbbi_slides_update on storage.objects for update to authenticated
+  using (bucket_id = 'slides' and public.manages_course((storage.foldername(name))[1]));
+create policy tnbbi_slides_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'slides' and public.manages_course((storage.foldername(name))[1]));
+
+-- Instant updates: let Supabase Realtime send teach_live changes (a backup
+-- to the direct slide messages the iPad sends).
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime')
+     and not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime'
+                     and schemaname = 'public' and tablename = 'teach_live') then
+    execute 'alter publication supabase_realtime add table public.teach_live';
+  end if;
+end $$;
