@@ -118,11 +118,14 @@ a { color: var(--link); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .top-nav { background: linear-gradient(120deg, #101b2c, #16263d); } }
 body { background-image: radial-gradient(1200px 380px at 50% -120px, color-mix(in srgb, var(--gold) 10%, transparent), transparent); background-repeat: no-repeat; }
 .top-nav-inner { max-width: 1180px; margin: 0 auto; padding: 14px 28px; display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-.brand { display: flex; align-items: center; gap: 12px; }
-.brand img { display: block; object-fit: contain; flex-shrink: 0; }
-.brand-text { font-family: "Source Serif 4", serif; font-weight: 700; font-size: 1.05rem; line-height: 1.25; color: #fff; }
+.brand { display: flex; align-items: center; gap: 14px; background: none; border: none; padding: 0; margin: 0; cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.brand img { display: block; object-fit: contain; flex-shrink: 0; width: 100px; height: 100px; margin: -6px 0; filter: drop-shadow(0 2px 6px rgba(0,0,0,.35)); }
+.brand:focus-visible { outline: 2px solid var(--gold); outline-offset: 4px; border-radius: 12px; }
+.brand:hover .brand-text { color: var(--gold-light); }
+.brand-text { font-family: "Source Serif 4", serif; font-weight: 700; font-size: 1.15rem; line-height: 1.25; color: #fff; display: block; }
 .brand-text small { display: block; color: #aebbcd; font-size: 0.74rem; font-weight: 400; font-family: "Figtree", sans-serif; }
 
+.nav-pills[hidden] { display: none !important; }
 .nav-pills { display: flex; gap: 2px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 4px; }
 .nav-pills button { border: none; background: transparent; padding: 8px 16px; border-radius: 999px; color: #c3cee0; font-size: 0.86rem; font-weight: 600; cursor: pointer; font-family: inherit; }
 .nav-pills button:hover { color: #fff; }
@@ -141,7 +144,7 @@ body { background-image: radial-gradient(1200px 380px at 50% -120px, color-mix(i
 .auth-wrap { min-height: calc(100vh - 46px); display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 40px 20px; }
 .auth-card { max-width: 400px; width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow); padding: 36px 32px; }
 .auth-logo { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 24px; text-align: center; }
-.auth-logo img { width: 84px; height: 84px; object-fit: contain; }
+.auth-logo img { width: 150px; height: 150px; object-fit: contain; }
 .auth-logo-title { font-family: "Source Serif 4", serif; font-weight: 700; font-size: 1.2rem; color: var(--foreground); }
 .auth-logo-sub { color: var(--muted-foreground); font-size: 0.85rem; }
 .auth-tabs { display: flex; gap: 4px; background: var(--background); border: 1px solid var(--border); border-radius: 999px; padding: 4px; margin-bottom: 20px; }
@@ -450,10 +453,10 @@ body.is-busy::after { content: ""; position: fixed; top: 0; left: 0; height: 3px
 
 /* Phones */
 @media (max-width: 780px) {
-  .nav-pills { width: 100%; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .nav-pills { max-width: 100%; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
   .nav-pills::-webkit-scrollbar { display: none; }
   .nav-pills button { white-space: nowrap; flex-shrink: 0; }
-  .brand img { width: 44px; height: 44px; }
+  .brand img { width: 68px; height: 68px; margin: 0; }
   .role-pills { flex-wrap: wrap; row-gap: 8px; }
 }
 @media (max-width: 560px) {
@@ -1681,3 +1684,14 @@ body { background-image: var(--paper), radial-gradient(1200px 380px at 50% -120p
 .complete-body p { margin: 0; }
 .complete-verse { margin-top: 8px !important; font-family: "Source Serif 4", Georgia, serif; font-style: italic; color: var(--muted-foreground); }
 .complete-verse span { font-style: normal; font-weight: 700; font-size: .8rem; color: var(--gold); }
+
+/* Upcoming classes (student This Week + teacher Needs Your Attention) */
+.week-classes { margin: 4px 0 10px; }
+.week-classes .week-next-label { display: block; margin: 2px 2px 6px; }
+.week-classes .week-list { margin-top: 0; }
+.week-class.week-today { background: color-mix(in srgb, var(--gold) 10%, var(--card)); border-color: color-mix(in srgb, var(--gold) 40%, var(--border)); }
+.week-class.week-today .week-go { color: var(--gold); font-weight: 800; }
+.week-class.week-canceled strong { text-decoration: line-through; opacity: .7; }
+.week-class.week-canceled small { color: var(--danger, #a33); }
+.week-more { margin: 6px 2px 0; font-size: .8rem; color: var(--muted-foreground); }
+.attention-card .week-classes { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
