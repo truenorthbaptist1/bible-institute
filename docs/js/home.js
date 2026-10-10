@@ -147,6 +147,12 @@ function thisWeekCardHtml() {
       <strong>${esc(next.c.title)}</strong>
       <small>${esc(classTimeText(next.at))}${next.c.location ? ` · ${esc(next.c.location)}` : ""}</small>
     </button>` : ""}
+    ${mine.filter((c) => c.memory && c.memory.ref).slice(0, 2).map((c) => `
+    <button type="button" class="week-memory" data-memory-open="${esc(c.memory.ref)}">
+      <span class="week-next-label">Memory verse · ${esc(c.title)}</span>
+      <span class="week-memory-text">“${esc(c.memory.text.length > 160 ? c.memory.text.slice(0, 157) + "…" : c.memory.text)}”</span>
+      <strong>${esc(c.memory.ref)}</strong>
+    </button>`).join("")}
     ${shown.length ? `<ul class="week-list">${shown.map(row).join("")}</ul>` : `<p class="week-empty">Nothing is due in the next seven days.</p>`}
     ${lectures.slice(0, 2).map(({ c, l }) => `
     <button type="button" class="week-row week-lecture" data-week-lesson="${c.id}|${l.id}">
@@ -177,6 +183,7 @@ function wireThisWeek(main) {
   card.querySelectorAll("[data-week-go]").forEach((a) => a.addEventListener("click", (e) => {
     e.preventDefault(); view = a.dataset.weekGo; renderNav(); renderMain();
   }));
+  if (typeof wireMemoryOpen === "function") wireMemoryOpen(card);
   const all = card.querySelector("#thisWeekAll");
   if (all) all.addEventListener("click", (e) => { e.preventDefault(); view = "submit"; renderNav(); renderMain(); });
 }

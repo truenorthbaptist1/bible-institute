@@ -13,9 +13,7 @@ const VERSES = {"student": [{"ref": "Joshua 1:9", "text": "Have not I commanded 
 const PHOTOS = {
   student: ["river-sunset", "fireweed", "sunset-tree", "river-peaks", "mountain-path", "cliffs", "snow-peak", "tide-rocks"],
   teacher: ["snow-peak", "river-peaks", "mountain-path", "tide-rocks", "sunset-tree", "fireweed", "river-sunset", "cliffs"],
-  signin: ["mountain-path", "snow-peak", "river-peaks", "river-sunset", "sunset-tree"],
 };
-const SLIDE_MS = 9000; // how long each photo shows before fading to the next
 function dayNumber(d = new Date()) {
   return Math.floor((Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) - Date.UTC(d.getFullYear(), 0, 0)) / 86400000);
 }
@@ -24,39 +22,18 @@ function todaysVerse(kind) {
   const list = (VERSES[kind] || VERSES.student).filter((v) => v.text.length <= 190);
   return list[(dayNumber() * 7 + new Date().getFullYear()) % list.length];
 }
-// The photos for a banner, starting somewhere new on each visit.
-function photoOrder(kind) {
+// The dashboard photo stays the same while someone is signed in, and moves to
+// the next one in the list each time they sign in (bumpPhoto() is called on a
+// real sign-in, not on a refresh).
+const PHOTO_KEY = "tnbbi-photo-n";
+function bumpPhoto() {
+  try { localStorage.setItem(PHOTO_KEY, String((parseInt(localStorage.getItem(PHOTO_KEY) || "0", 10) || 0) + 1)); } catch (e) { /* fine */ }
+}
+function currentPhoto(kind) {
   const list = PHOTOS[kind] || PHOTOS.student;
-  let start = 0;
-  try {
-    const k = "tnbbi-photo:" + kind;
-    start = (parseInt(sessionStorage.getItem(k) || String(Math.floor(Math.random() * list.length)), 10) + 1) % list.length;
-    sessionStorage.setItem(k, String(start));
-  } catch (e) { start = Math.floor(Math.random() * list.length); }
-  return list.slice(start).concat(list.slice(0, start));
-}
-function isSmallScreen() { return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches); }
-function slidesHtml(order) {
-  const small = isSmallScreen();
-  return `<div class="slides" aria-hidden="true">${order.map((p, i) =>
-    `<div class="slide ${i === 0 ? "on" : ""}" ${i === 0 ? `style="background-image:url('${photoUrl(p, small)}')"` : `data-src="${photoUrl(p, small)}"`}></div>`).join("")}</div>`;
-}
-// Cross-fades a banner's photos, one after another. Returns the timer.
-function startSlides(root) {
-  const slides = root ? [...root.querySelectorAll(".slide")] : [];
-  if (slides.length < 2 || (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) return null;
-  let i = 0;
-  const load = (el) => { if (el.dataset.src) { el.style.backgroundImage = `url('${el.dataset.src}')`; delete el.dataset.src; } };
-  load(slides[1]);
-  return setInterval(() => {
-    if (!root.isConnected || document.hidden) return;
-    const next = (i + 1) % slides.length;
-    load(slides[next]);
-    load(slides[(next + 1) % slides.length]); // have the one after ready too
-    slides[i].classList.remove("on");
-    slides[next].classList.add("on");
-    i = next;
-  }, SLIDE_MS);
+  let n = 0;
+  try { n = parseInt(localStorage.getItem(PHOTO_KEY) || "0", 10) || 0; } catch (e) { /* fine */ }
+  return list[n % list.length];
 }
 // Absolute, because the CSS that draws it lives in css/ (relative URLs in CSS
 // variables resolve against the stylesheet).
@@ -64,6 +41,10 @@ function photoUrl(name, small) { return new URL(`brand/photo-${name}${small ? "-
 function greetingWord(d = new Date()) {
   const h = d.getHours();
   return h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+function isSmallScreen() { return !!(window.matchMedia && window.matchMedia("(max-width: 700px)").matches); }
+function photoLayerHtml(name) {
+  return `<div class="slides" aria-hidden="true"><div class="slide on" style="background-image:url('${photoUrl(name, isSmallScreen())}')"></div></div>`;
 }
 
 // --- the dashboard banner ------------------------------------------------------
@@ -73,7 +54,7 @@ function heroHtml(kind) {
   const v = todaysVerse(kind);
   const date = new Date().toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
   return `<section class="hero page-header">
-    ${slidesHtml(photoOrder(kind))}
+    ${photoLayerHtml(currentPhoto(kind))}
     <div class="hero-shade"></div>
     <div class="hero-inner">
       <div class="hero-eyebrow">${kind === "teacher" ? esc(staffEyebrow()) : "Student Dashboard"} · ${esc(date)}</div>
@@ -87,13 +68,6 @@ function heroHtml(kind) {
 }
 function wireHero(root) {
   root.querySelectorAll("[data-verse]").forEach((b) => b.addEventListener("click", () => openVerse(b.dataset.verse)));
-  const t = startSlides(root.querySelector(".hero"));
-  if (t && typeof viewTimers !== "undefined") viewTimers.push(t);
-}
-let authSlideTimer = null;
-function wireAuthSlides(root) {
-  clearInterval(authSlideTimer);
-  authSlideTimer = startSlides(root.querySelector(".auth-photo"));
 }
 function openVerse(key) {
   const [book, c, v] = key.split(".");
@@ -221,4 +195,203 @@ function celebrateTurnIn(title) {
   const close = () => { root.classList.add("celebrate-out"); setTimeout(() => root.remove(), 300); };
   root.addEventListener("click", close);
   setTimeout(close, 4200);
+}
+
+// --- the main menu: each tile says what's waiting there --------------------------
+function tileLive(key) {
+  try {
+    const today = todayStr();
+    const sid = currentStudentId;
+    const unread = unreadMessageCount();
+    const nextClass = (list) => {
+      let best = null;
+      list.forEach((c) => { const m = nextClassMoment(c); if (m && (!best || m.at < best.at)) best = { c, ...m }; });
+      return best ? `Next class ${best.at.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "";
+    };
+    if (role === "student") {
+      const mine = courses.filter((c) => !c.archived && c.studentIds.includes(sid));
+      if (key === "courses") return mine.length ? `${mine.length} course${mine.length === 1 ? "" : "s"}` : "Find a class to join";
+      if (key === "calendar") return nextClass(mine) || "Nothing scheduled";
+      if (key === "messages") return unread ? `${unread} new message${unread === 1 ? "" : "s"}` : "No new messages";
+      if (key === "grades") {
+        const g = mine.filter((c) => isLive(c)).map((c) => ({ c, g: computeCourseGrade(c, sid) })).find((x) => x.g.pct !== null);
+        return g ? `${g.c.title.length > 22 ? g.c.title.slice(0, 21) + "…" : g.c.title}: ${g.g.pct}% ${g.g.letter}` : "No grades yet";
+      }
+      if (key === "studyBible") return `Today: ${todaysVerse("student").ref}`;
+      if (key === "resourceLibrary") return "Books, studies, past lectures";
+      return "";
+    }
+    const taught = courses.filter((c) => !c.archived && iTeach(c));
+    if (key === "catalogue") { const n = pendingEnrollmentCount(); return n ? `${n} enrollment request${n === 1 ? "" : "s"}` : taught.length ? `You teach ${taught.length}` : `${courses.filter((c) => !c.archived).length} active`; }
+    if (key === "calendar") return nextClass(taught) || "No classes scheduled";
+    if (key === "grading") {
+      let n = 0;
+      taught.forEach((c) => c.assignments.forEach((a) => ensureSubmissions(c, a).forEach((s) => { if (s.status === "submitted") n++; })));
+      return n ? `${n} to grade` : "All caught up";
+    }
+    if (key === "messages") return unread ? `${unread} unread` : "No new messages";
+    if (key === "discussion") { const n = taught.reduce((m, c) => m + (c.discussion || []).length, 0); return n ? `${n} post${n === 1 ? "" : "s"}` : "Start a discussion"; }
+    if (key === "studyBible") return `Today: ${todaysVerse("teacher").ref}`;
+    if (key === "settings") { const n = pendingSignups().filter((u) => u.emailVerified).length; return n ? `${n} waiting for approval` : "Everyone approved"; }
+    return "";
+  } catch (e) { return ""; }
+}
+function menuTileHtml(t, badge = "", extra = "") {
+  const live = tileLive(t.key);
+  const hue = (typeof TILE_HUE !== "undefined" && TILE_HUE[t.key]) || "blue";
+  return `<div class="tile menu-tile hue-${hue}" data-goto="${t.key}" tabindex="0" role="button">
+    ${badge}
+    <span class="menu-mark" aria-hidden="true">${icon(t.i)}</span>
+    <div class="icon-badge">${icon(t.i)}</div>
+    <h3>${esc(t.label)}</h3>
+    <p>${esc(t.desc)}</p>
+    ${live ? `<p class="tile-live"><span class="tile-live-dot"></span>${esc(live)}</p>` : ""}
+    ${extra}
+    <span class="menu-go" aria-hidden="true">→</span>
+  </div>`;
+}
+
+// --- memory verse of the week ----------------------------------------------------
+function cleanKjv(t) { return String(t || "").replace(/[{}]/g, "").replace(/\[[HG]\d+\]/g, "").replace(/\s+/g, " ").trim(); }
+async function lookUpVerse(refText) {
+  const ranges = parseBibleReference(refText);
+  if (!ranges) return null;
+  const passages = await biblePassages(ranges);
+  if (!passages.length) return null;
+  const text = passages.map((p) => p.verses.map((v) => cleanKjv(v.text)).join(" ")).join(" … ");
+  return { ref: passages.map((p) => p.label).join("; "), text };
+}
+function memoryCardHtml(c, opts = {}) {
+  const m = c.memory || {};
+  if (!m.ref) return "";
+  return `<div class="card memory-card ${opts.compact ? "memory-compact" : ""}">
+    <div class="memory-head">${icon("bible")}<span>Memory verse${m.setAt ? ` · week of ${esc(fmtDay(alaskaParts(new Date(m.setAt)).date, { month: "short", day: "numeric" }))}` : ""}</span></div>
+    <p class="memory-text">“${esc(m.text)}”</p>
+    <button type="button" class="memory-ref" data-memory-open="${esc(m.ref)}">${esc(m.ref)} ${icon("bible")}</button>
+  </div>`;
+}
+function wireMemoryOpen(root) {
+  root.querySelectorAll("[data-memory-open]").forEach((b) => b.addEventListener("click", () => {
+    const r = parseBibleReference(b.dataset.memoryOpen);
+    if (!r || !r[0]) return;
+    openVerse(`${r[0].book}.${r[0].c1}.${r[0].v1 || 1}`);
+  }));
+}
+// Manage → Overview: the teacher sets it.
+function renderMemoryManageCard(c) {
+  const box = document.getElementById("mgMemoryCard");
+  if (!box) return;
+  const m = c.memory || {};
+  let found = null;
+  box.innerHTML = `
+    ${m.ref ? `<div class="memory-current"><p class="memory-text">“${esc(m.text)}”</p><p class="memory-current-ref"><strong>${esc(m.ref)}</strong>${m.setAt ? ` · set ${esc(fmtDay(alaskaParts(new Date(m.setAt)).date, { month: "short", day: "numeric" }))}` : ""}</p></div>` : `<p class="field-hint" style="margin-top:0;">Give the class a verse to hide in their hearts this week (Psalm 119:11). Students see it on the course page and on their dashboard.</p>`}
+    <label for="mvRef">${m.ref ? "Change to" : "Verse"}</label>
+    <div class="memory-row">
+      <input type="text" id="mvRef" maxlength="80" placeholder="e.g. Psalm 119:11 or Romans 12:1-2" autocomplete="off">
+      <button type="button" class="btn btn-ghost btn-sm" id="mvLook">Look Up</button>
+    </div>
+    <div id="mvPreview"></div>
+    <div class="form-actions">
+      <button type="button" class="btn btn-primary" id="mvSave" disabled>Set as Memory Verse</button>
+      ${m.ref ? `<button type="button" class="btn btn-ghost" id="mvClear">Clear</button>` : ""}
+    </div>`;
+  const inp = box.querySelector("#mvRef"), prev = box.querySelector("#mvPreview"), save = box.querySelector("#mvSave");
+  const look = async () => {
+    found = null; save.disabled = true;
+    const v = inp.value.trim();
+    if (!v) { prev.innerHTML = ""; return; }
+    prev.innerHTML = `<p class="field-hint">Looking it up…</p>`;
+    try { found = await lookUpVerse(v); } catch (e) { found = null; }
+    if (!found) { prev.innerHTML = `<p class="auth-error">That doesn't look like a Bible reference. Try “John 3:16”.</p>`; return; }
+    if (found.text.length > 1200) { found = null; prev.innerHTML = `<p class="auth-error">That passage is long for a memory verse — try a few verses.</p>`; return; }
+    prev.innerHTML = `<div class="memory-preview"><p class="memory-text">“${esc(found.text)}”</p><strong>${esc(found.ref)}</strong></div>`;
+    save.disabled = false;
+  };
+  box.querySelector("#mvLook").addEventListener("click", look);
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); look(); } });
+  save.addEventListener("click", () => {
+    if (!found) return;
+    run(() => DB.setMemoryVerse(c.id, found.ref, found.text), null, { success: `${found.ref} is this week's memory verse.` });
+  });
+  const clr = box.querySelector("#mvClear");
+  if (clr) clr.addEventListener("click", () => run(() => DB.setMemoryVerse(c.id, "", ""), null, { success: "Memory verse cleared." }));
+}
+
+// --- teacher: the class at a glance ---------------------------------------------
+function classGlanceHtml(c) {
+  if (!iTeach(c) || !c.studentIds.length) return "";
+  const people = rosterByLastName(c);
+  const grades = people.map((u) => ({ u, g: computeCourseGrade(c, u.id) }));
+  const bands = [["A", 90], ["B", 80], ["C", 70], ["Below C", 0]];
+  const counts = bands.map(([label, min], i) => ({ label, n: grades.filter((x) => x.g.pct !== null && x.g.pct >= min && (i === 0 || x.g.pct < bands[i - 1][1])).length }));
+  const none = grades.filter((x) => x.g.pct === null).length;
+  const maxN = Math.max(1, ...counts.map((b) => b.n), none);
+  // Attendance over the last class days that were held.
+  const days = Object.keys(c.attDays || {}).filter((d) => c.attDays[d] && c.attDays[d].held).sort().slice(-10);
+  const rates = days.map((d) => {
+    const marks = c.attMarks[d] || {};
+    const ids = Object.keys(marks);
+    if (!ids.length) return null;
+    return ids.filter((id) => marks[id] === "present" || marks[id] === "late").length / ids.length;
+  }).filter((x) => x !== null);
+  const spark = rates.length > 1 ? (() => {
+    const w = 160, h = 40, step = w / (rates.length - 1);
+    const pts = rates.map((r, i) => `${(i * step).toFixed(1)},${(h - 4 - r * (h - 8)).toFixed(1)}`).join(" ");
+    return `<svg class="glance-spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="var(--gold)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+  })() : "";
+  // Who might need a word.
+  const today = todayStr();
+  const flags = [];
+  grades.forEach(({ u, g }) => {
+    const why = [];
+    if (g.pct !== null && g.pct < 70) why.push(`grade ${g.pct}%`);
+    const missing = c.assignments.filter((a) => { const st = getSubmission(c, a, u.id).status; return dueFor(c, a, u.id) < today && st !== "submitted" && st !== "graded"; }).length;
+    if (missing >= 2) why.push(`${missing} past due`);
+    const recent = days.slice(-4).filter((d) => (c.attMarks[d] || {})[u.id] === "absent").length;
+    if (recent >= 2) why.push(`${recent} recent absences`);
+    if (why.length) flags.push({ u, why });
+  });
+  return `<div class="card glance-card">
+    <div class="glance-head"><h2>Class at a glance</h2><span class="field-hint" style="margin:0;">${people.length} student${people.length === 1 ? "" : "s"}</span></div>
+    <div class="glance-faces">${people.slice(0, 14).map((u) => `<span title="${esc(u.name)}">${avatarHtml(u, 34)}</span>`).join("")}${people.length > 14 ? `<span class="glance-more">+${people.length - 14}</span>` : ""}</div>
+    <div class="glance-grid">
+      <div>
+        <div class="glance-label">Grades so far</div>
+        <div class="glance-bars">
+          ${counts.map((b) => `<div class="glance-bar"><span class="glance-bar-label">${b.label}</span><span class="glance-bar-track"><span style="width:${(b.n / maxN) * 100}%"></span></span><span class="glance-bar-n">${b.n}</span></div>`).join("")}
+          ${none ? `<div class="glance-bar glance-bar-none"><span class="glance-bar-label">No grade yet</span><span class="glance-bar-track"><span style="width:${(none / maxN) * 100}%"></span></span><span class="glance-bar-n">${none}</span></div>` : ""}
+        </div>
+      </div>
+      <div>
+        <div class="glance-label">Attendance${rates.length ? `, last ${rates.length} classes` : ""}</div>
+        ${rates.length ? `<div class="glance-att"><strong>${Math.round((rates.reduce((a, b) => a + b, 0) / rates.length) * 100)}%</strong><span>present on average</span></div>${spark}` : `<p class="field-hint" style="margin:6px 0 0;">${takesClassroomAttendance(c) ? "No class days taken yet." : "Attendance isn't taken in this course."}</p>`}
+      </div>
+    </div>
+    <div class="glance-label" style="margin-top:14px;">Might need a word</div>
+    ${flags.length ? `<ul class="glance-flags">${flags.map(({ u, why }) => `<li>${avatarHtml(u, 28)}<span class="glance-flag-name">${esc(u.name)}</span><span class="glance-why">${why.map((w) => `<span class="pill pill-gold">${esc(w)}</span>`).join("")}</span><button type="button" class="btn btn-ghost btn-sm" data-glance-msg="${u.id}">Message</button></li>`).join("")}</ul>`
+      : `<p class="field-hint" style="margin:4px 0 0;">✓ Everyone is keeping up.</p>`}
+  </div>`;
+}
+function wireClassGlance(c, root) {
+  root.querySelectorAll("[data-glance-msg]").forEach((b) => b.addEventListener("click", () => {
+    activeCourseId = c.id; messageThreadStudentId = b.dataset.glanceMsg; view = "messageThread"; renderNav(); renderMain();
+  }));
+}
+
+// --- students: a course finished --------------------------------------------------
+const FINISHED_VERSE = { ref: "2 Timothy 4:7", text: "I have fought a good fight, I have finished my course, I have kept the faith." };
+function courseCompleteHtml(days = 30) {
+  if (role !== "student" || typeof transcripts === "undefined") return "";
+  const since = Date.now() - days * 86400000;
+  const done = transcripts.filter((t) => t.studentId === currentUser.id && t.courseId && t.recordedAt && new Date(t.recordedAt).getTime() >= since && t.grade && !/^(W|I)$/.test(t.grade));
+  if (!done.length) return "";
+  return done.map((t) => `<div class="card complete-card">
+    <div class="complete-seal" aria-hidden="true">${emblemSvg("star")}</div>
+    <div class="complete-body">
+      <div class="complete-eyebrow">Course complete</div>
+      <h3>${esc(t.courseTitle)}</h3>
+      <p>Final grade <strong>${esc(t.grade)}</strong>${t.credits ? ` · ${t.credits} credit${t.credits === 1 ? "" : "s"}` : ""} — it's on your transcript.</p>
+      <p class="complete-verse">“${esc(FINISHED_VERSE.text)}” <span>— ${esc(FINISHED_VERSE.ref)}</span></p>
+    </div>
+  </div>`).join("");
 }

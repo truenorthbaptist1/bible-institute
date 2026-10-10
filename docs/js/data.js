@@ -232,6 +232,7 @@ async function loadAll() {
       attMarks: {},  // date → { studentId: status }
       location: r.location || "",
       meetingUrl: r.meeting_url || "",
+      memory: { ref: r.memory_ref || "", text: r.memory_text || "", setAt: r.memory_set_at || null },
       // Hybrid & online (Oct 9)
       format: r.format || "in_person",     // in_person | hybrid | online
       pace: r.pace || "calendar",          // calendar | self
@@ -423,6 +424,9 @@ const DB = {
       attendance_on: a.on, attendance_weight: a.on ? a.weight : 0, attendance_late_credit: a.lateCredit,
     }).select("id").single());
     return row.id;
+  },
+  async setMemoryVerse(id, ref, text) {
+    must(await sb.from("courses").update({ memory_ref: ref || "", memory_text: text || "", memory_set_at: ref ? new Date().toISOString() : null }).eq("id", id));
   },
   async updateCourse(id, patch) {
     must(await sb.from("courses").update(patch).eq("id", id));

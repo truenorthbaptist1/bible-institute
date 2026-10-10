@@ -502,7 +502,7 @@ function renderAuthScreen() {
   const tabs = authMode === "signin" || authMode === "signup";
   wrap.innerHTML = `
     <div class="auth-wrap auth-photo">
-      ${slidesHtml(photoOrder("signin"))}
+      ${photoLayerHtml("mountain-path")}
       <div class="auth-verse">
         <p>“Study to shew thyself approved unto God, a workman that needeth not to be ashamed, rightly dividing the word of truth.”</p>
         <span>2 Timothy 2:15</span>
@@ -537,7 +537,6 @@ function renderAuthScreen() {
   wrap.querySelectorAll("[data-mode]").forEach((b) => {
     b.addEventListener("click", () => { authMode = b.dataset.mode; authError = ""; authInfo = ""; renderAuthScreen(); });
   });
-  wireAuthSlides(wrap);
   wireAuthFormHandlers();
 }
 
@@ -1202,21 +1201,12 @@ function renderDashboard(main) {
   const unread = unreadMessageCount();
   main.innerHTML = `
     ${heroHtml("student")}
+    ${courseCompleteHtml(14)}
     ${thisWeekCardHtml()}
     ${recentAnnouncementsHtml()}
     ${profileNudge()}
-    <div class="grid grid-six">
-      ${tiles
-        .map(
-          (t) => `
-        <div class="tile" data-goto="${t.key}" tabindex="0" role="button">
-          ${t.key === "messages" && unread ? `<span class="tile-badge">${unread}</span>` : ""}
-          <div class="icon-badge hue-${TILE_HUE[t.key] || "blue"}">${icon(t.i)}</div>
-          <h3>${esc(t.label)}</h3>
-          <p>${esc(t.desc)}</p>
-        </div>`
-        )
-        .join("")}
+    <div class="grid grid-six menu-grid">
+      ${tiles.map((t) => menuTileHtml(t, t.key === "messages" && unread ? `<span class="tile-badge">${unread}</span>` : "")).join("")}
     </div>
   `;
   main.querySelectorAll("[data-goto]").forEach((el) => {
@@ -1440,24 +1430,18 @@ function renderFacultyHome(main) {
     ${heroHtml("teacher")}
     ${attentionCardHtml()}
     ${profileNudge()}
-    <div class="grid">
-      ${tiles
-        .map(
-          (t) => `
-        <div class="tile" data-goto="${t.key}" tabindex="0" role="button">
-          ${t.key === "messages" && unread ? `<span class="tile-badge">${unread}</span>` : ""}
-          ${t.key === "catalogue" && pendingEnroll ? `<span class="tile-badge" title="${pendingEnroll} enrollment request${pendingEnroll === 1 ? "" : "s"}">${pendingEnroll}</span>` : ""}
-          ${t.key === "settings" && pendingSignups().filter((u) => u.emailVerified).length ? `<span class="tile-badge" title="Sign-ups waiting for approval">${pendingSignups().filter((u) => u.emailVerified).length}</span>` : ""}
-          <div class="icon-badge hue-${TILE_HUE[t.key] || "blue"}">${icon(t.i)}</div>
-          <h3>${esc(t.label)}</h3>
-          <p>${esc(t.desc)}</p>
-          ${t.key === "catalogue" && attNow.length ? `<div class="tile-att">${attNow.map((c) => {
+    <div class="grid menu-grid">
+      ${tiles.map((t) => {
+        const waiting = pendingSignups().filter((u) => u.emailVerified).length;
+        const badge = t.key === "messages" && unread ? `<span class="tile-badge">${unread}</span>`
+          : t.key === "catalogue" && pendingEnroll ? `<span class="tile-badge" title="${pendingEnroll} enrollment request${pendingEnroll === 1 ? "" : "s"}">${pendingEnroll}</span>`
+          : t.key === "settings" && waiting ? `<span class="tile-badge" title="Sign-ups waiting for approval">${waiting}</span>` : "";
+        const extra = t.key === "catalogue" && attNow.length ? `<div class="tile-att">${attNow.map((c) => {
             const taken = !!c.attDays[todayStr()];
             return `<button type="button" class="tile-att-btn ${taken ? "taken" : ""}" data-take-att="${c.id}">${icon("check")}<span>${taken ? "Attendance taken" : "Take Attendance"} · ${esc(c.title)}${c.schedule.time ? ` · ${esc(fmtTime(c.schedule.time))}` : ""}</span></button>`;
-          }).join("")}</div>` : ""}
-        </div>`
-        )
-        .join("")}
+          }).join("")}</div>` : "";
+        return menuTileHtml(t, badge, extra);
+      }).join("")}
     </div>
   `;
   main.querySelectorAll("[data-goto]").forEach((el) => {
@@ -1704,6 +1688,7 @@ function renderCourse(main) {
     ${courseAttendHtml(c, "top")}
     ${tabsHtml(key, tabs)}
     <section ${panelAttrs(key, "overview")}>
+      ${memoryCardHtml(c)}
       ${courseAnnouncementsHtml(c)}
       <div class="overview-grid">
         ${nextLectureHtml(c)}
@@ -1764,6 +1749,7 @@ function renderCourse(main) {
   });
   wireTabs(key, main);
   wireCourseAttend(c, main);
+  wireMemoryOpen(main);
 }
 function studentAssignmentRow(c, a, sub, opts = {}) {
   const [label, pillClass] = STATUS_LABEL[sub.status];
@@ -2386,6 +2372,7 @@ function renderMyGrades(main) {
       <h1>My Grades</h1>
       <p>Your grades only — as each one is posted, and a running grade for each course.</p>
     </div>
+    ${courseCompleteHtml(120)}
     <button type="button" class="card transcript-link" id="openTranscript">
       <span class="icon-badge hue-wine">${icon("scroll")}</span>
       <span><strong>My Transcript</strong><small>Your permanent record of finished courses — download it as a PDF.</small></span>
@@ -3235,6 +3222,9 @@ function renderManage(main) {
 
     <div class="section-title"><h2>Announcements</h2></div>
     <div class="card" id="mgAnnounceCard"></div>
+
+    <div class="section-title"><h2>Memory Verse of the Week</h2></div>
+    <div class="card" id="mgMemoryCard"></div>
     </section>
 
     ${courseHasLectures(c) ? `<section ${panelAttrs(mkey, "lectures")}>
@@ -3243,6 +3233,7 @@ function renderManage(main) {
     </section>` : ""}
 
     <section ${panelAttrs(mkey, "students")}>
+    ${classGlanceHtml(c)}
     <div id="mgEnrollRequestsSection"></div>
 
     <div class="section-title"><h2>Roster</h2></div>
@@ -3309,6 +3300,8 @@ function renderManage(main) {
   renderTeacherCard(c);
   renderCancellationsCard(c);
   renderAnnouncementsCard(c);
+  renderMemoryManageCard(c);
+  wireClassGlance(c, main);
   const cp = document.getElementById("mgCopyCourse");
   if (cp) cp.addEventListener("click", () => openCopyCourseModal(c));
   renderAttendanceCard(c);
@@ -5622,7 +5615,7 @@ function boot() {
       }
       if (session && (event === "INITIAL_SESSION" || event === "SIGNED_IN" || event === "PASSWORD_RECOVERY")) {
         // A real sign-in (not a restored visit or a token refresh) starts in day view.
-        if (!currentUser && event !== "INITIAL_SESSION") setTheme("light");
+        if (!currentUser && event !== "INITIAL_SESSION") { setTheme("light"); bumpPhoto(); }
         settled = true;
         startSession(session, { force: event === "PASSWORD_RECOVERY", restored: event === "INITIAL_SESSION" && !/access_token|[?&]code=|type=recovery/.test(location.href) });
         return;
