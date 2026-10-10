@@ -558,7 +558,7 @@ with sync_playwright() as p:
     check("Blake Amis" in gs and "18/20" in gs and "90%" in gs, "grade sheet shows Blake at 90%")
     admin.screenshot(path=f"{SHOTS}/08-grade-sheet.png", full_page=True)
     nav(amber, "Resource Library"); amber.fill("#resSearchInput", "preaching"); amber.wait_for_timeout(300)
-    check("found" in body(amber).lower() and amber.locator(".materials-list li").count() > 0, "resource library search returns results")
+    check(amber.locator(".lib-book").count() > 0 and amber.locator(".lib-drive li").count() > 0, "resource library search returns books and Drive documents")
 
     print("12b. Attendance and the calendar dialogs")
     nav(admin, "Dashboard"); tile(admin, "Courses")
