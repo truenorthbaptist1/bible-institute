@@ -20,4 +20,10 @@ window.TNBBI_CONFIG = {
   // signs in with Google. (The database enforces this too; this copy only
   // decides when the site bothers to ask.)
   bootstrapAdminEmail: "truenorthbaptist1@gmail.com",
+
+  // Turns PowerPoint files and Google Slides links into slides (Teach mode).
+  // This is the name of the Supabase Edge Function that does the converting
+  // through the church's Google Drive. Remove this line to switch it off —
+  // teachers can still add PDFs.
+  slideConverter: "convert-slides",
 };
