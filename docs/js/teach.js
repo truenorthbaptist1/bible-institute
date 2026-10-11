@@ -474,10 +474,33 @@ function notesOptionsHtml(c, selected) {
     .slice().sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
   return `<option value="">— None —</option>${docs.map((m) => `<option value="${m.id}" ${m.id === selected ? "selected" : ""}>${esc(m.title)}${m.teacherOnly ? " (teachers only)" : ""}</option>`).join("")}`;
 }
+// Slides to choose from: decks already made, then presentations sitting in
+// the course materials (made into slides when picked — value "mat:<id>").
 function deckOptionsHtml(c, selected) {
   const decks = (c.decks || []).filter((d) => d.status === "ready" || d.id === selected)
     .slice().sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
-  return `<option value="">— None —</option>${decks.map((d) => `<option value="${d.id}" ${d.id === selected ? "selected" : ""}>${esc(d.title)} · ${d.count} slides</option>`).join("")}`;
+  const made = new Set(decks.map((d) => d.title));
+  const mats = c.materials.filter((m) => m.storagePath && ["pptx", "ppt", "pdf"].includes(fileExt(materialFileName(m)))
+    && !made.has(baseTitle(materialFileName(m)) || materialFileName(m).replace(/\.[a-z0-9]+$/i, "")))
+    .slice().sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }));
+  const deckOpts = decks.map((d) => `<option value="${d.id}" ${d.id === selected ? "selected" : ""}>${esc(d.title)} · ${d.count} slides</option>`).join("");
+  const matOpts = mats.map((m) => `<option value="mat:${m.id}">${esc(m.title)}</option>`).join("");
+  return `<option value="">— None —</option>`
+    + (deckOpts ? (matOpts ? `<optgroup label="Slides ready to show">${deckOpts}</optgroup>` : deckOpts) : "")
+    + (matOpts ? `<optgroup label="From the course materials">${matOpts}</optgroup>` : "");
+}
+// The deck for a choice from deckOptionsHtml — making slides from a course
+// material the first time it's picked.
+async function deckFromChoice(c, value, say) {
+  if (!value || !value.startsWith("mat:")) return value || null;
+  const m = c.materials.find((x) => x.id === value.slice(4));
+  if (!m) throw new Error("That file is no longer in the course materials.");
+  const name = materialFileName(m);
+  const title = baseTitle(name) || name.replace(/\.[a-z0-9]+$/i, "");
+  const same = (c.decks || []).find((d) => d.status === "ready" && d.title === title);
+  if (same) return same.id;
+  say && say(`Opening ${m.title}…`);
+  return createDeckFromSource(c, await materialAsFile(m), say);
 }
 
 function openPlanEditor(c, r) {
@@ -494,7 +517,7 @@ function openPlanEditor(c, r) {
         <div class="pe-or">or add a new document: <input type="file" id="peNotesFile" accept=".pdf,.docx,.doc,.txt,.rtf,.odt" aria-label="Upload lesson notes"></div>
         <label for="peDeck">Slides <span class="field-hint" style="display:inline;margin:0;">(on the TV and for online students)</span></label>
         <select id="peDeck">${deckOptionsHtml(c, r ? r.deckId : null)}</select>
-        <div class="pe-or">or add a presentation: <input type="file" id="peDeckFile" accept=".pptx,.ppt,.pdf" aria-label="Upload slides"></div>
+        <div class="pe-or">or upload one from your device: <input type="file" id="peDeckFile" accept=".pptx,.ppt,.pdf" aria-label="Upload slides"></div>
         <div class="pe-or">or paste a Google Slides link: <input type="url" id="peDeckLink" placeholder="https://docs.google.com/presentation/d/…" aria-label="Google Slides link"></div>
         <p class="field-hint" id="peStatus" aria-live="polite"></p>
         <div class="form-actions">
@@ -505,6 +528,10 @@ function openPlanEditor(c, r) {
     </div>`;
   const say = (t) => { const e = document.getElementById("peStatus"); if (e) e.textContent = t; };
   document.getElementById("peClose").addEventListener("click", closeModal);
+  document.getElementById("peDeck").addEventListener("change", (e) => {
+    const o = e.target.selectedOptions[0];
+    if (e.target.value && !document.getElementById("peName").value.trim()) document.getElementById("peName").value = baseTitle(o.textContent.replace(/ · \d+ slides$/, "")) || o.textContent;
+  });
   document.getElementById("peDeckFile").addEventListener("change", (e) => {
     const f = e.target.files[0];
     if (f && !document.getElementById("peName").value.trim()) document.getElementById("peName").value = baseTitle(f.name);
@@ -527,6 +554,7 @@ function openPlanEditor(c, r) {
     await run(async () => {
       if (notesFile) { say("Uploading the lesson notes…"); const made = await DB.addMaterials(c.id, [notesFile], true); notesId = made[0] && made[0].id; }
       if (deckFile || link) deckId = await createDeckFromSource(c, deckFile || link, say);
+      else deckId = await deckFromChoice(c, deckId, say);
       if (isNew) await DB.addPlanLessons(c.id, [{ title, notesId, deckId }]);
       else await DB.updatePlanLesson(r.id, { title, notesId, deckId });
       closeModal();
@@ -947,7 +975,7 @@ function renderTeach(main) {
           <h2 id="swTitle" style="font-size:1.1rem;margin:0 0 8px;">Slides for This Class</h2>
           <label for="swDeck">Show these slides</label>
           <select id="swDeck">${deckOptionsHtml(c, st.deck ? st.deck.id : null)}</select>
-          <div class="pe-or">or add a presentation: <input type="file" id="swFile" accept=".pptx,.ppt,.pdf" aria-label="Upload slides"></div>
+          <div class="pe-or">or upload one from your device: <input type="file" id="swFile" accept=".pptx,.ppt,.pdf" aria-label="Upload slides"></div>
           <p class="field-hint" id="swStatus" aria-live="polite"></p>
           <div class="form-actions"><button class="btn btn-primary" id="swSave">Show Them</button><button class="btn btn-ghost" id="swClose">Cancel</button></div>
         </div>
@@ -958,8 +986,11 @@ function renderTeach(main) {
       let deckId = document.getElementById("swDeck").value || null;
       const b = document.getElementById("swSave"); b.disabled = true;
       try {
-        if (file) deckId = await createDeckFromSource(c, file, (t) => { const e = document.getElementById("swStatus"); if (e) e.textContent = t; });
-        if (file) { await loadAll(); }
+        const say = (t) => { const e = document.getElementById("swStatus"); if (e) e.textContent = t; };
+        const fromMat = !file && deckId && deckId.startsWith("mat:");
+        if (file) deckId = await createDeckFromSource(c, file, say);
+        else deckId = await deckFromChoice(c, deckId, say);
+        if (file || fromMat) { await loadAll(); }
         const fresh = courses.find((x) => x.id === c.id);
         st.c = fresh; st.deck = (fresh.decks || []).find((d) => d.id === deckId) || null;
         if (st.plan) await DB.updatePlanLesson(st.plan.id, { deckId }).catch(() => {});
