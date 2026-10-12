@@ -360,6 +360,7 @@ async function loadAll() {
       duration: l.duration_seconds || null, publishedAt: l.published_at, recordedOn: l.recorded_on, status: l.status,
       fromPlaylist: l.from_playlist, replaces: l.replaces || "", hidden: !!l.hidden, fixedDate: l.class_date || null,
       classDate: dateOf[l.id] || null, addedAt: l.added_at, views: {},
+      streamStartedAt: l.stream_started_at || null, replayZeroAt: l.replay_zero_at || null,
     };
     lessonById[l.id] = obj;
     c.lessons.push(obj);
@@ -610,6 +611,22 @@ const DB = {
     let q = sb.from("live_chat").select("*").eq("course_id", courseId).order("created_at", { ascending: true });
     if (since) q = q.gte("created_at", since);
     return must(await q);
+  },
+  // A class replay: slide changes, decks and questions for one recording.
+  async classReplay(lessonId) {
+    const r = must(await sb.rpc("class_replay", { p_lesson: lessonId }));
+    if (!r) return null;
+    return {
+      classDate: r.class_date, zero: r.zero || null, autoZero: r.auto_zero || null, manual: !!r.manual,
+      events: (r.events || []).map((e) => ({ at: Date.parse(e.at), active: !!e.active, deckId: e.deck || null, slide: e.slide || 1,
+        blanked: !!e.blanked, pinned: e.pinned || null })),
+      decks: (r.decks || []).map(deckFromRow),
+      questions: (r.questions || []).map((q) => ({ id: q.id, name: q.name || "", teacher: !!q.teacher, body: q.body || "",
+        at: Date.parse(q.at), answeredAt: q.answered_at ? Date.parse(q.answered_at) : null })),
+    };
+  },
+  async setReplayZero(lessonId, zeroIso) {
+    must(await sb.rpc("set_replay_zero", { p_lesson: lessonId, p_zero: zeroIso || null }));
   },
   async markQuestion(id, answered) {
     must(await sb.rpc("mark_question", { p_id: id, p_answered: !!answered }));

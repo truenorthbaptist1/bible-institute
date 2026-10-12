@@ -126,24 +126,42 @@ function thisWeekItems() {
     due.push({ c, a, d, sub, done, lock, overdue: !done && d < today });
   }));
   due.sort((x, y) => (x.done - y.done) || x.d.localeCompare(y.d) || x.a.title.localeCompare(y.a.title));
-  // The next lecture to watch, for students who attend by watching.
-  const lectures = [];
+  // The next lecture to watch, for students who attend by watching; and the
+  // classes a student missed (online and not counted present, or marked
+  // absent in the classroom) — their recordings, until watched.
+  const lectures = [], missed = [];
   mine.forEach((c) => {
     if (!courseHasLectures(c)) return;
-    if (c.pace !== "self" && effTrack(c, sid) === "classroom") return;
+    const track = effTrack(c, sid);
     const open = c.lessons.filter((l) => playableLesson(l) && lessonOpensOn(c, l, sid) <= today);
-    const l = open.find((x) => watchedPct(x, sid) < WATCH_SHARE);
-    if (l) lectures.push({ c, l, by: lessonWatchBy(c, l, sid) });
+    if (c.pace === "self" || track === "recorded") {
+      const l = open.find((x) => watchedPct(x, sid) < WATCH_SHARE);
+      if (l) lectures.push({ c, l, by: lessonWatchBy(c, l, sid) });
+      return;
+    }
+    const seen = new Set();
+    open.forEach((l) => {
+      const d = l.classDate;
+      if (!d || seen.has(d) || d > today || (d === today && !classIsOver(c)) || d < addDaysISO(today, -21)) return;
+      if (watchedPct(l, sid) >= WATCH_SHARE) return;
+      const mark = (c.attMarks[d] || {})[sid];
+      const missedIt = track === "classroom" ? mark === "absent" : !["present", "late", "excused"].includes(mark);
+      if (!missedIt) return;
+      seen.add(d);
+      const taught = (c.plan || []).find((r) => r.taughtOn === d);
+      missed.push({ c, l, d, by: lessonWatchBy(c, l, sid), title: taught ? taught.title : l.title || "", pct: watchedPct(l, sid) });
+    });
   });
   lectures.sort((x, y) => x.by.localeCompare(y.by));
+  missed.sort((x, y) => x.d.localeCompare(y.d));
   // Classes this student has to be at (in the room, or watching live) — not
   // courses they follow by recording.
   const classes = upcomingClasses(mine.filter((c) => effTrack(c, sid) !== "recorded"));
-  return { mine, next, live, due, lectures, classes };
+  return { mine, next, live, due, lectures, missed, classes };
 }
 
 function thisWeekCardHtml() {
-  const { mine, live, due, lectures, classes } = thisWeekItems();
+  const { mine, live, due, lectures, missed, classes } = thisWeekItems();
   if (!mine.length) {
     return `<div class="card week-card">
       <div class="week-head"><h2>${icon("calendar")} This Week</h2></div>
@@ -167,9 +185,15 @@ function thisWeekCardHtml() {
   return `<div class="card week-card" id="thisWeek">
     <div class="week-head">
       <h2>${icon("calendar")} This Week</h2>
-      <span class="week-sum">${open.length ? `${open.length} to do` : "✓ All caught up"}</span>
+      <span class="week-sum">${open.length + missed.length ? `${open.length + missed.length} to do` : "✓ All caught up"}</span>
     </div>
     ${live.map((c) => `<button type="button" class="week-live" data-week-live="${c.id}"><span class="live-dot" aria-hidden="true"></span><span><strong>${esc(c.title)} is live now</strong><small>Tap to watch the class</small></span>${icon("video")}</button>`).join("")}
+    ${missed.length ? `<div class="week-missed-wrap"><div class="week-next-label">Classes to watch</div>${missed.slice(0, 4).map(({ c, l, d, by, title, pct }) => `
+    <button type="button" class="week-row week-lecture week-missed ${by < todayStr() ? "week-overdue" : ""}" data-week-lesson="${c.id}|${l.id}">
+      <span class="week-mark" aria-hidden="true">${icon("video")}</span>
+      <span class="week-text"><strong>${esc(title || "Class")}</strong><small>${esc(c.title)} · missed class of ${esc(fmtDay(d, { weekday: "short", month: "short", day: "numeric" }))} · ${pct > 0 ? `${Math.round(pct)}% watched · ` : ""}${by < todayStr() ? "was due" : "watch by"} ${esc(dayText(by))}</small></span>
+      <span class="week-go">${pct > 0 ? "Continue" : "Watch"}</span>
+    </button>`).join("")}</div>` : ""}
     ${upcomingClassesHtml(classes.filter((x) => !live.some((c) => c.id === x.c.id && x.date === todayStr())), "student")}
     ${mine.filter((c) => c.memory && c.memory.ref).slice(0, 2).map((c) => `
     <button type="button" class="week-memory" data-memory-open="${esc(c.memory.ref)}">

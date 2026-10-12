@@ -497,6 +497,7 @@ function openLecture(courseId, lessonId, back) {
   window.scrollTo(0, 0);
 }
 function stopLecture() {
+  if (typeof stopReplay === "function") stopReplay();
   if (lectureTracker) { lectureTracker.stop(); lectureTracker = null; }
   destroyPlayer();
 }
@@ -521,7 +522,10 @@ function renderLecture(main) {
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to ${backLabel}</button>
     <div class="lecture-page">
-      <div class="video-shell"><div id="lecturePlayer"></div><div class="video-msg" id="videoMsg">Loading the video…</div></div>
+      <div class="replay-grid">
+        <div class="video-shell"><div id="lecturePlayer"></div><div class="video-msg" id="videoMsg">Loading the video…</div></div>
+        ${replaySlotHtml()}
+      </div>
       <div class="lecture-head">
         <div class="eyebrow">${esc(c.title)}${l.classDate ? ` · Class of ${esc(fmtDay(l.classDate, { weekday: "short", month: "short", day: "numeric" }))}` : ""}</div>
         <h1>${esc(l.title || "Lecture")}</h1>
@@ -534,6 +538,7 @@ function renderLecture(main) {
       </div>` : role === "student" ? `
       <div class="privacy-note">${icon("book")}<span>From the Lecture Archive — watching here is for your own study and doesn't count toward any course.</span></div>` : `
       <div class="privacy-note">${icon("lock")}<span>Teacher's preview — watching here isn't recorded.</span></div>`}
+      ${replayBelowHtml()}
       <p class="field-hint lecture-tip">Slow connection? Tap ⚙ in the player and choose a lower quality.</p>
       <div class="lecture-nav">
         ${prev ? `<button class="btn btn-ghost btn-sm" data-lesson-nav="${prev.id}">&larr; ${esc(prev.title || "Previous")}</button>` : "<span></span>"}
@@ -559,6 +564,7 @@ function renderLecture(main) {
     if (!p || view !== "lecture" || activeLessonId !== myLesson) return;
     const m = document.getElementById("videoMsg"); if (m) m.classList.remove("show");
     if (enrolled) lectureTracker = startWatchTracker(c, l, p, show);
+    startReplay(c, l, p);
   }).catch((e) => { const m = document.getElementById("videoMsg"); if (m) { m.textContent = e.message; m.classList.add("show"); } });
 }
 
@@ -605,7 +611,7 @@ function renderLiveClass(main) {
           </div>`}
         </div>
         <div class="live-chat card">
-          <div class="live-chat-head"><strong>${icon("chat")} ${teacher ? "Class questions" : "Ask the teacher a question"}</strong><small>${teacher ? "Students' questions during class — each student sees only their own" : "Only the teacher sees your question, unless he shows it on the screen."}</small></div>
+          <div class="live-chat-head"><strong>${icon("chat")} ${teacher ? "Class questions" : "Ask the teacher a question"}</strong><small>${teacher ? "Students' questions during class — each student sees only their own" : "During class only the teacher sees your question (unless he shows it on the screen). Classmates who watch the replay later will see it with your name."}</small></div>
           <div class="live-chat-list" id="chatList" aria-live="polite"><p class="field-hint chat-empty">No messages yet.</p></div>
           <form class="live-chat-form" id="chatForm">
             <input type="text" id="chatInput" maxlength="500" placeholder="${teacher ? "Reply to the class…" : "Type a question…"}" autocomplete="off" enterkeyhint="send" aria-label="Message" />
