@@ -1740,7 +1740,7 @@ begin
       'submissions','discussion_posts','messages','notifications','bible_highlights','attendance_days',
       'attendance','class_cancellations','announcements','transcript_entries','past_records',
       'lessons','lesson_views','live_presence','assignment_materials',
-      'class_extra_days','slide_decks','slide_notes','course_plan'] loop
+      'class_extra_days','slide_decks','slide_notes','course_plan','live_chat','teach_events'] loop
     execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x', t) into rows;
     v := v || jsonb_build_object(t, rows);
   end loop;
@@ -2771,16 +2771,18 @@ begin
     if (it ->> 'in_playlist')::boolean then
       continue when exists (select 1 from lessons where course_id = p_course and replaces = it ->> 'video_id');
       insert into lessons (course_id, video_id, title, position, duration_seconds, published_at, recorded_on, status,
-                           from_playlist, notified_at, live_notified_at)
+                           from_playlist, notified_at, live_notified_at, stream_started_at)
       values (p_course, it ->> 'video_id', left(coalesce(it ->> 'title', ''), 300), coalesce((it ->> 'position')::int, 0),
               nullif((it ->> 'duration')::int, 0), (it ->> 'published_at')::timestamptz, (it ->> 'recorded_on')::date,
               coalesce(it ->> 'status', 'ok'), true,
-              case when v_first then now() end, case when v_first then now() end)
+              case when v_first then now() end, case when v_first then now() end,
+              (it ->> 'stream_started_at')::timestamptz)
       on conflict (course_id, video_id) do update
         set title = case when lessons.from_playlist then excluded.title else lessons.title end,
             position = case when lessons.from_playlist then excluded.position else lessons.position end,
             duration_seconds = coalesce(excluded.duration_seconds, lessons.duration_seconds),
             published_at = excluded.published_at, recorded_on = excluded.recorded_on, status = excluded.status,
+            stream_started_at = coalesce(excluded.stream_started_at, lessons.stream_started_at),
             from_playlist = lessons.from_playlist or excluded.from_playlist
       returning (xmax = 0) as inserted into r;
       if r.inserted then v_new := v_new + 1; end if;
@@ -2789,7 +2791,8 @@ begin
              status = coalesce(it ->> 'status', status),
              title = case when title = '' then left(coalesce(it ->> 'title', ''), 300) else title end,
              published_at = coalesce((it ->> 'published_at')::timestamptz, published_at),
-             recorded_on = coalesce((it ->> 'recorded_on')::date, recorded_on)
+             recorded_on = coalesce((it ->> 'recorded_on')::date, recorded_on),
+             stream_started_at = coalesce((it ->> 'stream_started_at')::timestamptz, stream_started_at)
        where course_id = p_course and video_id = it ->> 'video_id' and not from_playlist;
     end if;
   end loop;
@@ -3326,3 +3329,129 @@ begin
     execute 'alter publication supabase_realtime add table public.teach_live';
   end if;
 end $$;
+
+-- ===========================================================================
+-- Class replays (added Oct 11, 2026)
+-- ===========================================================================
+-- A student who missed a class watches its recording with the slides
+-- turning as they did in class and the class's questions appearing as they
+-- were asked and answered.
+--   • teach_events: every slide change in Teach mode, with the exact time
+--     (written by a trigger on teach_live, so nothing depends on the iPad).
+--   • lessons.stream_started_at: when the YouTube live stream began (from
+--     YouTube) — video time 0. lessons.replay_zero_at: the teacher's own
+--     lining-up, used instead when set.
+--   • class_replay(): everything a replay needs, for the course's teachers and
+--     enrolled students (questions with their askers' names).
+alter table public.lessons add column if not exists stream_started_at timestamptz;
+alter table public.lessons add column if not exists replay_zero_at timestamptz;
+
+create table if not exists public.teach_events (
+  id              bigserial primary key,
+  course_id       text not null references public.courses(id) on delete cascade,
+  class_date      date not null,
+  at              timestamptz not null default clock_timestamp(),
+  active          boolean not null,
+  plan_id         uuid references public.course_plan(id) on delete set null,
+  deck_id         uuid references public.slide_decks(id) on delete set null,
+  slide           int  not null default 1,
+  blanked         boolean not null default false,
+  pinned_question uuid references public.live_chat(id) on delete set null
+);
+create index if not exists idx_teach_events_class on public.teach_events(course_id, class_date, at);
+alter table public.teach_events enable row level security;
+-- Read through class_replay(); teachers may also read their own courses' rows.
+drop policy if exists teach_events_read on public.teach_events;
+create policy teach_events_read on public.teach_events for select to authenticated
+  using (public.manages_course(course_id));
+
+create or replace function public.log_teach_event() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare v_date date;
+begin
+  if tg_op = 'INSERT' then
+    if not new.active then return new; end if;
+    v_date := new.class_date;
+  else
+    if not new.active and not old.active then return new; end if;
+    if new.active = old.active and new.deck_id is not distinct from old.deck_id and new.slide = old.slide
+       and new.blanked = old.blanked and new.pinned_question is not distinct from old.pinned_question then
+      return new;
+    end if;
+    v_date := coalesce(new.class_date, old.class_date);
+  end if;
+  insert into teach_events (course_id, class_date, active, plan_id, deck_id, slide, blanked, pinned_question)
+  values (new.course_id, coalesce(v_date, (now() at time zone 'America/Anchorage')::date), new.active,
+          new.plan_id, new.deck_id, new.slide, new.blanked, new.pinned_question);
+  return new;
+end $$;
+drop trigger if exists teach_live_log on public.teach_live;
+create trigger teach_live_log after insert or update on public.teach_live
+  for each row execute function public.log_teach_event();
+
+-- Slide pictures shown in class can be seen in that class's replay (by the
+-- course's students) — even when the teacher doesn't let students page
+-- through the decks (slides_share = 'never'); the decks themselves stay as
+-- deck_open_to_class says.
+create or replace function public.deck_shown_in_class(p_deck uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from teach_events e where e.deck_id = p_deck)
+$$;
+revoke execute on function public.deck_shown_in_class(uuid) from public, anon;
+grant execute on function public.deck_shown_in_class(uuid) to authenticated;
+drop policy if exists tnbbi_slides_read on storage.objects;
+create policy tnbbi_slides_read on storage.objects for select to authenticated
+  using (bucket_id = 'slides' and (public.is_faculty() or public.is_super_admin()
+         or (public.is_enrolled((storage.foldername(name))[1])
+             and public.deck_course(public.slide_path_deck(name)) = (storage.foldername(name))[1]
+             and (public.deck_open_to_class(public.slide_path_deck(name))
+                  or public.deck_shown_in_class(public.slide_path_deck(name))))));
+
+-- Everything a class replay needs (null when there's nothing to show or the
+-- caller isn't the course's teacher or one of its students).
+create or replace function public.class_replay(p_lesson uuid) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare l record; v_date date;
+begin
+  select * into l from lessons where id = p_lesson;
+  if l.id is null then return null; end if;
+  if not (public.manages_course(l.course_id) or public.is_enrolled(l.course_id)) then return null; end if;
+  select ls.class_date into v_date from public.lesson_schedule(l.course_id) ls where ls.lesson_id = p_lesson;
+  v_date := coalesce(v_date, l.class_date, l.recorded_on);
+  if v_date is null then return null; end if;
+  return jsonb_build_object(
+    'class_date', v_date,
+    'zero', coalesce(l.replay_zero_at, l.stream_started_at),
+    'auto_zero', l.stream_started_at,
+    'manual', l.replay_zero_at is not null,
+    'events', coalesce((select jsonb_agg(jsonb_build_object('at', e.at, 'active', e.active, 'deck', e.deck_id,
+                 'slide', e.slide, 'blanked', e.blanked, 'pinned', e.pinned_question) order by e.at, e.id)
+               from teach_events e where e.course_id = l.course_id and e.class_date = v_date), '[]'::jsonb),
+    'decks', coalesce((select jsonb_agg(to_jsonb(d))
+               from slide_decks d where d.id in (select e.deck_id from teach_events e
+                                                  where e.course_id = l.course_id and e.class_date = v_date)), '[]'::jsonb),
+    'questions', coalesce((select jsonb_agg(jsonb_build_object('id', m.id, 'name', p.name, 'teacher', p.role = 'faculty',
+                 'body', m.body, 'at', m.created_at, 'answered_at', m.answered_at) order by m.created_at)
+               from live_chat m join profiles p on p.id = m.author_id
+               where m.course_id = l.course_id and m.class_date = v_date), '[]'::jsonb)
+  );
+end $$;
+
+-- The teacher lines the slides up by hand (p_zero = the moment the video
+-- starts), or null to go back to YouTube's stream start.
+create or replace function public.set_replay_zero(p_lesson uuid, p_zero timestamptz) returns void
+language plpgsql volatile security definer set search_path = public as $$
+declare v_course text;
+begin
+  select course_id into v_course from lessons where id = p_lesson;
+  if v_course is null or not public.manages_course(v_course) then
+    raise exception 'Only this course''s teacher can line up its slides.' using errcode = '42501';
+  end if;
+  update lessons set replay_zero_at = p_zero where id = p_lesson;
+end $$;
+
+revoke execute on function public.log_teach_event() from public, anon, authenticated;
+revoke execute on function public.class_replay(uuid) from public, anon;
+revoke execute on function public.set_replay_zero(uuid, timestamptz) from public, anon;
+grant execute on function public.class_replay(uuid) to authenticated;
+grant execute on function public.set_replay_zero(uuid, timestamptz) to authenticated;
