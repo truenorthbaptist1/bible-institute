@@ -480,7 +480,9 @@ export async function readPlaylist(playlistId: string, extraIds: string[], fetch
     const recorded = rec.recordingDate ? String(rec.recordingDate).slice(0, 10)
       : alaskaDay(live.actualStartTime || live.scheduledStartTime || sn.publishedAt);
     return { video_id: o.id, title: sn.title || o.title, position: o.position, duration: isoDuration(v.contentDetails && v.contentDetails.duration),
-      published_at: sn.publishedAt || null, recorded_on: recorded, status, in_playlist: o.inPlaylist };
+      published_at: sn.publishedAt || null, recorded_on: recorded, status, in_playlist: o.inPlaylist,
+      // When a live stream began = second 0 of its recording (lines up class replays).
+      stream_started_at: live.actualStartTime || null };
   });
 }
 export async function syncPlaylists(sql: Sql, fetchImpl: typeof fetch, now: Date) {
