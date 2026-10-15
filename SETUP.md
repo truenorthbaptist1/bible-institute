@@ -13,7 +13,7 @@ You'll set up four free things:
 
 The Institute's address is **https://institute.truenorthbaptist.com**, a
 subdomain of the church's own domain. (The original address,
-`tnbbibleinstitute.com`, now forwards there.) Wherever you see
+`tnbbibleinstitute.com`, was retired in October 2026.) Wherever you see
 `YOUR-GITHUB-USERNAME`, use the username of the GitHub account you created.
 
 Keep a notepad open — a few steps ask you to copy a value from one place to another.
@@ -110,10 +110,6 @@ DNS is there. In Cloudflare, click **truenorthbaptist.com**, then **DNS → Reco
 
 5. Visit **https://institute.truenorthbaptist.com** — you should see the
    sign-in page with a padlock.
-
-6. **Old address.** In Cloudflare's **tnbbibleinstitute.com** zone, a
-   Redirect Rule sends every request (keeping the rest of the link) to
-   `https://institute.truenorthbaptist.com` with a 301.
 
 ## Step 6 — Tell Supabase the site's address
 

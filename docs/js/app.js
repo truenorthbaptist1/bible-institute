@@ -539,12 +539,13 @@ function renderAuthScreen() {
           : authMode === "pending" ? renderPendingApproval()
           : renderForgotSentForm()}
       </div>
-      <p class="auth-foot" style="text-align:center;margin-top:14px;"><a href="privacy.html">Privacy Policy</a></p>
+      <p class="auth-foot" style="text-align:center;margin-top:14px;"><a href="https://truenorthbaptist.com/">True North Baptist Church</a> · <a href="privacy.html">Privacy Policy</a></p>
     </div>`;
   wrap.querySelectorAll("[data-mode]").forEach((b) => {
     b.addEventListener("click", () => { authMode = b.dataset.mode; authError = ""; authInfo = ""; renderAuthScreen(); });
   });
   wireAuthFormHandlers();
+  syncInstallBanner(true);
 }
 
 // Signed up (and verified), but not yet approved by an administrator.
@@ -798,6 +799,102 @@ function wireAuthFormHandlers() {
 // True when the site was opened from its home-screen icon (installed app).
 function isHomeScreenApp() {
   try { return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true; } catch (e) { return false; }
+}
+
+// --- "Add to your phone" banner ---------------------------------------------
+// On a phone's first visits (sign-in page and Dashboard), offer to put the
+// Institute on the Home Screen. Android (Chrome, Samsung, Edge): one tap opens
+// the phone's own Install box. iPhone: Apple lets no website install itself,
+// so the banner shows the two taps in Safari. Inside another app's browser
+// (Facebook, Messenger, Instagram…) it first says to open the page in the
+// phone's browser, since apps can't be added from there. "Not now" hides it
+// for two weeks; it never shows in the installed app or on a computer.
+const INSTALL_SNOOZE_KEY = "tnbbi-install-snooze";
+const INSTALL_SNOOZE_DAYS = 14;
+let installPromptEvent = window.__tnbbiInstallPrompt || null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  installPromptEvent = e;
+  const b = document.getElementById("installBanner");
+  if (b && b.dataset.kind === "android-steps") syncInstallBanner(true);
+});
+window.addEventListener("appinstalled", () => {
+  installPromptEvent = null;
+  try { localStorage.setItem(INSTALL_SNOOZE_KEY, String(Date.now() + 3650 * 864e5)); } catch (e) {}
+  hideInstallBanner();
+});
+function installBannerKind() {
+  const ua = navigator.userAgent || "";
+  const ios = isIOS(), android = /Android/i.test(ua);
+  if ((!ios && !android) || isHomeScreenApp()) return "";
+  try { if (Number(localStorage.getItem(INSTALL_SNOOZE_KEY) || 0) > Date.now()) return ""; } catch (e) {}
+  if (/FBAN|FBAV|FB_IAB|Instagram|Messenger|Line\/|Snapchat|LinkedInApp|Twitter|MicroMessenger|; wv\)/i.test(ua)) return ios ? "ios-inapp" : "android-inapp";
+  if (ios) return "ios";
+  return installPromptEvent ? "android" : "android-steps";
+}
+function hideInstallBanner() {
+  const b = document.getElementById("installBanner");
+  if (b) b.remove();
+  document.body.classList.remove("has-install-banner");
+}
+const SHARE_ICON = `<svg class="ib-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M8 7l4-4 4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 11H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+const DOTS_V = `<svg class="ib-glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>`;
+// show = true: put it up if this phone should see it (or refresh it);
+// show = false: take it down (any page other than sign-in and Dashboard).
+function syncInstallBanner(show) {
+  const kind = show ? installBannerKind() : "";
+  if (!kind) { hideInstallBanner(); return; }
+  let b = document.getElementById("installBanner");
+  if (b && b.dataset.kind === kind) return;
+  if (!b) {
+    b = document.createElement("div");
+    b.id = "installBanner";
+    b.className = "install-banner";
+    b.setAttribute("role", "region");
+    b.setAttribute("aria-label", "Add the Bible Institute to your phone");
+    document.body.appendChild(b);
+  }
+  b.dataset.kind = kind;
+  const why = isIOS() ? "It opens like an app, and it's how class reminders reach an iPhone." : "It opens like an app, full-screen, with class reminders.";
+  const body = {
+    android: `<p class="ib-text">${why}</p>
+      <div class="ib-actions"><button type="button" class="btn btn-primary ib-install">Add to my phone</button><button type="button" class="ib-later">Not now</button></div>`,
+    "android-steps": `<p class="ib-text">Tap the menu ${DOTS_V} at the top right, then <strong>Add to Home screen</strong> (or <strong>Install app</strong>).</p>
+      <div class="ib-actions"><button type="button" class="ib-later">Not now</button></div>`,
+    ios: `<p class="ib-text">${why}</p>
+      <ol class="ib-steps"><li>Tap the <strong>Share</strong> button ${SHARE_ICON} in Safari <span class="ib-note">(on newer iPhones it's inside the <strong>•••</strong> button)</span>.</li><li>Choose <strong>Add to Home Screen</strong>, then <strong>Add</strong>.</li></ol>
+      <div class="ib-actions"><button type="button" class="ib-later">Not now</button></div>`,
+    "ios-inapp": `<p class="ib-text">You're inside another app's browser. To add the Institute to your phone, open this page in <strong>Safari</strong> first: tap <strong>•••</strong> or the compass button, then <strong>Open in Safari</strong>.</p>
+      <div class="ib-actions"><button type="button" class="ib-later">Not now</button></div>`,
+    "android-inapp": `<p class="ib-text">You're inside another app's browser. To add the Institute to your phone, open this page in <strong>Chrome</strong> first: tap ${DOTS_V} then <strong>Open in browser</strong>.</p>
+      <div class="ib-actions"><button type="button" class="ib-later">Not now</button></div>`,
+  }[kind];
+  b.innerHTML = `
+    <img class="ib-icon" src="brand/icon-192.png" alt="" width="48" height="48">
+    <div class="ib-body">
+      <div class="ib-title">Add the Bible Institute to your ${/iPad/.test(navigator.userAgent) || (isIOS() && !/iPhone|iPod/.test(navigator.userAgent)) ? "iPad" : "phone"}</div>
+      ${body}
+    </div>
+    <button type="button" class="ib-close" aria-label="Close">×</button>`;
+  document.body.classList.add("has-install-banner");
+  const later = () => {
+    try { localStorage.setItem(INSTALL_SNOOZE_KEY, String(Date.now() + INSTALL_SNOOZE_DAYS * 864e5)); } catch (e) {}
+    hideInstallBanner();
+  };
+  b.querySelectorAll(".ib-later, .ib-close").forEach((x) => x.addEventListener("click", later));
+  const go = b.querySelector(".ib-install");
+  if (go) go.addEventListener("click", async () => {
+    const ev = installPromptEvent;
+    if (!ev) { syncInstallBanner(true); return; }
+    installPromptEvent = null;
+    window.__tnbbiInstallPrompt = null;
+    try {
+      ev.prompt();
+      const choice = await ev.userChoice;
+      if (choice && choice.outcome === "accepted") hideInstallBanner();
+      else later();
+    } catch (e) { later(); }
+  });
 }
 // Coming back to the page (e.g. closing Google's sign-in sheet) restores it
 // from memory — make sure the Google button isn't left in its busy state.
@@ -1153,6 +1250,7 @@ function renderMain() {
 // steps back through the site (navRecord, in home.js).
 function renderView() {
   const r = drawView();
+  syncInstallBanner(!!currentUser && view === "home");
   if (typeof navRecord === "function") navRecord();
   return r;
 }
