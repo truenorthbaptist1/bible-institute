@@ -197,7 +197,8 @@ const ytFetch = async (url, opts) => {
     return new Response(JSON.stringify({ items: ytVideos.filter((v) => ids.includes(v.id) && v.priv !== true).map((v) => ({
       id: v.id, snippet: { title: v.title, publishedAt: v.pub, liveBroadcastContent: v.live },
       contentDetails: { duration: v.dur }, status: { privacyStatus: "unlisted", embeddable: true },
-      ...(v.rec ? { recordingDetails: { recordingDate: v.rec } } : {}) })) }));
+      ...(v.rec ? { recordingDetails: { recordingDate: v.rec } } : {}),
+      ...(v.started ? { liveStreamingDetails: { actualStartTime: v.started } } : {}) })) }));
   }
   return new Response("{}", { status: 404 });
 };
@@ -219,6 +220,12 @@ ls = JSON.parse(psql(`select json_agg(l order by position) from public.lessons l
 check(ls.length === 2 && ls[1].recorded_on === "2026-10-01", "a newly uploaded video is added (with its recording date)", JSON.stringify(ls.map((l) => [l.video_id, l.recorded_on])));
 const n = JSON.parse(psql(`select json_agg(n) from public.notifications n where kind = 'lecture'`));
 check(n && n.length === 1 && n[0].user_id === blake && /Lecture 2/.test(n[0].subject) && /^\/\?lesson=/.test(n[0].link), "…and the online student is told", JSON.stringify(n));
+ytVideos.push({ id: "vidCCCC0003", title: "Class stream", dur: "PT1H30M", rec: null, pub: "2026-10-05T03:00:00Z", live: "none", started: "2026-10-05T03:01:07Z" });
+psql(`update public.playlist_sync set synced_at = now() - interval '31 minutes' where course_id = 'yt'`);
+out = await svc.runReminders(sql, ytFetch, new Date());
+check(psql(`select to_char(stream_started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') from public.lessons where video_id = 'vidCCCC0003'`) === "2026-10-05T03:01:07",
+  "a live stream's start time is saved (it lines up class replays)");
+check(psql(`select count(*) from public.lessons where course_id = 'yt' and video_id <> 'vidCCCC0003' and stream_started_at is not null`) === "0", "…and plain uploads have none");
 const calls = ytCalls.length;
 out = await svc.runReminders(sql, ytFetch, new Date());
 check(ytCalls.length === calls, "the playlist isn't re-read every minute");

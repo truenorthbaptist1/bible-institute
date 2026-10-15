@@ -233,7 +233,7 @@ with sync_playwright() as p:
     # course + tab history
     admin.locator("[data-attn-class]").first.click(); settle(admin)
     on_att = admin.evaluate("view")
-    check(on_att in ("attendance", "manage"), f"clicking a class opens it ({on_att})")
+    check(on_att in ("attendance", "manage", "teach"), f"clicking a class opens it ({on_att})")
     admin.go_back(); settle(admin)
     check(admin.evaluate("view") == "home", "Back returns from the class to the Dashboard")
 

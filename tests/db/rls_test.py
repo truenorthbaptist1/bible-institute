@@ -997,6 +997,103 @@ check("Self-paced: semester over without watching → Absent", True,
 check("Only the teacher sets a self-paced student's start date", False,
       f"select public.set_student_start('sp', '{rv}', public.local_today())", rv)
 
+# --- teaching with slides (Oct 10) ---------------------------------------------------------
+check("Students can't make slide decks", False, "insert into public.slide_decks (course_id, title, slide_count) values ('hy', 'Mine', 3)", rv)
+DK = check("The teacher adds a slide deck", True,
+      "insert into public.slide_decks (course_id, title, slide_count) values ('hy', 'Lesson 5 slides', 6) returning id", phil).splitlines()[0]
+check("…and its speaker notes", True, f"insert into public.slide_notes (deck_id, notes) values ('{DK}', '[\"Open in prayer\"]')", phil)
+check("Students never see speaker notes", True, "select count(*) from public.slide_notes", lv, expect_out=0)
+check("Students can't see a deck before it's taught (default: after class)", True, "select count(*) from public.slide_decks", lv, expect_out=0)
+admin(f"insert into storage.objects (bucket_id, name) values ('slides', 'hy/{DK}/1.jpg'), ('slides', 'hy/{DK}/1-s.jpg')")
+check("…nor its pictures", True, "select count(*) from storage.objects where bucket_id = 'slides'", lv, expect_out=0)
+check("Students can't add slide pictures", False, f"insert into storage.objects (bucket_id, name) values ('slides', 'hy/{DK}/9.jpg')", lv)
+check("The teacher can", True, f"insert into storage.objects (bucket_id, name) values ('slides', 'hy/{DK}/2.jpg')", phil)
+check("Students can't write the lesson plan", False, "insert into public.course_plan (course_id, title) values ('hy', 'Mine')", rv)
+P1 = check("The teacher plans a lesson with the deck", True,
+      f"insert into public.course_plan (course_id, position, title, deck_id) values ('hy', 1, 'Scripture Interprets Scripture', '{DK}') returning id", phil).splitlines()[0]
+P2 = admin("insert into public.course_plan (course_id, position, title) values ('hy', 2, 'Types and Shadows') returning id").splitlines()[0]
+check("A lesson can't point at another course's deck", False,
+      f"insert into public.course_plan (course_id, title, deck_id) values ('c1', 'x', '{DK}')", phil)
+check("Enrolled students see the lesson titles", True, "select count(*) from public.course_plan where course_id = 'hy'", lv, expect_out=2)
+check("Outsiders don't", True, "select count(*) from public.course_plan where course_id = 'hy'", outsider, expect_out=0)
+check("Students can't start teaching", False, f"select public.teach_start('hy', '{P1}')", lv)
+check("Students can't move the slides", True,
+      "with u as (update public.teach_live set slide = 4 where course_id = 'hy' returning 1) select count(*) from u", lv, expect_out=0)
+check("The teacher starts the lesson — slides open at slide 1", True,
+      f"select (public.teach_start('hy', '{P1}') ->> 'slide')", phil, expect_out="1")
+check("…the class can now see the live deck and its pictures", True,
+      "select (select count(*) from public.slide_decks) || ',' || (select count(*) from storage.objects where bucket_id = 'slides')", lv, expect_out="1,3")
+check("…but a student in another course can't", True, "select count(*) from storage.objects where bucket_id = 'slides'", outsider, expect_out=0)
+check("The teacher moves to slide 4", True,
+      "update public.teach_live set slide = 4 where course_id = 'hy'; select slide from public.teach_live where course_id = 'hy'", phil, expect_out=4)
+check("Students read where the class is (and the update channel)", True,
+      "select slide || ',' || active || ',' || (length(channel_key) = 32) from public.teach_live where course_id = 'hy'", lv, expect_out="4,true,true")
+check("Outsiders can't", True, "select count(*) from public.teach_live", outsider, expect_out=0)
+Q1 = admin(f"insert into public.live_chat (course_id, author_id, body) values ('hy', '{rv}', 'Is precept upon precept a rebuke?') returning id").splitlines()[0]
+check("Questions are private: a classmate doesn't see another's question", True,
+      f"select count(*) from public.live_chat where id = '{Q1}'", lv, expect_out=0)
+check("…the asker does", True, f"select count(*) from public.live_chat where id = '{Q1}'", rv, expect_out=1)
+check("…and the teacher sees every question", True, "select count(*) from public.live_chat where course_id = 'hy'", phil, expect_out=2)
+check("Students can't put a question on the screen", True,
+      f"with u as (update public.teach_live set pinned_question = '{Q1}' returning 1) select count(*) from u", lv, expect_out=0)
+check("The teacher shows it on the screen → the whole class sees it", True,
+      f"update public.teach_live set pinned_question = '{Q1}' where course_id = 'hy'; select 1", phil, expect_out=1)
+check("…(a classmate now sees it)", True, f"select count(*) from public.live_chat where id = '{Q1}'", lv, expect_out=1)
+check("Students can't mark questions answered", False, f"select public.mark_question('{Q1}', true)", rv)
+check("The teacher marks it answered", True,
+      f"select public.mark_question('{Q1}', true); select answered_at is not null from public.live_chat where id = '{Q1}'", phil, expect_out="t")
+check("Students can't end the class", False, "select public.teach_end('hy', 'finished', null)", lv)
+P3 = check("Stopping partway makes the rest the next lesson, starting at that slide", True,
+      "select public.teach_end('hy', 'continue', 4)", phil).splitlines()[0]
+check("…the plan reads: partial → (continued) → next", True,
+      "select string_agg(title || ':' || status || ':' || resume_slide, ' | ' order by position) from public.course_plan where course_id = 'hy'", phil,
+      expect_out="Scripture Interprets Scripture:partial:1 | Scripture Interprets Scripture (continued):planned:4 | Types and Shadows:planned:1")
+check("…the live deck is off; students can still see it (taught, after-class sharing)", True,
+      "select (select active from public.teach_live where course_id = 'hy') || ',' || (select count(*) from public.slide_decks)", lv, expect_out="false,1")
+check("…a question taken off the screen is private again", True, f"select count(*) from public.live_chat where id = '{Q1}'", lv, expect_out=0)
+check("Teaching the continuation opens at slide 4", True, f"select public.teach_start('hy', '{P3}') ->> 'slide'", phil, expect_out="4")
+check("Finishing it marks it taught today", True,
+      f"select public.teach_end('hy', 'finished', 9); select status || ',' || (taught_on = public.local_today()) from public.course_plan where id = '{P3}'", phil, expect_out="taught,true")
+admin("update public.courses set slides_share = 'never' where id = 'hy'")
+check("'Never' sharing: students see slides only while they're being presented", True, "select count(*) from public.slide_decks", lv, expect_out=0)
+# class replays (Oct 11)
+check("Every slide change in class was logged (start, slide 4, question on screen, end; then the continuation and its end)", True,
+      "select string_agg(slide || ':' || active || ':' || (pinned_question is not null), ' ' order by at, id) from public.teach_events where course_id = 'hy'", phil,
+      expect_out="1:true:false 4:true:false 4:true:true 4:false:false 4:true:false 4:false:false")
+check("Students can't read the slide log directly", True, "select count(*) from public.teach_events", lv, expect_out=0)
+check("Students can't write to it", False, "insert into public.teach_events (course_id, class_date, active) values ('hy', current_date, true)", lv)
+RL = admin("insert into public.lessons (course_id, video_id, title, class_date, stream_started_at) select 'hy', 'replayVid01', 'Class stream', public.local_today(), min(at) - interval '30 seconds' from public.teach_events where course_id = 'hy' returning id").splitlines()[0]
+check("A classmate's replay has the slide changes, the deck and the class's questions — with the asker's name", True,
+      f"select jsonb_array_length(r -> 'events') || ',' || jsonb_array_length(r -> 'decks') || ',' || (q ->> 'name') || ',' || (q ->> 'answered_at' is not null) || ',' || (r ->> 'zero' is not null) from public.class_replay('{RL}') r, jsonb_array_elements(r -> 'questions') q where q ->> 'id' = '{Q1}'",
+      lv, expect_out=f"6,1,{admin(f"select name from public.profiles where id = '{rv}'").splitlines()[0]},true,true")
+check("The teacher gets the replay too", True, f"select public.class_replay('{RL}') is not null", phil, expect_out="t")
+check("A student outside the course gets nothing", True, f"select public.class_replay('{RL}') is null", outsider, expect_out="t")
+check("With 'never' sharing the class still sees the slide pictures in the replay", True,
+      "select count(*) from storage.objects where bucket_id = 'slides'", lv, expect_out=3)
+check("…but still can't page through the decks themselves", True, "select count(*) from public.slide_decks", lv, expect_out=0)
+check("…and outsiders can't see the pictures", True, "select count(*) from storage.objects where bucket_id = 'slides'", outsider, expect_out=0)
+check("Students can't re-time a replay", False, f"select public.set_replay_zero('{RL}', now())", lv)
+check("The teacher lines the slides up by hand", True,
+      f"select public.set_replay_zero('{RL}', '2026-10-11 19:00:00-08'); select (r ->> 'manual') || ',' || (r ->> 'auto_zero' <> r ->> 'zero') from public.class_replay('{RL}') r", phil, expect_out="true,true")
+check("…and can go back to YouTube's timing", True,
+      f"select public.set_replay_zero('{RL}', null); select r ->> 'manual' from public.class_replay('{RL}') r", phil, expect_out="false")
+admin("update public.courses set slides_share = 'after' where id = 'hy'")
+# class days
+check("Students can't add class days", False, "select public.add_class_day('hy', public.local_today() + 60, '')", lv)
+check("Faculty can't write extra days directly", False, "insert into public.class_extra_days (course_id, class_date) values ('hy', public.local_today() + 70)", phil)
+admin("update public.courses set sched_days = array['Mon'] where id = 'hy'")
+EXTRA = admin("select d from generate_series(public.local_today() + 1, public.local_today() + 7, interval '1 day') d where to_char(d, 'Dy') = 'Tue' limit 1").splitlines()[0][:10]
+check("The teacher adds a make-up class day; it becomes a class day", True,
+      f"select public.add_class_day('hy', '{EXTRA}', 'Make-up'); select count(*) from public.course_class_dates('hy') d where d = '{EXTRA}'", phil, expect_out=1)
+check("…the class is told", True, f"select count(*) from public.notifications where subject like 'Class added:%' and user_id = '{lv}'", None, expect_out=1)
+check("…students see the extra day", True, "select count(*) from public.class_extra_days where course_id = 'hy'", lv, expect_out=1)
+check("…it can be canceled like any class day", True, f"select public.cancel_class('hy', '{EXTRA}', 'Sick')", phil)
+check("…and canceling takes it off the class days", True, f"select count(*) from public.course_class_dates('hy') d where d = '{EXTRA}'", phil, expect_out=0)
+check("Taking the extra day away", True, f"select public.restore_class('hy', '{EXTRA}'); select public.remove_class_day('hy', '{EXTRA}'); select count(*) from public.class_extra_days where course_id = 'hy'", phil, expect_out=0)
+admin(f"update public.courses set sched_days = {ALL_DAYS} where id = 'hy'")
+check("Deleting a deck leaves the lesson, without slides", True,
+      f"delete from public.slide_decks where id = '{DK}'; select count(*) from public.course_plan where course_id = 'hy' and deck_id is not null", phil, expect_out=0)
+
 # --- archive & delete ----------------------------------------------------------------------
 admin("update public.courses set archived = true where id = 'c1'")
 check("Archived course: its assignments disappear for students", True,

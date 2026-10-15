@@ -18,7 +18,8 @@ PORT = 8765
 TABLES = {"profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments", "submissions",
           "discussion_posts", "messages", "notifications", "bible_highlights", "attendance_days", "attendance", "push_subscriptions",
           "class_cancellations", "announcements", "transcript_entries", "past_records",
-          "lessons", "lesson_views", "live_presence", "live_chat", "playlist_sync", "assignment_materials"}
+          "lessons", "lesson_views", "live_presence", "live_chat", "playlist_sync", "assignment_materials",
+          "slide_decks", "slide_notes", "course_plan", "teach_live", "class_extra_days"}
 SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status", "visible_lesson_dates"}
 IDENT = lambda s: '"' + str(s).replace('"', '') + '"'
 
@@ -142,7 +143,7 @@ def storage(kind, req):
     b, uid = req["bucket"], req.get("uid")
     if kind == "upload":
         path = req["path"]
-        limit = {"materials": 52428800, "submissions": 26214400, "avatars": 2097152}[b]
+        limit = {"materials": 52428800, "submissions": 26214400, "avatars": 2097152, "slides": 5242880}[b]
         if req.get("size", 0) > limit:
             return {"data": None, "error": {"message": "The object exceeded the maximum allowed size"}}
         out, err = run_sql(f"insert into storage.objects (bucket_id, name, owner) values ({lit(b)}, {lit(path)}, {lit(uid)})", uid)
@@ -223,7 +224,7 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path.startswith("/api/file?bucket=avatars"):
+        if self.path.startswith("/api/file?bucket=avatars") or self.path.startswith("/api/file?bucket=slides"):
             # A tiny gold square, so profile photos render as real images.
             body = base64.b64decode(GOLD_PNG)
             self.send_response(200)

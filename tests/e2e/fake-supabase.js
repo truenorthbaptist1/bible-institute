@@ -80,13 +80,43 @@
           list: (prefix) => post("/storage/list", { uid: uid(), bucket, prefix }),
           createSignedUrls: (paths) => post("/storage/signmany", { uid: uid(), bucket, paths }),
           createSignedUrl: (path, exp, opts) => post("/storage/sign", { uid: uid(), bucket, path, download: opts && opts.download }),
+          // Same privacy check as a signed link, then the file's bytes.
+          async download(path) {
+            const r = await post("/storage/sign", { uid: uid(), bucket, path });
+            if (r.error || !r.data) return { data: null, error: r.error || { message: "Object not found" } };
+            const res = await fetch(r.data.signedUrl);
+            return res.ok ? { data: await res.blob(), error: null } : { data: null, error: { message: "download failed" } };
+          },
         };
       },
     };
 
+    // Realtime broadcast between pages of the same browser (BroadcastChannel).
+    // Pages signed in as other people (other browser contexts) don't hear it
+    // and fall back to checking the database — as on a flaky network.
+    function channel(name) {
+      const handlers = [];
+      let bc = null;
+      const ch = {
+        on(type, filter, cb) { if (type === "broadcast") handlers.push([filter && filter.event, cb]); return ch; },
+        subscribe(cb) {
+          bc = new BroadcastChannel("fake-rt:" + name);
+          bc.onmessage = (e) => handlers.forEach(([ev, f]) => { if (ev === e.data.event) f({ event: e.data.event, payload: e.data.payload }); });
+          window.__rtChannels = (window.__rtChannels || 0) + 1;
+          if (cb) setTimeout(() => cb("SUBSCRIBED"), 0);
+          return ch;
+        },
+        send(m) { if (bc) bc.postMessage({ event: m.event, payload: m.payload }); window.__rtSent = (window.__rtSent || 0) + 1; return Promise.resolve("ok"); },
+        unsubscribe() { if (bc) { bc.close(); bc = null; window.__rtChannels = (window.__rtChannels || 1) - 1; } },
+      };
+      return ch;
+    }
+
     return {
       auth,
       storage,
+      channel,
+      removeChannel: (ch) => ch.unsubscribe(),
       from: (t) => new Query(t),
       rpc: (fn, args) => ({ then: (res, rej) => post("/rpc", { uid: uid(), fn, args: args || {} }).then(res, rej) }),
     };
