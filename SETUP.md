@@ -11,8 +11,9 @@ You'll set up four free things:
 3. **Cloudflare** — points the church's own web address at it
 4. **Google sign-in** — so the church account (and anyone else) can use "Continue with Google"
 
-The Institute's address will be **https://tnbbibleinstitute.com**
-(with `www.tnbbibleinstitute.com` forwarding to it). Wherever you see
+The Institute's address is **https://institute.truenorthbaptist.com**, a
+subdomain of the church's own domain. (The original address,
+`tnbbibleinstitute.com`, now forwards there.) Wherever you see
 `YOUR-GITHUB-USERNAME`, use the username of the GitHub account you created.
 
 Keep a notepad open — a few steps ask you to copy a value from one place to another.
@@ -68,7 +69,7 @@ Keep a notepad open — a few steps ask you to copy a value from one place to an
 4. **Settings → Pages.** Under **Build and deployment**: Source
    **Deploy from a branch**, Branch **main**, folder **/docs**. Save.
 5. Because of the `CNAME` file, the **Custom domain** box on this page
-   should already say `tnbbibleinstitute.com`. It will show a DNS warning
+   should already say `institute.truenorthbaptist.com`. It will show a DNS warning
    until you finish Step 5 — that's expected.
 
 **Updating the site later:** open the file on GitHub, click the pencil to
@@ -76,62 +77,50 @@ edit (or upload a replacement), and commit. GitHub republishes in about a
 minute; browsers may show the old version for up to 10 minutes — a hard
 refresh (Ctrl+Shift+R, or ⌘+Shift+R on a Mac) shows the new one immediately.
 
-## Step 5 — Point tnbbibleinstitute.com at GitHub (Cloudflare)
+## Step 5 — Point institute.truenorthbaptist.com at GitHub (Cloudflare)
 
-Because you registered the domain with Cloudflare, its DNS is already there.
-In Cloudflare, click **tnbbibleinstitute.com**, then **DNS → Records**.
+The church's domain, truenorthbaptist.com, is registered at Cloudflare and its
+DNS is there. In Cloudflare, click **truenorthbaptist.com**, then **DNS → Records**.
 
-1. **Prove the domain is yours to GitHub** (stops anyone else from ever
-   claiming it on GitHub):
+1. **Prove the domain is the church's to GitHub** (stops anyone else from ever
+   claiming it or its subdomains on GitHub):
    - GitHub → your profile picture (top right) → **Settings** → **Pages**
      (left sidebar, under "Code, planning, and automation") → **Add a domain**
-     → type `tnbbibleinstitute.com` → **Add domain**.
+     → type `truenorthbaptist.com` → **Add domain**.
    - GitHub shows a **TXT** record: a name beginning `_github-pages-challenge-`
      and a code.
    - In Cloudflare, **Add record**: Type **TXT**, Name = the part GitHub
-     shows *before* `.tnbbibleinstitute.com`, Content = the code. **Save**.
+     shows *before* `.truenorthbaptist.com`, Content = the code. **Save**.
    - Back in GitHub, click **Verify**. (If it says not found, wait 5 minutes
      and try again.)
 
-2. **Point the address at GitHub.** If Cloudflare added any parking-page
-   records for `@` or `www` when you registered, delete those first. Then
-   **Add record** for each line below, with **Proxy status: DNS only**
-   (gray cloud — click the orange cloud to turn it gray):
-
-   | Type | Name | Content |
-   |---|---|---|
-   | A | `@` | `185.199.108.153` |
-   | A | `@` | `185.199.109.153` |
-   | A | `@` | `185.199.110.153` |
-   | A | `@` | `185.199.111.153` |
-   | AAAA | `@` | `2606:50c0:8000::153` |
-   | AAAA | `@` | `2606:50c0:8001::153` |
-   | AAAA | `@` | `2606:50c0:8002::153` |
-   | AAAA | `@` | `2606:50c0:8003::153` |
-   | CNAME | `www` | `YOUR-GITHUB-USERNAME.github.io` |
-
-   These are GitHub Pages' published addresses. "DNS only" lets GitHub issue
-   the site's security certificate. (If you ever turn the orange cloud on
-   later, set Cloudflare **SSL/TLS** to **Full** — never **Flexible**, which
-   causes an endless-redirect error.)
+2. **Point the subdomain at GitHub.** **Add record**: Type **CNAME**, Name
+   `institute`, Target `YOUR-GITHUB-USERNAME.github.io`. Leave it **DNS only**
+   (gray cloud) until GitHub has issued the certificate (step 4); after that it
+   can be **Proxied** (orange cloud) with Cloudflare **SSL/TLS** set to **Full**
+   — never **Flexible**, which causes an endless-redirect error.
 
 3. **Confirm in GitHub.** Repository → **Settings → Pages**. The Custom
-   domain should read `tnbbibleinstitute.com`; within a few minutes it
+   domain should read `institute.truenorthbaptist.com`; within a few minutes it
    shows **DNS check successful**. If not, click **Remove**, re-enter
-   `tnbbibleinstitute.com`, and **Save**.
+   `institute.truenorthbaptist.com`, and **Save**.
 
 4. When it becomes clickable (usually within an hour, occasionally up to a
    day), check **Enforce HTTPS**.
 
-5. Visit **https://tnbbibleinstitute.com** — you should see the sign-in page
-   with a padlock. `www.tnbbibleinstitute.com` should land there too.
+5. Visit **https://institute.truenorthbaptist.com** — you should see the
+   sign-in page with a padlock.
+
+6. **Old address.** In Cloudflare's **tnbbibleinstitute.com** zone, a
+   Redirect Rule sends every request (keeping the rest of the link) to
+   `https://institute.truenorthbaptist.com` with a 301.
 
 ## Step 6 — Tell Supabase the site's address
 
 Supabase → **Authentication** → **URL Configuration**:
 
-- **Site URL:** `https://tnbbibleinstitute.com`
-- **Redirect URLs:** add `https://tnbbibleinstitute.com/**`
+- **Site URL:** `https://institute.truenorthbaptist.com`
+- **Redirect URLs:** add `https://institute.truenorthbaptist.com/**`
 
 Without this, email links and Google sign-in send people to the wrong place.
 
@@ -167,8 +156,8 @@ This is the fiddliest step; take it slowly.
 2. **APIs & Services → OAuth consent screen** (may be called "Google Auth Platform"):
    User type **External**; App name `True North Baptist Church Bible Institute`;
    support email = the church Gmail; App home page
-   `https://tnbbibleinstitute.com`; under **Authorized domains** add both
-   `tnbbibleinstitute.com` and `YOUR-PROJECT-ID.supabase.co` (your Supabase
+   `https://institute.truenorthbaptist.com`; under **Authorized domains** add both
+   `truenorthbaptist.com` and `YOUR-PROJECT-ID.supabase.co` (your Supabase
    project's address).
    Leave it in **Testing** mode for now and add each tester's Gmail under **Test users**
    (up to 100). When you go live, click **Publish app**.
@@ -180,7 +169,7 @@ This is the fiddliest step; take it slowly.
 
 ## Step 9 — Become the founding Super Admin
 
-1. Open `https://tnbbibleinstitute.com`. Click **Continue with Google** and choose the **church account**.
+1. Open `https://institute.truenorthbaptist.com`. Click **Continue with Google** and choose the **church account**.
 2. You'll land on the Faculty dashboard with a gold **★ Super Admin** badge.
    (This only works with Google — typing the church email into Sign Up does not grant it.)
 3. Have Pastor Phil and other teachers sign up, then promote them in
