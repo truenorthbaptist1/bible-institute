@@ -34,7 +34,7 @@
 // ============================================================================
 import postgres from "npm:postgres@3.4.5";
 
-const SITE = "https://tnbbibleinstitute.com";
+const SITE = "https://institute.truenorthbaptist.com";
 const CONTACT = "mailto:truenorthbaptist1@gmail.com";
 const CORS = {
   "Access-Control-Allow-Origin": SITE,
@@ -231,7 +231,7 @@ export function buildMime(m: Mail, now = new Date()): string {
     `To: <${cleanAddress(m.to)}>`,
     `Subject: ${encodeHeader(m.subject.replace(/[\r\n]+/g, " ").slice(0, 200))}`,
     `Date: ${now.toUTCString().replace("GMT", "+0000")}`,
-    `Message-ID: <${crypto.randomUUID()}@tnbbibleinstitute.com>`,
+    `Message-ID: <${crypto.randomUUID()}@institute.truenorthbaptist.com>`,
     "MIME-Version: 1.0",
   ];
   const textPart = `Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${wrap76(b64(enc.encode(m.text)))}`;
@@ -277,7 +277,7 @@ export class Smtp {
   }
   async open(user: string, pass: string) {
     await this.reply([220]);
-    await this.cmd("EHLO tnbbibleinstitute.com", [250]);
+    await this.cmd("EHLO institute.truenorthbaptist.com", [250]);
     await this.cmd("AUTH PLAIN " + b64(enc.encode(`\u0000${user}\u0000${pass}`)), [235]);
   }
   async send(from: string, to: string, mime: string) {
@@ -388,7 +388,7 @@ export function emailFor(list: Note[], digest: boolean): Mail {
     </td></tr>
     <tr><td style="padding:14px 24px 22px;font:12px/1.5 Arial,Helvetica,sans-serif;color:#6b7280;">
       &ldquo;And the things that thou hast heard of me among many witnesses, the same commit thou to faithful men, who shall be able to teach others also.&rdquo; &mdash; 2 Timothy 2:2<br><br>
-      You're receiving this because you have an account at tnbbibleinstitute.com. To get one summary a day instead, or no emails, go to <a href="${SITE}/?profile=notifications" style="color:#3d5a78;">My Profile &rarr; Notifications</a>.
+      You're receiving this because you have an account at institute.truenorthbaptist.com. To get one summary a day instead, or no emails, go to <a href="${SITE}/?profile=notifications" style="color:#3d5a78;">My Profile &rarr; Notifications</a>.
     </td></tr>
   </table></td></tr></table></body></html>`;
   const text = `${first ? `Hello ${first},` : "Hello,"}\n\n${intro}\n\n` +
@@ -588,7 +588,7 @@ export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new 
         to: GMAIL_USER,
         subject: `Weekly backup — Bible Institute site (${day})`,
         text: `Attached is this week's backup of the Bible Institute site (taken ${day}).\n\n` +
-          `Keep this email: it's an off-site copy of every course, grade, transcript, message, and account on tnbbibleinstitute.com. ` +
+          `Keep this email: it's an off-site copy of every course, grade, transcript, message, and account on institute.truenorthbaptist.com. ` +
           `(Uploaded files such as course PDFs are stored separately and aren't in this file.)\n\n` +
           `Nightly backups are also kept for two weeks inside the site (Settings → Backups). To restore from a backup, see SETUP.md in the site's GitHub repository.\n`,
         attachment: { name: `tnbbi-backup-${day}.json.gz`, type: "application/gzip", bytes: gz },
