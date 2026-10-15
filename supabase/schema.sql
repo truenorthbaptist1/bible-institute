@@ -1744,7 +1744,7 @@ begin
     execute format('select coalesce(jsonb_agg(to_jsonb(x)), ''[]''::jsonb) from public.%I x', t) into rows;
     v := v || jsonb_build_object(t, rows);
   end loop;
-  return jsonb_build_object('format', 'tnbbi-backup-1', 'site', 'tnbbibleinstitute.com',
+  return jsonb_build_object('format', 'tnbbi-backup-1', 'site', 'institute.truenorthbaptist.com',
                             'taken_at', now(), 'tables', v);
 end $$;
 
