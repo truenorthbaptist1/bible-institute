@@ -19,7 +19,7 @@
 // ============================================================================
 import postgres from "npm:postgres@3.4.5";
 
-const SITE = "https://tnbbibleinstitute.com";
+const SITE = "https://institute.truenorthbaptist.com";
 const TZ = "America/Anchorage";
 // Courses have a start time but no end time; show each class this long.
 export const CLASS_MINUTES = 90;
@@ -109,7 +109,7 @@ export function buildCalendar(rows: FeedRow[], now = new Date()): string {
   const dtstamp = stamp(now);
   for (const r of rows) {
     const ds = isoDay(r.day);
-    const ev = ["BEGIN:VEVENT", `UID:${r.kind === "canceled" ? "class" : r.kind}-${r.ref}@tnbbibleinstitute.com`, `DTSTAMP:${dtstamp}`];
+    const ev = ["BEGIN:VEVENT", `UID:${r.kind === "canceled" ? "class" : r.kind}-${r.ref}@institute.truenorthbaptist.com`, `DTSTAMP:${dtstamp}`];
     if (r.kind === "class" || r.kind === "canceled") {
       const timed = /^\d{1,2}:\d{2}/.test(r.class_time || "");
       if (timed) {
