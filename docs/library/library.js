@@ -270,9 +270,25 @@
     try { const r = await fetch(url, { signal: ctl.signal }); return r.ok ? await r.json() : null; }
     catch (e) { return null; } finally { clearTimeout(t); }
   }
+  // Titles that really match what's typed: every word in the title, the last
+  // one (still being typed) as the start of a word.
+  function titleMatches(title, q) {
+    const words = String(title || "").toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
+    const typed = q.toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
+    return typed.length > 0 && typed.every((w, i) => i === typed.length - 1 ? words.some((x) => x.startsWith(w)) : words.includes(w));
+  }
   async function openLibraryTitles(q) {
-    const j = await getJson(`https://openlibrary.org/search.json?title=${encodeURIComponent(q)}&fields=title,author_name,isbn&limit=6`, 5000);
-    return ((j && j.docs) || []).map((d) => ({ title: d.title, author: (d.author_name || [])[0] || "", isbn: "" }));
+    // Asked two ways at once: the words as typed, and with the last word
+    // still being typed ("mere christ" → Mere Christianity).
+    const clean = q.trim().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ");
+    const ask = (t) => getJson(`https://openlibrary.org/search.json?q=${encodeURIComponent("title:(" + t + ")")}&fields=title,author_name,edition_count&limit=20`, 5000);
+    const [a, b] = await Promise.all([ask(clean), ask(clean + "*")]);
+    const start = norm(q), seen = new Set();
+    return [...((a && a.docs) || []), ...((b && b.docs) || [])]
+      .filter((d) => titleMatches(d.title, q))
+      .sort((x, y) => (norm(y.title).startsWith(start) - norm(x.title).startsWith(start)) || ((y.edition_count || 0) - (x.edition_count || 0)))
+      .filter((d) => { const k = norm(d.title) + "|" + norm((d.author_name || [])[0]); if (seen.has(k)) return false; seen.add(k); return true; })
+      .map((d) => ({ title: d.title, author: (d.author_name || [])[0] || "", isbn: "" }));
   }
   async function lookupIsbn(code) {
     const ol = await getJson(`https://openlibrary.org/search.json?isbn=${code}&fields=title,subtitle,author_name&limit=1`);

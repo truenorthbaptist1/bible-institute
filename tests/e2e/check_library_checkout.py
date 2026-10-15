@@ -36,7 +36,7 @@ def fake_ol(route):
     m = re.search(r"isbn=(\d+)", url)
     if m:
         return route.fulfill(body=json.dumps(OL.get(m.group(1), {"docs": []})), content_type="application/json")
-    if "title=" in url:
+    if "title=" in url or "q=title" in url:
         return route.fulfill(body=json.dumps({"docs": [{"title": "Knowledge of the Holy", "author_name": ["A. W. Tozer"]}]}), content_type="application/json")
     route.fulfill(body='{"docs": []}', content_type="application/json")
 
