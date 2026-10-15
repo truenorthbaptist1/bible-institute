@@ -1231,7 +1231,7 @@ function safeHtml(html) {
 // reply — shows up for everyone else without reloading the browser.
 const STALE_MS = 3000;
 const COURSE_VIEWS = ["course", "manage", "gradeSheet", "discussionBoard", "messageThread", "attendance", "lecture", "live", "teach", "present"];
-const FACULTY_ONLY_VIEWS = ["transcripts", "pastRecords", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome", "teach", "present"];
+const FACULTY_ONLY_VIEWS = ["transcripts", "pastRecords", "libraryCheckouts", "catalogue", "manage", "grading", "gradeSheet", "settings", "attendance", "attendanceHome", "teach", "present"];
 const STUDENT_ONLY_VIEWS = ["courses", "course", "grades", "submit"];
 
 function renderMain() {
@@ -1308,6 +1308,7 @@ function drawView() {
   if (view === "transcript") return Date.now() - dataLoadedAt < 1500 ? renderTranscript(main) : withFreshData(() => renderTranscript(main));
   if (view === "transcripts") return Date.now() - dataLoadedAt < 1500 ? renderTranscripts(main) : withFreshData(() => renderTranscripts(main));
   if (view === "pastRecords") return Date.now() - dataLoadedAt < 1500 ? renderPastRecords(main) : withFreshData(() => renderPastRecords(main));
+  if (view === "libraryCheckouts") return renderLibraryCheckouts(main);
   if (view === "help") return renderHelp(main);
   if (view === "settings") return Date.now() - dataLoadedAt < 1500 ? renderSettings(main) : withFreshData(() => renderSettings(main));
 }
@@ -5225,6 +5226,11 @@ function renderResourceLibrary(main) {
       <h1>Resource Library</h1>
       <p>The church library's books and the church Drive's documents, recordings and albums, together on one set of shelves. Browse a shelf, search by title, author or topic, or pick a class.</p>
     </div>
+    ${isAdmin() ? `<div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;"><strong>Church library checkouts</strong>
+        <div class="field-hint" style="margin:2px 0 0;">Who has which book, what's overdue, and new books to look over. Admins only.</div></div>
+      <button class="btn btn-gold" id="libCheckoutsBtn">Checkouts</button>
+    </div>` : ""}
     ${lectureArchiveEntryHtml()}
     <div class="card lib-search">
       <div class="lib-search-row">
@@ -5281,6 +5287,8 @@ function renderResourceLibrary(main) {
   const redraw = () => renderResourceLibrary(main);
   document.getElementById("backLink").addEventListener("click", () => { view = "home"; renderNav(); renderMain(); });
   wireLectureArchiveEntry();
+  const libBtn = document.getElementById("libCheckoutsBtn");
+  if (libBtn) libBtn.addEventListener("click", () => { libAdmin = null; libAdminFound = null; libAdminQuery = ""; openLibraryCheckouts(); });
   const searchInput = document.getElementById("resSearchInput");
   searchInput.addEventListener("input", (e) => { resourceLibraryQuery = e.target.value; libShowAll.clear(); redraw(); });
   // Phones: don't pop the keyboard up on its own.

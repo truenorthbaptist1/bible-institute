@@ -235,6 +235,34 @@ ps = JSON.parse(psql(`select json_agg(s) from public.playlist_sync s where cours
 check(ps[0].ok === false && /can't find this playlist/.test(ps[0].error), "a wrong or Private playlist is reported clearly", ps[0].error);
 setEnv("YOUTUBE_API_BASE", undefined);
 
+// --- Church library reminders ------------------------------------------------
+clearMail();
+psql(`update public.library_loans set returned_at = now() where returned_at is null`);
+const libKey = JSON.parse(psql(`set role anon; select public.library_checkout(null, 'Grace Reader', 'grace@example.com',
+  '[{"title": "The Pilgrim''s Progress", "author": "John Bunyan"}, {"book": 3}]')`)).token;
+psql(`update public.library_loans l set due_on = date '2026-10-20' from public.library_borrowers b where b.id = l.borrower_id and b.token = '${libKey}'`);
+const akt = (s) => new Date(s + "-08:00");
+await svc.runReminders(sql, fakeFetch, akt("2026-10-16T10:00:00"));
+check(mails().length === 0, "library: nothing four days early");
+await svc.runReminders(sql, fakeFetch, akt("2026-10-17T07:30:00"));
+check(mails().length === 0, "library: no emails before 9 AM");
+await svc.runReminders(sql, fakeFetch, akt("2026-10-17T10:00:00"));
+let lm = mails();
+let libHtml = lm[0] ? lm[0].parts.find((x) => x.type === "text/html").data.toString("utf8") : "";
+check(lm.length === 1 && lm[0].to.includes("grace@example.com") && /due back soon/.test(lm[0].subject)
+  && libHtml.includes("Pilgrim&#39;s Progress") && libHtml.includes("Tuesday, October 20") && (libHtml.match(/Keep it 2 more weeks/g) || []).length === 2
+  && libHtml.includes("/library/?renew="), "library: 3 days before, ONE email lists both books with a renew button each", lm[0] && lm[0].subject);
+clearMail();
+await svc.runReminders(sql, fakeFetch, akt("2026-10-18T10:00:00"));
+check(mails().length === 0, "library: …not again the next day");
+await svc.runReminders(sql, fakeFetch, akt("2026-10-20T09:30:00"));
+lm = mails();
+check(lm.length === 1 && /due back today/.test(lm[0].subject), "library: on the due day", lm[0] && lm[0].subject);
+clearMail();
+await svc.runReminders(sql, fakeFetch, akt("2026-10-21T09:30:00"));
+lm = mails();
+check(lm.length === 1 && /overdue/i.test(lm[0].subject), "library: the day after, an overdue note", lm[0] && lm[0].subject);
+
 const passed = results.filter(Boolean).length;
 console.log(`\n${passed}/${results.length} service checks passed`);
 process.exit(passed === results.length ? 0 : 1);

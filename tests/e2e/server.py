@@ -20,7 +20,7 @@ TABLES = {"profiles", "courses", "enrollments", "enrollment_requests", "material
           "class_cancellations", "announcements", "transcript_entries", "past_records",
           "lessons", "lesson_views", "live_presence", "live_chat", "playlist_sync", "assignment_materials",
           "slide_decks", "slide_notes", "course_plan", "teach_live", "class_extra_days"}
-SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status", "visible_lesson_dates"}
+SETOF_FUNCS = {"visible_people", "list_backups", "get_service_status", "visible_lesson_dates", "library_search", "library_by_isbn", "library_admin_books"}
 IDENT = lambda s: '"' + str(s).replace('"', '') + '"'
 
 
@@ -36,9 +36,12 @@ def lit(v):
     return "'" + str(v).replace("'", "''") + "'"
 
 
-def run_sql(sql, uid=None):
+def run_sql(sql, uid=None, anon=False):
     pre = ""
-    if uid is not None:
+    if anon:
+        # A signed-out visitor (e.g. the library checkout page): Supabase's "anon" role.
+        pre = "set role anon;\nselect set_config('request.jwt.claim.sub', '', false) \\g /dev/null\n"
+    elif uid is not None:
         pre = f"set role authenticated;\nselect set_config('request.jwt.claim.sub', {lit(uid)}, false) \\g /dev/null\n"
     p = subprocess.run(PSQL, input=pre + sql, capture_output=True, text=True)
     if p.returncode != 0:
@@ -120,11 +123,12 @@ def rpc(req):
             return lit("{" + ",".join('"' + str(x).replace('"', '') + '"' for x in v) + "}")
         return lit(v)
     args = ", ".join(f"{IDENT(k)} => {arg(v)}" for k, v in req["args"].items())
+    anon = req.get("uid") is None and fn.startswith("library_")
     if fn in SETOF_FUNCS:
         sql = f"select coalesce(json_agg(r), '[]'::json) from public.{IDENT(fn)}({args}) r"
-        out, err = run_sql(sql, req.get("uid"))
+        out, err = run_sql(sql, req.get("uid"), anon)
         return {"data": json.loads(out) if not err else None, "error": err}
-    out, err = run_sql(f"select public.{IDENT(fn)}({args})::text", req.get("uid"))
+    out, err = run_sql(f"select public.{IDENT(fn)}({args})::text", req.get("uid"), anon)
     if err:
         return {"data": None, "error": err}
     bools = {"t": True, "true": True, "f": False, "false": False}
@@ -143,10 +147,11 @@ def storage(kind, req):
     b, uid = req["bucket"], req.get("uid")
     if kind == "upload":
         path = req["path"]
-        limit = {"materials": 52428800, "submissions": 26214400, "avatars": 2097152, "slides": 5242880}[b]
+        limit = {"materials": 52428800, "submissions": 26214400, "avatars": 2097152, "slides": 5242880, "library-photos": 5242880}[b]
         if req.get("size", 0) > limit:
             return {"data": None, "error": {"message": "The object exceeded the maximum allowed size"}}
-        out, err = run_sql(f"insert into storage.objects (bucket_id, name, owner) values ({lit(b)}, {lit(path)}, {lit(uid)})", uid)
+        out, err = run_sql(f"insert into storage.objects (bucket_id, name, owner) values ({lit(b)}, {lit(path)}, {lit(uid)})", uid,
+                           uid is None and b == "library-photos")
         return {"data": {"path": path} if not err else None, "error": err}
     if kind == "remove":
         names = ", ".join(lit(p) for p in req["paths"]) or "NULL"

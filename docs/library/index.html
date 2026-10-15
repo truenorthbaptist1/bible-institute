@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Church Library — True North Baptist Church</title>
+  <meta name="description" content="Check out a book from the True North Baptist Church library.">
+  <meta name="robots" content="noindex">
+  <meta name="theme-color" content="#1f3a5f">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" href="icon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@600;700&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="library.css?v=1">
+</head>
+<body>
+  <header class="lb-head">
+    <img src="https://truenorthbaptist.com/images/uploads/logo-white.png" alt="True North Baptist Church" width="104" height="65">
+    <div class="lb-head-title">
+      <h1>Church Library</h1>
+      <div class="lb-church">Check out a book</div>
+    </div>
+  </header>
+  <main id="app" class="lb-main" aria-live="polite">
+    <p class="lb-muted">Loading…</p>
+  </main>
+  <footer class="lb-foot">
+    Books go home for two weeks. Questions? Ask at the church office.<br>
+    <a href="https://truenorthbaptist.com/">truenorthbaptist.com</a>
+  </footer>
+
+  <div id="scanner" class="lb-scanner" hidden>
+    <div class="lb-scan-top">
+      <strong>Point the camera at the barcode</strong>
+      <span>Usually on the back cover, near the bottom.</span>
+    </div>
+    <div class="lb-scan-view">
+      <video id="scanVideo" playsinline muted></video>
+      <div class="lb-scan-frame" aria-hidden="true"></div>
+    </div>
+    <p id="scanMsg" class="lb-scan-msg"></p>
+    <button type="button" id="scanClose" class="lb-btn lb-btn-light">Cancel</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="../js/config.js"></script>
+  <script src="library.js?v=1"></script>
+</body>
+</html>

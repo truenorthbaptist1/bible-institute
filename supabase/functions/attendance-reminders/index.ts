@@ -397,6 +397,78 @@ export function emailFor(list: Note[], digest: boolean): Mail {
   return { to: list[0].email || "", subject, text, html };
 }
 
+// ---------------------------------------------------------------------------
+// Church library reminders (Oct 15, 2026). One email per borrower per run,
+// listing every book that needs a note: 3 days before it's due (stage 1), the
+// day it's due (2), then weekly while overdue (3+). Each book has a one-tap
+// "Keep it 2 more weeks" link (…/library/?renew=<that loan's key>).
+// ---------------------------------------------------------------------------
+export type LibraryReminder = { loan_id: number; stage: number; title: string; author: string; due_on: unknown;
+  renewals: number; renew_token: string; name: string; email: string };
+
+function dueWords(d: unknown): string {
+  const iso = isoDay(d);
+  const [y, m, day] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, day, 12)).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
+export function libraryEmailFor(list: LibraryReminder[]): Mail {
+  const first = (list[0].name || "").trim().split(/\s+/)[0];
+  const worst = Math.max(...list.map((r) => r.stage));
+  const one = list.length === 1 ? list[0] : null;
+  const subject = worst >= 3
+    ? (one ? `Overdue: "${one.title}" — church library` : `${list.length} church library books are overdue`)
+    : worst === 2
+      ? (one ? `"${one.title}" is due back today` : `${list.length} church library books are due back today`)
+      : (one ? `"${one.title}" is due back ${dueWords(one.due_on)}` : `Church library books are due back soon`);
+  const line = (r: LibraryReminder) => r.stage >= 3 ? `was due ${dueWords(r.due_on)}` : r.stage === 2 ? "is due back today" : `is due back ${dueWords(r.due_on)}`;
+  const intro = worst >= 3
+    ? "A friendly reminder from the church library: when you can, please bring these back, or keep them two more weeks with the button."
+    : "A friendly reminder from the church library:";
+  const rows = list.map((r) => {
+    const canRenew = r.renewals < 2;
+    const link = `${SITE}/library/?renew=${encodeURIComponent(r.renew_token)}`;
+    return `
+      <tr><td style="padding:14px 0;border-bottom:1px solid #e7e2d6;">
+        <div style="font:600 16px/1.4 Georgia,'Times New Roman',serif;color:#1a2c45;">${escHtml(r.title)}</div>
+        ${r.author ? `<div style="font:13px Arial,Helvetica,sans-serif;color:#6b7280;">${escHtml(r.author)}</div>` : ""}
+        <div style="font:14px/1.5 Arial,Helvetica,sans-serif;color:${r.stage >= 3 ? "#a63d3d" : "#142033"};margin:6px 0 10px;font-weight:${r.stage >= 2 ? 700 : 400};">This book ${escHtml(line(r))}.</div>
+        ${canRenew
+          ? `<a href="${link}" style="display:inline-block;background:#1a2c45;color:#ffffff;font:600 14px Arial,Helvetica,sans-serif;text-decoration:none;padding:10px 18px;border-radius:999px;">Keep it 2 more weeks</a>`
+          : `<span style="font:13px Arial,Helvetica,sans-serif;color:#6b7280;">It's been renewed twice, so please bring it back (or see the librarian).</span>`}
+      </td></tr>`;
+  }).join("");
+  const html = `<!doctype html><html><body style="margin:0;background:#f4f1ea;padding:24px 12px;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e3ddcf;">
+    <tr><td style="background:#1a2c45;padding:18px 24px;border-bottom:3px solid #b08d3f;font:600 18px Georgia,'Times New Roman',serif;color:#ffffff;">
+      True North Baptist Church<br><span style="font:12px Arial,Helvetica,sans-serif;color:#d8c9a3;letter-spacing:.06em;text-transform:uppercase;">Church Library</span>
+    </td></tr>
+    <tr><td style="padding:22px 24px 6px;">
+      <p style="font:15px/1.5 Arial,Helvetica,sans-serif;color:#142033;margin:0 0 6px;">${first ? `Hello ${escHtml(first)},` : "Hello,"}</p>
+      <p style="font:15px/1.5 Arial,Helvetica,sans-serif;color:#142033;margin:0;">${intro}</p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:8px;">${rows}</table>
+      <p style="font:14px/1.5 Arial,Helvetica,sans-serif;color:#142033;margin:18px 0 0;">Already brought it back? Thank you! Scan the library's QR code and tap <strong>Returned</strong>, or just tell the librarian.</p>
+    </td></tr>
+    <tr><td style="padding:14px 24px 22px;font:12px/1.5 Arial,Helvetica,sans-serif;color:#6b7280;">
+      You're getting this because you checked out a book from the True North Baptist Church library with this email address. Questions? Reply to this email or ask at the church office.
+    </td></tr>
+  </table></td></tr></table></body></html>`;
+  const text = `${first ? `Hello ${first},` : "Hello,"}\n\n${intro}\n\n` +
+    list.map((r) => `• "${r.title}"${r.author ? ` by ${r.author}` : ""} ${line(r)}.\n` +
+      (r.renewals < 2 ? `  Keep it 2 more weeks: ${SITE}/library/?renew=${encodeURIComponent(r.renew_token)}` : "  It's been renewed twice, so please bring it back.")).join("\n\n") +
+    `\n\nAlready brought it back? Thank you! Scan the library's QR code and tap Returned, or tell the librarian.\n\nTrue North Baptist Church Library\n`;
+  return { to: list[0].email, subject, text, html };
+}
+
+export async function sendLibraryReminders(sql: Sql, now: Date): Promise<number> {
+  const due = (await sql`select * from public.claim_library_reminders(${now})`) as unknown as LibraryReminder[];
+  if (!due.length) return 0;
+  const byEmail = new Map<string, LibraryReminder[]>();
+  for (const r of due) { const k = r.email.toLowerCase(); if (!byEmail.has(k)) byEmail.set(k, []); byEmail.get(k)!.push(r); }
+  return await sendMails([...byEmail.values()].map(libraryEmailFor));
+}
+
 async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
   const cs = new CompressionStream("gzip");
   const out = new Response(new Blob([bytes]).stream().pipeThrough(cs));
@@ -570,6 +642,16 @@ export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new 
       await setStatus(sql, "email", false, (e as Error).message);
     }
   }
+
+  // 4b. Church library: due-date reminders to borrowers.
+  await safely("library reminders", async () => {
+    try {
+      out.library = await sendLibraryReminders(sql, now);
+    } catch (e) {
+      console.warn("library email:", (e as Error).message);
+      await setStatus(sql, "email", false, (e as Error).message);
+    }
+  });
 
   // 5. Nightly backup (from 2 AM Alaska time), and a weekly copy by email.
   await safely("nightly backup", async () => {

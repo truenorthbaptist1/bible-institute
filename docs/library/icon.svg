@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#15253b"/>
+  <g transform="translate(32 32) scale(1.12) translate(-32 -33)">
+  <circle cx="32" cy="33" r="17" fill="none" stroke="#6d8aab" stroke-width="2.4"/>
+  <!-- diagonal points -->
+  <g fill="#dfe7f0" opacity=".85">
+    <path d="M32 33 L44 21 L35.5 33 Z"/><path d="M32 33 L44 45 L32 36.5 Z"/>
+    <path d="M32 33 L20 45 L28.5 33 Z"/><path d="M32 33 L20 21 L32 29.5 Z"/>
+  </g>
+  <!-- east / south / west -->
+  <path d="M32 33 L55 33 L32 37.5 Z" fill="#ffffff"/><path d="M32 33 L55 33 L32 28.5 Z" fill="#b9c8da"/>
+  <path d="M32 33 L32 56 L27.5 33 Z" fill="#ffffff"/><path d="M32 33 L32 56 L36.5 33 Z" fill="#b9c8da"/>
+  <path d="M32 33 L9 33 L32 28.5 Z" fill="#ffffff"/><path d="M32 33 L9 33 L32 37.5 Z" fill="#b9c8da"/>
+  <!-- true north, in gold -->
+  <path d="M32 33 L32 5 L27 33 Z" fill="#e2b866"/><path d="M32 33 L32 5 L37 33 Z" fill="#b48a46"/>
+  <circle cx="32" cy="33" r="2.6" fill="#15253b"/>
+  </g>
+</svg>

@@ -22,7 +22,8 @@ import gzip, json, sys
 ORDER = ["profiles", "courses", "enrollments", "enrollment_requests", "materials", "assignments",
          "submissions", "discussion_posts", "messages", "notifications", "bible_highlights",
          "attendance_days", "attendance", "class_cancellations", "announcements", "transcript_entries", "past_records",
-         "lessons", "lesson_views", "live_presence", "assignment_materials"]
+         "lessons", "lesson_views", "live_presence", "assignment_materials",
+         "library_books", "library_borrowers", "library_loans"]
 
 
 def load(path):

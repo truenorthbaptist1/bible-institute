@@ -9,4 +9,7 @@ $P -c "create database t" >/dev/null
 $P -d t -v ON_ERROR_STOP=1 -f "$HERE/supabase_stub.sql" >/dev/null 2>&1
 $P -d t -v ON_ERROR_STOP=1 -f "$HERE/../../supabase/schema.sql" 2>&1 | grep -v NOTICE || true
 $P -d t -v ON_ERROR_STOP=1 -f "$HERE/../../supabase/seed.sql"
-python3 "$HERE/rls_test.py"
+rc=0
+python3 "$HERE/rls_test.py" || rc=1
+python3 "$HERE/library_test.py" || rc=1
+exit $rc
