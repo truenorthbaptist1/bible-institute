@@ -44,7 +44,7 @@ student = mkuser("lib-student@example.com", "Library Student")
 
 # --- the starting list -------------------------------------------------------
 n = admin("select count(*) || '/' || sum(copies) from public.library_books")
-check("The church's book list is loaded (702 titles, 706 copies)", n == "702/706", n)
+check("The church's book list is loaded (702 books, one copy each)", n == "702/702", n)
 
 # --- privacy -----------------------------------------------------------------
 ok, out = anon("select count(*) from public.library_books")
@@ -114,6 +114,17 @@ ok, out = anon(f"select public.library_return('{token}', {jl})")
 check("Returning a book takes it off the phone's list", ok and len(json.loads(out)["books"]) == 3, out[:200])
 ok, out = anon(f"select public.library_renew(null, null, '{renew_key}')")
 check("A renew link for a returned book just says it's back", ok and json.loads(out).get("returned") is True, out)
+
+# --- one copy of each book ------------------------------------------------------
+ob = admin("select id from public.library_books where title = 'Compendium of Baptist History'")
+first = json.loads(anon(f"select public.library_checkout(null, 'First Reader', 'first@example.com', '[{{\"book\": {ob}}}]')")[1])
+ok, out = anon(f"select title, out_now, back_on from public.library_search('compendium baptist history')")
+check("A checked-out book shows when it's due back", ok and out.endswith(admin("select (public.local_today() + 14)::text")), out)
+second = json.loads(anon(f"select public.library_checkout(null, 'Second Reader', 'second@example.com', '[{{\"book\": {ob}}}]')")[1])
+check("If someone else takes it, the first checkout is closed (it must have been put back)",
+      admin(f"select returned_by from public.library_loans l join public.library_borrowers b on b.id = l.borrower_id where b.email = 'first@example.com' and l.book_id = {ob}") == "next_borrower"
+      and admin(f"select count(*) from public.library_loans where book_id = {ob} and returned_at is null") == "1")
+admin(f"update public.library_loans set returned_at = now() where book_id = {ob} and returned_at is null")
 
 # --- reminders ---------------------------------------------------------------
 ok, out = anon("select * from public.claim_library_reminders()")

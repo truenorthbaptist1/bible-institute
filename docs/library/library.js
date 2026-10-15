@@ -42,6 +42,15 @@
     const [y, m, day] = String(d).split("-").map(Number);
     return new Date(y, m - 1, day).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   }
+  // "Checked out · due back Thursday, Oct 29" for a book whose every copy is out.
+  function availability(r) {
+    if (!r || !r.back_on) return "";
+    const [y, m, d] = String(r.back_on).split("-").map(Number);
+    const when = new Date(y, m - 1, d);
+    return r.back_on < todayIso()
+      ? "Checked out · should be back any day"
+      : "Checked out · due back " + when.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  }
   function todayIso() {
     const t = new Date(); const p = (n) => String(n).padStart(2, "0");
     return `${t.getFullYear()}-${p(t.getMonth() + 1)}-${p(t.getDate())}`;
@@ -65,9 +74,9 @@
     app.innerHTML = `
       ${books.length ? myBooksHtml(books) : ""}
       <section class="lb-card" id="checkoutCard">
-        <h2>Check out a book</h2>
+        <h2>Library Book Checkout</h2>
         ${editingMe ? `
-          <p class="lb-muted" style="margin:2px 0 4px;">First time? Just your name and email. This phone will remember you.</p>
+          <p class="lb-muted" style="margin:2px 0 4px;">Just enter your name and email, your phone will remember you.</p>
           <label class="lb-label" for="meName">Your name</label>
           <input class="lb-input" id="meName" autocomplete="name" value="${esc(me.name)}" placeholder="First and last name">
           <label class="lb-label" for="meEmail">Email <span class="lb-hint">We'll send a reminder before it's due.</span></label>
@@ -91,7 +100,7 @@
             ${bag.map((b, i) => `<li>
               ${b.photoUrl ? `<img class="lb-thumb" src="${b.photoUrl}" alt="">` : ""}
               <div class="lb-book"><div class="t">${esc(b.title)}</div>${b.author ? `<div class="a">${esc(b.author)}</div>` : ""}
-                ${b.out ? `<div class="a">Our list shows ${b.out === 1 ? "a copy" : b.out + " copies"} already out. That's fine if you have one in hand.</div>` : ""}</div>
+                ${b.back_on ? `<div class="a">Our records show this book checked out. If it's in your hands, it was returned, so go ahead.</div>` : ""}</div>
               <button type="button" class="lb-x" data-unbag="${i}" aria-label="Remove ${esc(b.title)}">×</button>
             </li>`).join("")}
           </ul>` : ""}
@@ -203,7 +212,7 @@
       app.querySelectorAll("[data-near]").forEach((b) => b.addEventListener("click", () => {
         rememberTyping();
         const r = newBook.near[+b.dataset.near];
-        addToBag({ book: r.id, title: r.title, author: r.author, out: r.out_now >= r.copies ? r.out_now : 0, isbn: newBook.isbn });
+        addToBag({ book: r.id, title: r.title, author: r.author, back_on: r.back_on, isbn: newBook.isbn });
         newBook = null; render();
       }));
     }
@@ -235,12 +244,12 @@
     const ul = document.getElementById("suggest");
     if (!ul) return;
     ul.innerHTML = (rows.length ? `<li class="lb-sec">On our shelves</li>` : `<li class="lb-sec">No books on our list match</li>`)
-      + rows.map((r, i) => `<li><button type="button" data-pick="${i}"><span class="t">${esc(r.title)}${r.out_now >= r.copies && r.copies > 0 ? `<span class="tag tag-out">Checked out</span>` : ""}</span>${r.author ? `<span class="a">${esc(r.author)}</span>` : ""}</button></li>`).join("")
+      + rows.map((r, i) => `<li><button type="button" data-pick="${i}"><span class="t">${esc(r.title)}</span>${r.author ? `<span class="a">${esc(r.author)}</span>` : ""}${r.back_on ? `<span class="avail out">${esc(availability(r))}</span>` : r.copies > 0 ? `<span class="avail in">On the shelf</span>` : ""}</button></li>`).join("")
       + `<li><button type="button" data-typed="1"><span class="a">Can't find it? <strong>Add this book by hand</strong></span></button></li>`;
     ul.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
       rememberTyping();
       const r = rows[+b.dataset.pick];
-      addToBag({ book: r.id, title: r.title, author: r.author, out: r.out_now >= r.copies ? r.out_now : 0 });
+      addToBag({ book: r.id, title: r.title, author: r.author, back_on: r.back_on });
       render();
     }));
     ul.querySelector("[data-typed]").addEventListener("click", () => {
@@ -272,12 +281,12 @@
     notice = { kind: "ok", text: "Looking that book up…" }; render();
     try {
       const hit = (await call("library_by_isbn", { p_isbn: code }) || [])[0];
-      if (hit) { notice = null; addToBag({ book: hit.id, title: hit.title, author: hit.author, isbn: code, out: hit.out_now >= hit.copies ? hit.out_now : 0 }); return render(); }
+      if (hit) { notice = null; addToBag({ book: hit.id, title: hit.title, author: hit.author, isbn: code, back_on: hit.back_on }); return render(); }
       const info = await lookupIsbn(code);
       if (info) {
         const rows = await call("library_search", { p_q: info.title.split(/[:(]/)[0].slice(0, 60) }) || [];
         const same = rows.find((r) => norm(r.title) === norm(info.title) || norm(r.title) === norm(info.title.split(/[:(]/)[0]));
-        if (same) { notice = null; addToBag({ book: same.id, title: same.title, author: same.author, isbn: code, out: same.out_now >= same.copies ? same.out_now : 0 }); return render(); }
+        if (same) { notice = null; addToBag({ book: same.id, title: same.title, author: same.author, isbn: code, back_on: same.back_on }); return render(); }
         newBook = { title: info.title, author: info.author, isbn: code, fromScan: true, near: rows.slice(0, 3) };
       } else {
         newBook = { title: "", author: "", isbn: code, fromScan: true, lookupFailed: true };

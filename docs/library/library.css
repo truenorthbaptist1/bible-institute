@@ -56,6 +56,9 @@ input.lb-input:focus { outline: none; border-color: var(--navy); box-shadow: 0 0
 .lb-suggest button:hover, .lb-suggest button:focus { background: #f3efe4; outline: none; }
 .lb-suggest .t { font-weight: 600; display: block; }
 .lb-suggest .a { color: var(--muted); font-size: .88rem; }
+.lb-suggest .avail { display: block; font-size: .82rem; font-weight: 600; margin-top: 2px; }
+.lb-suggest .avail.in { color: var(--green); }
+.lb-suggest .avail.out { color: var(--red); }
 .lb-suggest .tag { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; padding: 1px 7px; border-radius: 99px; margin-left: 6px; vertical-align: 1px; }
 .lb-suggest .tag-out { background: #f6e7e7; color: var(--red); }
 .lb-suggest .tag-new { background: #f4ecd8; color: #7a5a17; }

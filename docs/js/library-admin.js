@@ -66,7 +66,7 @@ function renderLibraryCheckouts(main) {
       <div><span>${c.out}</span>Checked out now</div>
       <div${c.overdue ? ` style="color:var(--destructive);"` : ""}><span>${c.overdue}</span>Overdue</div>
       <div><span>${c.this_year}</span>Borrowed this year</div>
-      <div><span>${c.copies}</span>Books on the list</div>
+      <div><span>${c.titles}</span>Books on the list</div>
     </div>
     <div class="subtabs" id="libTabs" style="margin-bottom:14px;flex-wrap:wrap;">
       ${tabs.map(([k, t]) => `<button data-libtab="${k}" class="${libAdminTab === k ? "active" : ""}">${t}</button>`).join("")}
@@ -127,11 +127,11 @@ function libTabHtml(overdue) {
           <input type="search" id="libQ" placeholder="Title, author or shelf" value="${esc(libAdminQuery)}" autocomplete="off" style="margin:0;"></div>
         <button class="btn btn-gold" id="libAdd">Add a book</button>
       </div>
-      ${found === null ? `<p class="field-hint" style="margin:12px 0 0;">${libAdmin.counts.titles} titles (${libAdmin.counts.copies} books). Search to change one.</p>`
+      ${found === null ? `<p class="field-hint" style="margin:12px 0 0;">${libAdmin.counts.titles} books on the list. Search to change one.</p>`
         : !found.length ? `<div class="empty-state"><p>No books match that.</p></div>`
         : `<ul class="materials-list" style="margin-top:10px;">${found.map((b) => `<li>
             <div style="flex:1;min-width:0;"><strong>${esc(b.title)}</strong>${b.author ? ` <span class="field-hint" style="display:inline;margin:0;">· ${esc(b.author)}</span>` : ""}
-              <div class="field-hint" style="margin:2px 0 0;">${esc(b.subject || "No shelf")} · ${b.copies} cop${b.copies === 1 ? "y" : "ies"}${b.out_now ? ` · <strong>${b.out_now} out</strong>` : ""} · borrowed ${b.times}×</div></div>
+              <div class="field-hint" style="margin:2px 0 0;">${esc(b.subject || "No shelf")}${b.copies === 0 ? " · <strong>missing</strong>" : b.out_now ? " · <strong>checked out</strong>" : " · on the shelf"} · borrowed ${b.times}×</div></div>
             <button class="btn btn-ghost btn-sm" data-lib-editfound="${b.id}">Edit</button>
           </li>`).join("")}</ul>`}
     </div>`;
@@ -140,7 +140,7 @@ function libTabHtml(overdue) {
   if (!R.length) return `<div class="card"><div class="empty-state"><p>No returns yet.</p></div></div>`;
   return `<div class="card"><ul class="pr-courses">
     ${R.map((x) => `<li><span>${esc(x.title)} <span class="ts-small">· ${esc(x.name)}</span></span>
-      <span class="ts-small">${libDay(x.out_at)} → ${libDay(x.returned_at)}${x.returned_by === "librarian" ? " (librarian)" : ""}</span></li>`).join("")}
+      <span class="ts-small">${libDay(x.out_at)} → ${libDay(x.returned_at)}${x.returned_by === "librarian" ? " (librarian)" : x.returned_by === "next_borrower" ? " (found back on the shelf)" : ""}</span></li>`).join("")}
   </ul></div>`;
 }
 
@@ -198,8 +198,8 @@ function openLibBookModal(b) {
       <label for="lbAuthor">Author</label><input id="lbAuthor" value="${esc(b.author || "")}" autocomplete="off">
       <label for="lbSubject">Shelf</label><input id="lbSubject" list="lbSubjects" value="${esc(b.subject || "")}" autocomplete="off" placeholder="e.g. Doctrine, Biography">
       <datalist id="lbSubjects">${subjects.map((s) => `<option value="${esc(s)}">`).join("")}</datalist>
-      <label for="lbCopies">Copies</label><input id="lbCopies" type="number" min="0" max="50" value="${b.copies == null ? 1 : b.copies}" style="max-width:120px;">
-      <p class="field-hint">Set copies to 0 for a book that's gone, so it stops showing as available.</p>
+      <label class="checkbox-row" style="display:flex;gap:8px;align-items:center;margin-top:12px;"><input type="checkbox" id="lbGone" ${b.copies === 0 ? "checked" : ""} style="width:auto;margin:0;"> This book is missing or no longer in the library</label>
+      <p class="field-hint">A missing book stays on record (with who borrowed it) but won't show as on the shelf.</p>
       <div class="form-actions">
         <button class="btn btn-primary" id="lbSave">Save</button>
         <button class="btn btn-ghost" id="lbCancel">Cancel</button>
@@ -211,7 +211,7 @@ function openLibBookModal(b) {
     const v = (id) => document.getElementById(id).value;
     if (!v("lbTitle").trim()) { toast("A book needs a title."); return; }
     libDo(async () => {
-      await libRpc("library_admin_save_book", { p_id: b.id, p_title: v("lbTitle"), p_author: v("lbAuthor"), p_subject: v("lbSubject"), p_copies: parseInt(v("lbCopies"), 10) || 0 });
+      await libRpc("library_admin_save_book", { p_id: b.id, p_title: v("lbTitle"), p_author: v("lbAuthor"), p_subject: v("lbSubject"), p_copies: document.getElementById("lbGone").checked ? 0 : 1 });
       closeModal();
     }, b.id ? "Book saved." : "Book added to the list.");
   });
