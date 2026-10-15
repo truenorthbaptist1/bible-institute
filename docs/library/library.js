@@ -217,44 +217,30 @@
   }
 
   // ------------------------------------------------------------- typeahead --
-  let tSeq = 0, tTimer = null, olTimer = null;
+  let tSeq = 0, tTimer = null;
   function typeahead(text) {
     const q = text.trim();
     const ul = document.getElementById("suggest");
-    clearTimeout(tTimer); clearTimeout(olTimer);
+    clearTimeout(tTimer);
     if (q.length < 2) { ul.innerHTML = ""; return; }
     const seq = ++tSeq;
     tTimer = setTimeout(async () => {
       let rows = [];
       try { rows = await call("library_search", { p_q: q }) || []; } catch (e) { rows = []; }
       if (seq !== tSeq) return;
-      drawSuggest(q, rows, null);
-      // Few or no matches on our list: ask Open Library for the title, to fill in the author.
-      if (rows.length < 3 && q.length >= 4) olTimer = setTimeout(async () => {
-        const web = await openLibraryTitles(q);
-        if (seq === tSeq) drawSuggest(q, rows, web);
-      }, 350);
+      drawSuggest(q, rows);
     }, 180);
   }
-  function drawSuggest(q, rows, web) {
+  function drawSuggest(q, rows) {
     const ul = document.getElementById("suggest");
     if (!ul) return;
-    const ours = new Set(rows.map((r) => norm(r.title)));
-    const extra = (web || []).filter((w) => !ours.has(norm(w.title))).slice(0, 4);
-    ul.innerHTML = (rows.length ? `<li class="lb-sec">On our shelves</li>` : "")
+    ul.innerHTML = (rows.length ? `<li class="lb-sec">On our shelves</li>` : `<li class="lb-sec">No books on our list match</li>`)
       + rows.map((r, i) => `<li><button type="button" data-pick="${i}"><span class="t">${esc(r.title)}${r.out_now >= r.copies && r.copies > 0 ? `<span class="tag tag-out">Checked out</span>` : ""}</span>${r.author ? `<span class="a">${esc(r.author)}</span>` : ""}</button></li>`).join("")
-      + (extra.length ? `<li class="lb-sec">Not on our list yet</li>` + extra.map((w, i) => `<li><button type="button" data-web="${i}"><span class="t">${esc(w.title)}<span class="tag tag-new">New</span></span>${w.author ? `<span class="a">${esc(w.author)}</span>` : ""}</button></li>`).join("") : "")
-      + `<li><button type="button" data-typed="1"><span class="a">Not listed? Use "<strong>${esc(q)}</strong>"</span></button></li>`;
+      + `<li><button type="button" data-typed="1"><span class="a">Can't find it? <strong>Add this book by hand</strong></span></button></li>`;
     ul.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
       rememberTyping();
       const r = rows[+b.dataset.pick];
       addToBag({ book: r.id, title: r.title, author: r.author, out: r.out_now >= r.copies ? r.out_now : 0 });
-      render();
-    }));
-    ul.querySelectorAll("[data-web]").forEach((b) => b.addEventListener("click", () => {
-      rememberTyping();
-      const w = extra[+b.dataset.web];
-      newBook = { title: w.title, author: w.author, isbn: w.isbn || "" };
       render();
     }));
     ul.querySelector("[data-typed]").addEventListener("click", () => {
@@ -269,26 +255,6 @@
     const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
     try { const r = await fetch(url, { signal: ctl.signal }); return r.ok ? await r.json() : null; }
     catch (e) { return null; } finally { clearTimeout(t); }
-  }
-  // Titles that really match what's typed: every word in the title, the last
-  // one (still being typed) as the start of a word.
-  function titleMatches(title, q) {
-    const words = String(title || "").toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
-    const typed = q.toLowerCase().split(/[^a-z0-9']+/).filter(Boolean);
-    return typed.length > 0 && typed.every((w, i) => i === typed.length - 1 ? words.some((x) => x.startsWith(w)) : words.includes(w));
-  }
-  async function openLibraryTitles(q) {
-    // Asked two ways at once: the words as typed, and with the last word
-    // still being typed ("mere christ" → Mere Christianity).
-    const clean = q.trim().replace(/[^\w\s']/g, " ").replace(/\s+/g, " ");
-    const ask = (t) => getJson(`https://openlibrary.org/search.json?q=${encodeURIComponent("title:(" + t + ")")}&fields=title,author_name,edition_count&limit=20`, 5000);
-    const [a, b] = await Promise.all([ask(clean), ask(clean + "*")]);
-    const start = norm(q), seen = new Set();
-    return [...((a && a.docs) || []), ...((b && b.docs) || [])]
-      .filter((d) => titleMatches(d.title, q))
-      .sort((x, y) => (norm(y.title).startsWith(start) - norm(x.title).startsWith(start)) || ((y.edition_count || 0) - (x.edition_count || 0)))
-      .filter((d) => { const k = norm(d.title) + "|" + norm((d.author_name || [])[0]); if (seen.has(k)) return false; seen.add(k); return true; })
-      .map((d) => ({ title: d.title, author: (d.author_name || [])[0] || "", isbn: "" }));
   }
   async function lookupIsbn(code) {
     const ol = await getJson(`https://openlibrary.org/search.json?isbn=${code}&fields=title,subtitle,author_name&limit=1`);
