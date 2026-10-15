@@ -85,7 +85,7 @@ with sync_playwright() as pw:
     check("Knowledge of the Holy" not in p.inner_text("#suggest") and not p.query_selector("#suggest [data-web]"),
           "typing only suggests books that are on the church's list")
     p.fill("#titleQ", "zzqx nothing like this")
-    p.wait_for_function("document.querySelector('#suggest').innerText.includes('No books on our list match')", timeout=5000)
+    p.wait_for_function("document.querySelector('#suggest').textContent.includes('No books on our list match')", timeout=5000)
     check(True, "…and says so when nothing matches")
     p.fill("#titleQ", "")
     print("Scanning")
