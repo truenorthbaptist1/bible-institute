@@ -1,6 +1,6 @@
-# Security contact for tnbbibleinstitute.com
+# Security contact for institute.truenorthbaptist.com
 # (True North Baptist Church Bible Institute)
 Contact: mailto:truenorthbaptist1@gmail.com
 Expires: 2027-10-12T00:00:00.000Z
 Preferred-Languages: en
-Canonical: https://tnbbibleinstitute.com/.well-known/security.txt
+Canonical: https://institute.truenorthbaptist.com/.well-known/security.txt
