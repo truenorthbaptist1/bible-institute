@@ -716,7 +716,7 @@ async function downloadTranscriptPdf(refs) {
   const footer = (pageNo) => {
     doc.setDrawColor(...RULE); doc.setLineWidth(0.6); doc.line(M, H - 50, W - M, H - 50);
     doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...MUTED);
-    doc.text(pdfText(`Issued ${issued} from tnbbibleinstitute.com`), M, H - 36);
+    doc.text(pdfText(`Issued ${issued} from institute.truenorthbaptist.com`), M, H - 36);
     doc.text(`Page ${pageNo}`, W - M, H - 36, { align: "right" });
   };
   let pageNo = 0;

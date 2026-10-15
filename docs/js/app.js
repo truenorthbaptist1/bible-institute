@@ -4346,7 +4346,7 @@ async function renderReminderCard() {
       <div><strong>${onHere ? "On for this device" : "Off for this device"}</strong>
         <div class="field-hint" style="margin:2px 0 0;">${esc(deviceLabel())}${others.length ? ` · also on for ${others.length} other device${others.length === 1 ? "" : "s"}` : ""}</div></div>
     </div>
-    ${blocked ? `<p class="field-hint" style="margin:10px 0 0;color:var(--destructive);">Notifications are blocked for this site. Allow them in your browser's (or phone's) settings for tnbbibleinstitute.com, then reload this page.</p>` : ""}
+    ${blocked ? `<p class="field-hint" style="margin:10px 0 0;color:var(--destructive);">Notifications are blocked for this site. Allow them in your browser's (or phone's) settings for institute.truenorthbaptist.com, then reload this page.</p>` : ""}
     <div class="form-actions" style="flex-wrap:wrap;">
       ${onHere
         ? `<button class="btn btn-primary btn-sm" id="pushTest">Send a Test</button><button class="btn btn-ghost btn-sm" id="pushOff">Turn Off on This Device</button>`
