@@ -48,7 +48,6 @@ def context(browser, mobile=True):
     ctx.route(re.compile(r".*dompurify.*"), lambda r: r.fulfill(body=FAKE_PURIFY, content_type="application/javascript"))
     ctx.route(re.compile(r".*jspdf.*"), lambda r: r.fulfill(body="window.jspdf={};", content_type="application/javascript"))
     ctx.route(re.compile(r".*fonts\.(googleapis|gstatic)\.com.*"), lambda r: r.abort())
-    ctx.route(re.compile(r".*truenorthbaptist\.com/images/.*"), lambda r: r.fulfill(body=PNG, content_type="image/png"))
     ctx.route(re.compile(r".*openlibrary\.org.*"), fake_ol)
     ctx.route(re.compile(r".*googleapis\.com/books.*"), lambda r: r.fulfill(body='{"totalItems":0}', content_type="application/json"))
     ctx.route(re.compile(r".*/js/config\.js$"), lambda r: r.fulfill(body=CONFIG, content_type="application/javascript"))
