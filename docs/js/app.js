@@ -71,8 +71,10 @@ function parseDay(s) {
   if (typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s)) return new Date(s + "T00:00:00");
   return new Date(s);
 }
+// "Today" is Alaska's date (Oct 23, 2026): the Institute runs on Alaska time
+// and the database decides by Alaska's date, wherever a student happens to be.
 function todayStr() {
-  return localISO(new Date());
+  return typeof alaskaToday === "function" ? alaskaToday() : localISO(new Date());
 }
 
 // An archived course is never live, whatever its schedule says — archiving
@@ -1460,7 +1462,10 @@ function renderCourses(main) {
   flashMessage = "";
   const enrolled = courses.filter((c) => !c.archived && c.studentIds.includes(currentStudentId)).sort((a, b) => a.title.localeCompare(b.title));
   const pending = courses.filter((c) => !c.archived && !c.studentIds.includes(currentStudentId) && myEnrollmentRequest(c, currentStudentId)).sort((a, b) => a.title.localeCompare(b.title));
-  const available = courses.filter((c) => !c.archived && !c.studentIds.includes(currentStudentId) && !myEnrollmentRequest(c, currentStudentId) && isUpcoming(c)).sort((a, b) => a.title.localeCompare(b.title));
+  // Upcoming courses, plus self-paced ones already under way (each student
+  // starts their own semester, so they can join any time — as the database allows).
+  const available = courses.filter((c) => !c.archived && !c.studentIds.includes(currentStudentId) && !myEnrollmentRequest(c, currentStudentId)
+    && (isUpcoming(c) || (c.pace === "self" && isLive(c)))).sort((a, b) => a.title.localeCompare(b.title));
 
   function courseTile(c) {
     const live = isLive(c);
@@ -1480,7 +1485,7 @@ function renderCourses(main) {
           <div>
             <div><strong>${esc(c.title)}</strong> <span class="pill pill-navy" style="margin-left:4px;">${esc(c.level)} Level</span></div>
             <p style="font-size:.85rem;color:var(--muted-foreground);margin:4px 0 0;">${esc(c.description)}</p>
-            <div style="font-size:.78rem;color:var(--muted-foreground);margin-top:6px;">${esc(scheduleLine(c))} · Starts ${parseDay(c.schedule.startDate).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}</div>
+            <div style="font-size:.78rem;color:var(--muted-foreground);margin-top:6px;">${esc(scheduleLine(c))}${scheduleLine(c) ? " · " : ""}${isLive(c) ? "Self-paced — start any time" : `Starts ${parseDay(c.schedule.startDate).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}`}</div>
           </div>
           ${mode === "available" ? `<button class="btn btn-gold btn-sm" data-request="${c.id}">Request Enrollment</button>` : `<div style="text-align:right;flex-shrink:0;"><span class="pill pill-gray">Pending Approval</span><br><button class="btn btn-ghost btn-sm" style="margin-top:8px;" data-withdraw="${c.id}">Withdraw</button></div>`}
         </li>`;
@@ -1772,8 +1777,14 @@ function renderCatalogue(main) {
       e.stopPropagation();
       const c = courses.find((x) => x.id === btn.dataset.archiveToggle);
       const archiving = !c.archived;
-      const hadMessages = c.messages && c.messages.length > 0;
+      let hadMessages = c.messages && c.messages.length > 0;
       const go = async () => {
+      // An Admin who doesn't teach the course can't see its messages; ask the
+      // database whether there are any (a count only) — Oct 23, 2026.
+      if (archiving && !hadMessages && !iTeach(c)) {
+        try { hadMessages = Number((await DB.coursePrivateCounts(c.id)).messages) > 0; }
+        catch (e) { toast(friendlyError(e)); return; }
+      }
       if (archiving && hadMessages && !(await askConfirm(`Archive "${c.title}"?\n\nThis permanently deletes the course's private student–teacher messages (export any you want to keep first). Materials, grades, and the discussion board are kept.`))) return;
       run(async () => {
         await DB.setArchived(c.id, archiving);
@@ -1985,8 +1996,18 @@ function openSubmitModal(course, assignment, studentId, onSaved) {
     closeModal();
   });
   const afterSave = onSaved || (() => renderMain());
-  document.getElementById("submitProgress").addEventListener("click", () => {
+  document.getElementById("submitProgress").addEventListener("click", async () => {
     const html = method() === "editor" && !editor.isEmpty() ? editor.getHtml() : undefined;
+    // Already turned in (Oct 23, 2026): saving a draft would take the work
+    // back. Nothing new → nothing to save; new writing → ask first.
+    if (sub.status === "submitted") {
+      if (html === undefined || html === (sub.writtenContent || "")) {
+        closeModal();
+        toast("This is already turned in — nothing was changed.", "success");
+        return;
+      }
+      if (!(await askConfirm("Take back your turned-in work?\n\nSaving this as In Progress means it's no longer turned in — your teacher won't see it to grade until you press Turn In again."))) return;
+    }
     run(async () => {
       await DB.saveSubmission({ courseId: course.id, assignment, studentId, status: "in_progress", writtenContent: html, previous: sub });
       if (html !== undefined) editor.clearDraft();
@@ -2954,7 +2975,8 @@ function renderDiscussionPosts(c) {
 function courseInstructor(c) {
   // With no teacher assigned, the Institute's Admins receive the
   // messages until one is.
-  return users.find((u) => u.id === c.facultyId && u.role === "faculty") || { id: null, name: "Institute administrators" };
+  // (A teacher whose account was turned off no longer receives them either.)
+  return courseTeacher(c) || { id: null, name: "Institute administrators" };
 }
 
 // Faculty see a thread for every enrolled student, plus anyone who has a
@@ -3703,7 +3725,13 @@ function renderAssignmentsList(c) {
   });
   wireDocChips(c, wrap);
   const deleteAssignments = async (items, label) => {
-    const turnedIn = items.reduce((n, a) => n + (a.submissions || []).filter((s) => s.status === "submitted" || s.status === "graded").length, 0);
+    let turnedIn = items.reduce((n, a) => n + (a.submissions || []).filter((s) => s.status === "submitted" || s.status === "graded").length, 0);
+    // An Admin who doesn't teach the course can't see its work, so ask the
+    // database how much there is (a count only) — Oct 23, 2026.
+    if (!teach) {
+      try { const counts = (await DB.coursePrivateCounts(c.id)).turned_in || {}; turnedIn = items.reduce((n, a) => n + (Number(counts[a.id]) || 0), 0); }
+      catch (e) { toast(friendlyError(e)); return; }
+    }
     const warn = turnedIn ? `\n\n${turnedIn} submission${turnedIn === 1 ? "" : "s"} and any grades on ${items.length === 1 ? "it" : "them"} will be permanently deleted.` : "";
     if (!(await askConfirm(`Delete ${label}?${warn}`))) return;
     run(() => DB.deleteAssignments(items.map((a) => a.id)), null, { success: "Deleted." });

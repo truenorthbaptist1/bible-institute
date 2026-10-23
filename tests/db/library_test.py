@@ -94,7 +94,10 @@ check("A bad photo path is ignored", ok and admin("select count(*) from public.l
 # --- my books, return, renew ---------------------------------------------------
 ok, out = anon(f"select public.library_my_books('{token}')")
 mine = json.loads(out) if ok else {}
-check("The phone shows its books", ok and len(mine.get("books", [])) == 4, out[:200])
+# 3, not 4: Jane checked "Knowing God" out twice above, and since Oct 23, 2026
+# borrowing a one-copy book again closes her earlier checkout of it (she holds
+# one copy, so she has one checkout — no overdue notices for the old one).
+check("The phone shows its books", ok and len(mine.get("books", [])) == 3, out[:200])
 ok, out = anon("select public.library_my_books('not-the-right-key-not-the-right-key-12345678')")
 check("A wrong key shows nothing", ok and out == "", out)
 other = json.loads(anon("select public.library_checkout(null, 'Sam Roe', 'sam@example.com', '[{\"book\": 5}]')")[1])
@@ -111,7 +114,7 @@ check("The email's renew link works too", ok and json.loads(out).get("renewed") 
 ok, out = anon(f"select public.library_renew(null, null, '{renew_key}')")
 check("…but only twice", ok and json.loads(out).get("limit") is True, out)
 ok, out = anon(f"select public.library_return('{token}', {jl})")
-check("Returning a book takes it off the phone's list", ok and len(json.loads(out)["books"]) == 3, out[:200])
+check("Returning a book takes it off the phone's list", ok and len(json.loads(out)["books"]) == 2, out[:200])  # was 3; see the note above
 ok, out = anon(f"select public.library_renew(null, null, '{renew_key}')")
 check("A renew link for a returned book just says it's back", ok and json.loads(out).get("returned") is True, out)
 

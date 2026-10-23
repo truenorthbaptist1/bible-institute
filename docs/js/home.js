@@ -139,6 +139,9 @@ function thisWeekItems() {
       if (l) lectures.push({ c, l, by: lessonWatchBy(c, l, sid) });
       return;
     }
+    // With attendance not recorded there's no way to know a class was missed
+    // (no marks at all), so don't list any as missed (Oct 23, 2026).
+    if (!c.att.on && track !== "classroom") return;
     const seen = new Set();
     open.forEach((l) => {
       const d = l.classDate;
