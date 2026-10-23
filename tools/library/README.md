@@ -27,9 +27,11 @@ Every book on the church library list has a cover picture at
 shelves, the checkout page (/library/) and the librarian's Checkouts screen.
 `<key>` is an 8-hex checksum of "title|author" (`libCoverKey` in app.js).
 
-- **Real covers** (about 300) come from Open Library, matched by title and
+- **Real covers** (about 400) come from Open Library, matched by title and
   author, then checked by eye; wrong matches (another volume, another author,
-  a blank scan) were dropped.
+  a blank scan) were dropped. David Cloud's books (about 100) come from his
+  publisher's own site, Way of Life Literature (wayoflife.org/publications/all.php;
+  each book page has a larger cover than the list).
 - **Stand-ins** for the rest: one design in the church's colors, a shade per
   shelf, with the title, author and shelf (`make_covers.py`, using the site's
   fonts Source Serif 4 and Figtree).

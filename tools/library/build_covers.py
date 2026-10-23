@@ -4,8 +4,8 @@
 
 <work dir> holds what the cover search produced (tools/library/README.md):
   results.json   one entry per book on the list: {t, a, s, status, cover, ...}
-                 status "good"/"check" = a real cover was found ("cover" is the
-                 Open Library cover id), "none" = no picture found
+                 status "good"/"check" = a real cover was found (from Open
+                 Library, or the publisher's site: "pageUrl"), "none" = no picture
   found/<i>.jpg  the real cover picture for book number i
 For books without a real cover, a matching stand-in is drawn (make_covers.py).
 
@@ -91,7 +91,7 @@ def main():
         Image.open(src).convert("RGB").save(os.path.join(out_drive, drive_name), "JPEG", quality=90)
         rows.append({"key": k, "title": t, "author": a, "shelf": r.get("s", ""), "kind": kind,
                      "match": r.get("status"), "found_as": r.get("olTitle", ""), "found_author": r.get("olAuthors", ""),
-                     "open_library": ("https://openlibrary.org" + r["olKey"]) if r.get("olKey") and kind == "found" else "",
+                     "source": (r.get("pageUrl") or ("https://openlibrary.org" + r["olKey"] if r.get("olKey") else "")) if kind == "found" else "",
                      "drive_file": drive_name})
 
     # Which books have a cover, for the shelves.
