@@ -89,6 +89,7 @@ function libTabHtml(overdue) {
       ${overdue.length ? `<p class="field-hint" style="margin:0 0 8px;color:var(--destructive);font-weight:600;">${overdue.length} overdue · listed first</p>` : ""}
       <ul class="materials-list">
         ${L.out.map((x) => `<li>
+          ${libAdmCover(x.cover)}
           <div style="flex:1;min-width:0;">
             <strong>${esc(x.title)}</strong>${x.author ? ` <span class="field-hint" style="display:inline;margin:0;">· ${esc(x.author)}</span>` : ""}
             <div class="field-hint" style="margin:2px 0 0;">${esc(x.name)} · <a href="mailto:${esc(x.email)}">${esc(x.email)}</a></div>
@@ -130,6 +131,7 @@ function libTabHtml(overdue) {
       ${found === null ? `<p class="field-hint" style="margin:12px 0 0;">${libAdmin.counts.titles} books on the list. Search to change one.</p>`
         : !found.length ? `<div class="empty-state"><p>No books match that.</p></div>`
         : `<ul class="materials-list" style="margin-top:10px;">${found.map((b) => `<li>
+            ${libAdmCover(b.cover, b.cover_kind === "made" ? "Stand-in cover (no picture of the real one yet)" : "")}
             <div style="flex:1;min-width:0;"><strong>${esc(b.title)}</strong>${b.author ? ` <span class="field-hint" style="display:inline;margin:0;">· ${esc(b.author)}</span>` : ""}
               <div class="field-hint" style="margin:2px 0 0;">${esc(b.subject || "No shelf")}${b.copies === 0 ? " · <strong>missing</strong>" : b.out_now ? " · <strong>checked out</strong>" : " · on the shelf"} · borrowed ${b.times}×</div></div>
             <button class="btn btn-ghost btn-sm" data-lib-editfound="${b.id}">Edit</button>
@@ -144,7 +146,14 @@ function libTabHtml(overdue) {
   </ul></div>`;
 }
 
+// A book's cover on the site (library/covers/…), as a small picture.
+function libAdmCover(path, note) {
+  if (!path || !/^library\/covers\/[0-9a-f]{8}\.jpg$/.test(path)) return "";
+  return `<button class="lib-cover-btn" data-lib-cover="${path}" aria-label="See the cover"${note ? ` title="${esc(note)}"` : ""}><img class="lib-cover" src="${path}" alt="" width="36" height="54" loading="lazy" onerror="this.parentNode.remove()"></button>`;
+}
+
 function wireLibTab(main) {
+  main.querySelectorAll("[data-lib-cover]").forEach((b) => b.addEventListener("click", () => openLibCover(b.dataset.libCover, "")));
   main.querySelectorAll("[data-lib-return]").forEach((b) => b.addEventListener("click", async () => {
     const x = libAdmin.out.find((o) => o.loan === +b.dataset.libReturn);
     if (!(await askConfirm({ title: `Check in "${x.title}"?`, text: `Borrowed by ${x.name}.`, ok: "Returned" }))) return;

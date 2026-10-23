@@ -38,6 +38,11 @@
     camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 7h3l2-3h6l2 3h3a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="4"/></svg>',
   };
 
+  // A book's cover (library/covers/… on this site), or nothing.
+  function coverImg(path, cls = "lb-thumb") {
+    if (!path || !/^library\/covers\/[0-9a-f]{8}\.jpg$/.test(path)) return "";
+    return `<img class="${cls}" src="/${path}" alt="" loading="lazy" decoding="async" onerror="this.remove()">`;
+  }
   function dueText(d) {
     const [y, m, day] = String(d).split("-").map(Number);
     return new Date(y, m - 1, day).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -98,7 +103,7 @@
           <h3 style="margin:20px 0 0;font-size:1.05rem;">Taking home (${bag.length})</h3>
           <ul class="lb-list" id="bagList">
             ${bag.map((b, i) => `<li>
-              ${b.photoUrl ? `<img class="lb-thumb" src="${b.photoUrl}" alt="">` : ""}
+              ${b.photoUrl ? `<img class="lb-thumb" src="${b.photoUrl}" alt="">` : coverImg(b.cover)}
               <div class="lb-book"><div class="t">${esc(b.title)}</div>${b.author ? `<div class="a">${esc(b.author)}</div>` : ""}
                 ${b.back_on ? `<div class="a">Our records show this book checked out. If it's in your hands, it was returned, so go ahead.</div>` : ""}</div>
               <button type="button" class="lb-x" data-unbag="${i}" aria-label="Remove ${esc(b.title)}">×</button>
@@ -119,6 +124,7 @@
       <p class="lb-muted" style="margin:2px 0 0;">Brought one back? Tap <strong>Returned</strong>.</p>
       <ul class="lb-list">
         ${books.map((b) => `<li>
+          ${coverImg(b.cover)}
           <div class="lb-book"><div class="t">${esc(b.title)}</div>${b.author ? `<div class="a">${esc(b.author)}</div>` : ""}
             <div class="due ${b.due_on < today ? "over" : ""}">${b.due_on < today ? "Overdue · was due " : "Due "}${esc(dueText(b.due_on))}</div></div>
           <div class="lb-mini">
@@ -212,7 +218,7 @@
       app.querySelectorAll("[data-near]").forEach((b) => b.addEventListener("click", () => {
         rememberTyping();
         const r = newBook.near[+b.dataset.near];
-        addToBag({ book: r.id, title: r.title, author: r.author, back_on: r.back_on, isbn: newBook.isbn });
+        addToBag({ book: r.id, title: r.title, author: r.author, back_on: r.back_on, cover: r.cover, isbn: newBook.isbn });
         newBook = null; render();
       }));
     }
@@ -244,12 +250,12 @@
     const ul = document.getElementById("suggest");
     if (!ul) return;
     ul.innerHTML = (rows.length ? `<li class="lb-sec">On our shelves</li>` : `<li class="lb-sec">No books on our list match</li>`)
-      + rows.map((r, i) => `<li><button type="button" data-pick="${i}"><span class="t">${esc(r.title)}</span>${r.author ? `<span class="a">${esc(r.author)}</span>` : ""}${r.back_on ? `<span class="avail out">${esc(availability(r))}</span>` : r.copies > 0 ? `<span class="avail in">On the shelf</span>` : ""}</button></li>`).join("")
+      + rows.map((r, i) => `<li><button type="button" data-pick="${i}"${r.cover ? ` class="has-cover"` : ""}>${coverImg(r.cover, "lb-sthumb")}<span class="lb-stext"><span class="t">${esc(r.title)}</span>${r.author ? `<span class="a">${esc(r.author)}</span>` : ""}${r.back_on ? `<span class="avail out">${esc(availability(r))}</span>` : r.copies > 0 ? `<span class="avail in">On the shelf</span>` : ""}</span></button></li>`).join("")
       + `<li><button type="button" data-typed="1"><span class="a">Can't find it? <strong>Add this book by hand</strong></span></button></li>`;
     ul.querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => {
       rememberTyping();
       const r = rows[+b.dataset.pick];
-      addToBag({ book: r.id, title: r.title, author: r.author, back_on: r.back_on });
+      addToBag({ book: r.id, title: r.title, author: r.author, back_on: r.back_on, cover: r.cover });
       render();
     }));
     ul.querySelector("[data-typed]").addEventListener("click", () => {
@@ -281,12 +287,12 @@
     notice = { kind: "ok", text: "Looking that book up…" }; render();
     try {
       const hit = (await call("library_by_isbn", { p_isbn: code }) || [])[0];
-      if (hit) { notice = null; addToBag({ book: hit.id, title: hit.title, author: hit.author, isbn: code, back_on: hit.back_on }); return render(); }
+      if (hit) { notice = null; addToBag({ book: hit.id, title: hit.title, author: hit.author, isbn: code, back_on: hit.back_on, cover: hit.cover }); return render(); }
       const info = await lookupIsbn(code);
       if (info) {
         const rows = await call("library_search", { p_q: info.title.split(/[:(]/)[0].slice(0, 60) }) || [];
         const same = rows.find((r) => norm(r.title) === norm(info.title) || norm(r.title) === norm(info.title.split(/[:(]/)[0]));
-        if (same) { notice = null; addToBag({ book: same.id, title: same.title, author: same.author, isbn: code, back_on: same.back_on }); return render(); }
+        if (same) { notice = null; addToBag({ book: same.id, title: same.title, author: same.author, isbn: code, back_on: same.back_on, cover: same.cover }); return render(); }
         newBook = { title: info.title, author: info.author, isbn: code, fromScan: true, near: rows.slice(0, 3) };
       } else {
         newBook = { title: "", author: "", isbn: code, fromScan: true, lookupFailed: true };

@@ -46,6 +46,17 @@ student = mkuser("lib-student@example.com", "Library Student")
 n = admin("select count(*) || '/' || sum(copies) from public.library_books")
 check("The church's book list is loaded (702 books, one copy each)", n == "702/702", n)
 
+# --- covers (Oct 23, 2026) ------------------------------------------------------
+n = admin("select count(*) filter (where cover is not null) || '/' || count(*) filter (where cover_kind = 'found') || '/' || count(*) filter (where cover_kind = 'made') from public.library_books")
+c_all, c_found, c_made = map(int, n.split("/"))
+check("Every book on the list has a cover (a real one or a stand-in)", c_all == 702 and c_found + c_made == 702 and c_found > 250, n)
+ok, out = anon("select cover from public.library_search('pocket guide darwin') limit 1")
+check("Visitors' title search returns the book's cover", ok and out.startswith("library/covers/") and out.endswith(".jpg"), out)
+ok, out = sql("select count(*) from public.library_admin_books('pocket guide') where cover is not null and cover_kind is not null", boss)
+check("Admins' book search shows covers and whether each is a stand-in", ok and int(out or 0) > 0, out)
+ok, out = sql("update public.library_books set cover = 'https://evil.example/x.jpg' where id = (select min(id) from public.library_books)")
+check("A cover can only be a picture in the site's covers folder", not ok, out)
+
 # --- privacy -----------------------------------------------------------------
 ok, out = anon("select count(*) from public.library_books")
 check("Visitors can't read the book table directly", not ok, out)

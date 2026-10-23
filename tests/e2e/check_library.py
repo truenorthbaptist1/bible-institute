@@ -216,6 +216,18 @@ with sync_playwright() as p:
     n = admin.locator(".lib-shelf[open] .lib-book").count(); check(n >= 58, f"Show all lists the whole shelf ({n})")
     check(admin.locator(".lib-copies").count() >= 1, "a book the church owns twice shows as one line, 2 copies")
     admin.screenshot(path=f"{S}/3-shelf-open.png", full_page=True)
+    # Book covers (Oct 23): every book on the shelf has one, and it loads.
+    nb = admin.locator(".lib-shelf[open] .lib-book:not(.lib-online)").count()
+    nc = admin.locator(".lib-shelf[open] .lib-book img.lib-cover").count()
+    check(nc == nb and nb > 0, f"every book on an open shelf shows its cover ({nc}/{nb})")
+    admin.evaluate("Promise.all([...document.querySelectorAll('.lib-shelf[open] img.lib-cover')].slice(0, 12).map(i => i.complete ? 1 : new Promise(r => { i.onload = i.onerror = r; })))")
+    loaded = admin.evaluate("[...document.querySelectorAll('.lib-shelf[open] img.lib-cover')].slice(0, 12).filter(i => i.naturalWidth > 50).length")
+    check(loaded == min(12, nc), f"cover pictures load ({loaded})")
+    admin.locator(".lib-shelf[open] .lib-cover-btn").first.click(); admin.wait_for_timeout(300)
+    check(admin.locator(".lib-cover-view img").count() == 1, "tapping a cover shows it large")
+    admin.screenshot(path=f"{S}/3b-cover-large.png")
+    admin.keyboard.press("Escape"); admin.wait_for_timeout(200)
+    check(admin.locator(".lib-cover-view").count() == 0, "...and Escape closes it")
     # chip narrows
     admin.locator(".lib-chip", has_text="Bible Versions").click(); settle(admin)
     check(admin.locator(".lib-shelf").count() == 1 and admin.locator(".lib-shelf[open]").count() == 1, "a chip shows just that shelf, open")

@@ -5052,6 +5052,34 @@ const LIB_SHELF_BLURB = {
   "Children's Books": "For young readers",
   "General": "Everything else",
 };
+// Book covers: docs/library/covers/<key>.jpg, where the key is a checksum of
+// the title and author (LIBRARY_COVERS in library-covers.js lists the books
+// that have one). Built by tools/library/build_covers.py.
+function libCoverKey(t, a) {
+  const s = (String(t || "").trim() + "|" + String(a || "").trim()).toLowerCase().replace(/\s+/g, " ");
+  let h = 0;
+  for (const ch of s) h = (Math.imul(h, 31) + ch.codePointAt(0)) >>> 0;
+  return h.toString(16).padStart(8, "0");
+}
+function libAttr(s) { return esc(s).replace(/"/g, "&quot;"); }
+function libCoverUrl(t, a) {
+  if (typeof LIBRARY_COVERS === "undefined") return "";
+  const k = libCoverKey(t, a);
+  return LIBRARY_COVERS.has(k) ? `library/covers/${k}.jpg` : "";
+}
+function openLibCover(src, title) {
+  const o = document.createElement("div");
+  o.className = "lib-cover-view";
+  o.setAttribute("role", "dialog");
+  o.setAttribute("aria-label", title || "Book cover");
+  o.innerHTML = `<figure><img src="${libAttr(src)}" alt="Cover of ${libAttr(title || "the book")}"><figcaption>${esc(title || "")}</figcaption></figure><button type="button" class="lib-cover-close" aria-label="Close">×</button>`;
+  const close = () => { o.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  o.addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(o);
+  o.querySelector(".lib-cover-close").focus();
+}
 // Sort key: titles without a leading "A", "An" or "The"; numbers in order.
 function libTitleKey(t) { return String(t || "").replace(/^(the|an|a)\s+/i, "").replace(/^["“'(]+/, "").toLowerCase(); }
 function libAuthorKey(a) {
@@ -5177,10 +5205,16 @@ function renderResourceLibrary(main) {
   // --- pieces -------------------------------------------------------------
   const copiesTag = (n) => n > 1 ? ` <span class="lib-copies">${n} copies</span>` : "";
   const itemRow = (b, withAuthor = true) => {
-    if (!b.d) return `<li class="lib-book">
-      <span class="lib-title">${libMark(b.t, q)}${copiesTag(b.n)}</span>
-      ${withAuthor && b.a ? `<span class="lib-author">${libMark(b.a, q)}</span>` : ""}
+    if (!b.d) {
+      const cover = libCoverUrl(b.t, b.a);
+      return `<li class="lib-book${cover ? " lib-has-cover" : ""}">
+      ${cover ? `<button type="button" class="lib-cover-btn" data-lib-cover="${esc(cover)}" data-lib-cover-title="${libAttr(b.t)}" aria-label="See the cover of ${libAttr(b.t)}"><img class="lib-cover" src="${esc(cover)}" alt="" width="36" height="54" loading="lazy" decoding="async"></button>` : ""}
+      <span class="lib-book-text">
+        <span class="lib-title">${libMark(b.t, q)}${copiesTag(b.n)}</span>
+        ${withAuthor && b.a ? `<span class="lib-author">${libMark(b.a, q)}</span>` : ""}
+      </span>
     </li>`;
+    }
     return `<li class="lib-book lib-online">
       <a class="lib-online-link" href="${esc(driveUrl(b.d))}" target="_blank" rel="noopener">
         <span class="lib-online-text">
@@ -5352,6 +5386,9 @@ function renderResourceLibrary(main) {
   main.querySelectorAll("[data-lib-more]").forEach((b) => b.addEventListener("click", () => {
     libShowAll.add(b.dataset.libMore); libOpenShelves.add(b.dataset.libMore); redraw();
   }));
+  main.querySelectorAll("[data-lib-cover]").forEach((b) => b.addEventListener("click", () => openLibCover(b.dataset.libCover, b.dataset.libCoverTitle)));
+  // A cover that won't load just leaves the title.
+  main.querySelectorAll("img.lib-cover").forEach((img) => img.addEventListener("error", () => { const btn = img.closest(".lib-cover-btn"); if (btn) btn.remove(); }, { once: true }));
   const clear = document.getElementById("libClear");
   if (clear) clear.addEventListener("click", () => {
     resourceLibraryQuery = ""; resourceLibraryCourse = ""; resourceLibraryShelf = ""; resourceLibraryKind = ""; libOpenShelves.clear(); libShowAll.clear(); redraw();

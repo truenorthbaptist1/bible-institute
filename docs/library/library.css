@@ -108,3 +108,8 @@ input.lb-input:focus { outline: none; border-color: var(--navy); box-shadow: 0 0
 .lb-scan-frame { position: absolute; left: 10%; right: 10%; top: 35%; height: 30%; border: 3px solid var(--gold); border-radius: 12px; box-shadow: 0 0 0 999px rgba(0,0,0,.35); }
 .lb-scan-msg { min-height: 1.5em; margin: 0; text-align: center; color: var(--gold-light); }
 .lb-scanner .lb-btn { width: 100%; max-width: 480px; }
+/* Book covers (Oct 23, 2026) */
+.lb-thumb { background: #eee8da; box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+.lb-suggest button.has-cover { display: flex; align-items: center; gap: 12px; }
+.lb-stext { display: block; min-width: 0; }
+.lb-sthumb { width: 34px; height: 50px; object-fit: cover; border-radius: 3px; border: 1px solid var(--line); background: #eee8da; flex: none; }
