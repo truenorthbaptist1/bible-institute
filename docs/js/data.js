@@ -179,7 +179,12 @@ async function loadAll() {
     // Added Oct 9: lecture videos, the class day each belongs to, how much
     // of each has been watched, and playlist status (faculty).
     selectAll("lessons", "*", "position").catch(() => []),
-    sb.rpc("visible_lesson_dates").then(must).catch(() => []),
+    // One object for every lecture (Oct 23, 2026): a list of rows would be cut
+    // off at Supabase's 1,000-rows-per-request limit. Falls back to the old
+    // list for the few minutes between a site update and its database update.
+    sb.rpc("visible_lesson_dates_json").then(must)
+      .then((o) => Object.entries(o || {}).map(([lesson_id, class_date]) => ({ lesson_id, class_date })))
+      .catch(() => sb.rpc("visible_lesson_dates").then(must).catch(() => [])),
     selectAll("lesson_views", "lesson_id,student_id,pct,completed_at,last_at").catch(() => []),
     fac ? selectAll("playlist_sync", "*").catch(() => []) : Promise.resolve([]),
     // Added Oct 9 (later): documents attached to assignments.
@@ -918,6 +923,14 @@ const DB = {
       }
     } catch (e) { console.warn("copy lesson plan:", e); }
     return { id, filesFailed };
+  },
+  // For an Admin who doesn't teach the course (Oct 23, 2026): what the grade
+  // formula needs, and counts of private material (no content).
+  async courseGradeInputs(courseId) {
+    return must(await sb.rpc("course_grade_inputs", { p_course: courseId }));
+  },
+  async coursePrivateCounts(courseId) {
+    return must(await sb.rpc("course_private_counts", { p_course: courseId }));
   },
   async recordFinalGrades(courseId, entries) {
     return must(await sb.rpc("record_final_grades", { p_course: courseId, p_entries: entries }));

@@ -761,9 +761,11 @@ $$;
 drop function if exists public.visible_people();
 create or replace function public.visible_people()
 returns table (id uuid, name text, role text, super_admin boolean,
-               avatar_path text, home_church text, bio text)
+               avatar_path text, home_church text, bio text, status text)
 language sql stable security definer set search_path = public as $$
-  select p.id, p.name, p.role, p.super_admin, p.avatar_path, p.home_church, p.bio
+  -- status (Oct 23, 2026): so a student can tell a teacher whose account was
+  -- turned off — that course's messages then go to the Admins.
+  select p.id, p.name, p.role, p.super_admin, p.avatar_path, p.home_church, p.bio, p.status
   from profiles p
   where public.can_see_person(p.id)
 $$;
@@ -3659,9 +3661,11 @@ begin
        where id = v_book and not (isbns @> array[v_isbn]) and cardinality(isbns) < 10;
     end if;
     -- One copy of each book: if it's in this person's hands, whoever had it
-    -- before must have put it back (they stop getting reminders).
-    update library_loans set returned_at = now(), returned_by = 'next_borrower'
-     where book_id = v_book and returned_at is null and borrower_id <> v.id
+    -- before must have put it back (they stop getting reminders). That
+    -- includes this same person borrowing it again (fixed Oct 23, 2026).
+    update library_loans set returned_at = now(),
+           returned_by = case when borrower_id = v.id then 'borrower' else 'next_borrower' end
+     where book_id = v_book and returned_at is null
        and (select copies from library_books where id = v_book) <= 1;
     insert into library_loans (book_id, borrower_id, due_on, renew_token)
     values (v_book, v.id, v_due, public.library_new_key());
@@ -4619,3 +4623,52 @@ where not exists (select 1 from public.library_books);
 -- END library seed
 -- One copy of each book (Oct 15): titles that were listed twice were counted as two.
 update public.library_books set copies = 1 where copies > 1;
+
+-- ===========================================================================
+-- Review fixes (Oct 23, 2026). Safe to re-run on its own.
+-- ===========================================================================
+-- An Admin recording final grades for a course they don't teach: what the
+-- grade formula needs (each student's status and score per assignment, and
+-- attendance), so the form can suggest the real final grade. Only for the
+-- course's teacher or an Admin; never shown as a grade book.
+create or replace function public.course_grade_inputs(p_course text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or an Admin can do that.'; end if;
+  return jsonb_build_object(
+    'submissions', coalesce((select jsonb_agg(jsonb_build_object('assignment_id', s.assignment_id, 'student_id', s.student_id,
+                      'status', s.status, 'score', s.score))
+                    from submissions s join assignments a on a.id = s.assignment_id where a.course_id = p_course), '[]'::jsonb),
+    'days', coalesce((select jsonb_agg(jsonb_build_object('class_date', d.class_date, 'held', d.held, 'teacher_taken', d.teacher_taken))
+                    from attendance_days d where d.course_id = p_course), '[]'::jsonb),
+    'marks', coalesce((select jsonb_agg(jsonb_build_object('class_date', m.class_date, 'student_id', m.student_id, 'status', m.status))
+                    from attendance m where m.course_id = p_course), '[]'::jsonb));
+end $$;
+
+-- How much private material a course holds, as counts only (no content):
+-- private messages, and turned-in work per assignment. Lets an Admin who
+-- doesn't teach the course be warned before archiving or deleting.
+create or replace function public.course_private_counts(p_course text) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.manages_course(p_course) then raise exception 'Only this course''s teacher or an Admin can do that.'; end if;
+  return jsonb_build_object(
+    'messages', (select count(*) from messages where course_id = p_course),
+    'turned_in', coalesce((select jsonb_object_agg(x.assignment_id, x.n) from (
+        select s.assignment_id, count(*) as n from submissions s join assignments a on a.id = s.assignment_id
+         where a.course_id = p_course and s.status in ('submitted','graded') group by s.assignment_id) x), '{}'::jsonb));
+end $$;
+
+-- Every lecture's class day as ONE object ({lesson id: date}). A single row,
+-- so Supabase's 1,000-rows-per-request limit can't cut it short.
+create or replace function public.visible_lesson_dates_json() returns jsonb
+language sql stable set search_path = public as $$
+  select coalesce(jsonb_object_agg(x.lesson_id, x.class_date), '{}'::jsonb) from public.visible_lesson_dates() x
+$$;
+
+revoke execute on function public.course_grade_inputs(text) from public, anon;
+revoke execute on function public.course_private_counts(text) from public, anon;
+revoke execute on function public.visible_lesson_dates_json() from public, anon;
+grant execute on function public.course_grade_inputs(text) to authenticated;
+grant execute on function public.course_private_counts(text) to authenticated;
+grant execute on function public.visible_lesson_dates_json() to authenticated;

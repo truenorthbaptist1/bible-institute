@@ -592,7 +592,26 @@ function openTranscriptEntryModal(entry, person) {
 }
 
 // End of a course: the teacher records each student's final grade.
-function openRecordGradesModal(c, after) {
+// An Admin who doesn't teach the course can't see its work (Oct 23, 2026):
+// fetch what the grade formula needs, so the form suggests each student's
+// real grade instead of counting every assignment as missing.
+async function openRecordGradesModal(c, after) {
+  if (iTeach(c)) return drawRecordGradesModal(c, after, c);
+  let inp;
+  setBusy(true);
+  try { inp = await DB.courseGradeInputs(c.id); }
+  catch (e) { setBusy(false); toast(friendlyError(e)); return; }
+  setBusy(false);
+  const subsBy = {};
+  (inp.submissions || []).forEach((s) => (subsBy[s.assignment_id] = subsBy[s.assignment_id] || []).push({
+    studentId: s.student_id, status: s.status, score: s.score === null ? null : Number(s.score), fileName: null, writtenContent: null, submittedAt: null, feedback: "" }));
+  const attDays = {}, autoDays = {}, attMarks = {};
+  (inp.days || []).forEach((d) => { if (d.teacher_taken === false) autoDays[d.class_date] = { held: d.held }; else attDays[d.class_date] = { held: d.held }; });
+  (inp.marks || []).forEach((m) => { (attMarks[m.class_date] = attMarks[m.class_date] || {})[m.student_id] = m.status; });
+  const gc = { ...c, attDays, autoDays, attMarks, assignments: c.assignments.map((a) => ({ ...a, submissions: subsBy[a.id] || [] })) };
+  drawRecordGradesModal(c, after, gc);
+}
+function drawRecordGradesModal(c, after, gc) {
   const students = c.studentIds.map((id) => users.find((u) => u.id === id)).filter(Boolean).sort((a, b) => lastFirst(a.name).localeCompare(lastFirst(b.name)));
   if (!students.length) { toast("No students are enrolled in this course."); return; }
   const recorded = new Map(transcripts.filter((t) => t.courseId === c.id).map((t) => [t.studentRef, t]));
@@ -607,7 +626,7 @@ function openRecordGradesModal(c, after) {
             <thead><tr><th>Student</th><th class="num">Score</th><th>Grade</th><th>Note <span class="field-hint" style="display:inline;margin:0;">(optional)</span></th></tr></thead>
             <tbody>
             ${students.map((u) => {
-              const g = computeCourseGrade(c, u.id);
+              const g = computeCourseGrade(gc, u.id);
               const prev = recorded.get(u.id);
               const pct = prev && prev.percent !== null ? prev.percent : g.pct;
               const letter = prev ? prev.grade : g.letter || "I";
