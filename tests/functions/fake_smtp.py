@@ -40,6 +40,11 @@ async def handle(reader, writer):
                 if l in (b".\r\n", b".\n"): break
                 if l.startswith(b".."): l = l[1:]
                 data.append(l)
+            if os.path.exists(OUT.rstrip("/") + ".limit"):
+                # Like Gmail when the account's daily sending limit is used up.
+                say("550-5.4.5 Daily user sending limit exceeded. For more information on Gmail")
+                say("550 5.4.5 sending limits go to https://support.google.com/a/answer/166852 - gsmtp")
+                await writer.drain(); continue
             count += 1
             with open(os.path.join(OUT, f"{count:03d}.eml"), "wb") as f:
                 f.write(b"X-Envelope-To: " + ",".join(rcpt).encode() + b"\r\n" + b"".join(data))

@@ -158,6 +158,31 @@ clearMail();
 await svc.runReminders(sql, fakeFetch, new Date(sunday.getTime() + 3600000));
 check(!mails().some((x) => /Weekly backup/.test(x.subject)), "…only once that week");
 
+// --- 5b. Gmail's daily sending limit (Oct 26, 2026) ------------------------------
+// The weekly backup used to be retried every minute after a failure, which kept
+// the church Gmail over its daily limit. Now: one try, then wait a day.
+const LIMIT = MAILDIR.replace(/\/$/, "") + ".limit";
+const rowsAt = (t) => Number(psql(`select count(*) from public.backup_to_email('${t.toISOString()}')`));
+const setBackupStatus = (detail, t) => psql(`update public.service_status set ok = false, detail = '${detail}', updated_at = '${t.toISOString()}' where key = 'backup_email'`);
+clearMail();
+writeFileSync(LIMIT, "");
+const sunday2 = new Date(sunday.getTime() + 7 * 86400000);
+await svc.runReminders(sql, fakeFetch, sunday2);
+const stL = JSON.parse(psql(`select json_agg(s) from public.service_status s where key = 'backup_email'`));
+check(mails().length === 0 && stL[0].ok === false && /5\.4\.5/.test(stL[0].detail), "Gmail's daily limit is recorded for the weekly backup", JSON.stringify(stL));
+setBackupStatus("Mail server said: 550-5.4.5 Daily user sending limit exceeded.", sunday2);
+const H = 3600000;
+check(rowsAt(new Date(sunday2.getTime() + 60000)) === 0 && rowsAt(new Date(sunday2.getTime() + 23 * H)) === 0, "…so it isn't tried again every minute, or for the rest of the day");
+check(rowsAt(new Date(sunday2.getTime() + 25 * H)) === 1, "…and it's tried again the next day (a missed week isn't skipped)");
+setBackupStatus("The mail server closed the connection.", sunday2);
+check(rowsAt(new Date(sunday2.getTime() + 30 * 60000)) === 0 && rowsAt(new Date(sunday2.getTime() + 61 * 60000)) === 1, "other failures wait an hour before the next try");
+setBackupStatus("Mail server said: 550-5.4.5 Daily user sending limit exceeded.", sunday2);
+rmSync(LIMIT, { force: true });
+await svc.runReminders(sql, fakeFetch, new Date(sunday2.getTime() + 25 * H));
+m = mails().filter((x) => /Weekly backup/.test(x.subject));
+check(m.length === 1, "the missed weekly backup goes out on Monday once Gmail allows it", mails().map((x) => x.subject).join(" | "));
+check(rowsAt(new Date(sunday2.getTime() + 26 * H)) === 0, "…and is then marked sent");
+
 // --- 6. The test-email button --------------------------------------------------
 clearMail();
 setEnv("SUPABASE_URL", "https://fake.supabase.co");

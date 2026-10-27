@@ -1783,14 +1783,23 @@ end $$;
 
 -- Used by the every-minute function: the newest nightly backup, once a
 -- week (Sunday from 3 AM), to email to the church's Gmail as an off-site copy.
+-- Oct 26, 2026: if a week's copy didn't go out, it's sent on any day from
+-- 3 AM, not only on Sunday. After a failed try it waits an hour before
+-- trying again, or 24 hours if Gmail said the daily sending limit was
+-- reached (it used to retry every minute, which kept Gmail blocked).
 create or replace function public.backup_to_email(p_now timestamptz default now())
 returns table (id bigint, taken_at timestamptz, data jsonb)
 language sql stable security definer set search_path = public as $$
   select b.id, b.taken_at, b.data from site_backups b
    where b.kind = 'nightly'
-     and extract(dow from (p_now at time zone 'America/Anchorage')) = 0
      and (p_now at time zone 'America/Anchorage')::time >= time '03:00'
+     and (extract(dow from (p_now at time zone 'America/Anchorage')) = 0
+          or not exists (select 1 from site_backups x where x.emailed_at > p_now - interval '7 days'))
      and not exists (select 1 from site_backups x where x.emailed_at > p_now - interval '6 days')
+     and not exists (select 1 from service_status s
+                      where s.key = 'backup_email' and not s.ok
+                        and s.updated_at > p_now - case when s.detail ~* '5\.4\.5|sending limit|quota exceeded'
+                                                        then interval '24 hours' else interval '1 hour' end)
    order by b.taken_at desc limit 1
 $$;
 create or replace function public.mark_backup_emailed(p_id bigint, p_at timestamptz default now()) returns void

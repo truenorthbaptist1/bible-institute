@@ -301,26 +301,35 @@ function mailPassword(): string {
   try { return (Deno.env.get("GMAIL_APP_PASSWORD") || "").replace(/\s+/g, ""); } catch (_) { return ""; }
 }
 
+// Gmail's "you've sent too much today" answer (550 5.4.5). When Gmail says
+// this, nothing more is tried until the next day (Oct 26, 2026: a failing
+// weekly backup was retried every minute, which kept the church Gmail blocked).
+export const isSendingLimit = (msg: string) => /5\.4\.5|sending limit|quota exceeded/i.test(msg || "");
+
 // Sends several emails over one connection. Returns how many went.
+// If none of them went, the reason is thrown, so it's never counted as sent.
 export async function sendMails(mails: Mail[]): Promise<number> {
   if (!mails.length) return 0;
   const pass = mailPassword();
   if (!pass) throw new Error("Email isn't set up yet (the GMAIL_APP_PASSWORD secret is missing).");
   const smtp = new Smtp(await connectMail());
   let sent = 0;
+  let lastError: Error | null = null;
   try {
     await smtp.open(GMAIL_USER, pass);
     for (const m of mails) {
       try { await smtp.send(GMAIL_USER, m.to, buildMime(m)); sent++; }
       catch (e) {
+        lastError = e as Error;
         console.warn("email to one person failed:", (e as Error).message);
-        if (/closed the connection/.test((e as Error).message)) throw e;
+        if (/closed the connection/.test((e as Error).message) || isSendingLimit((e as Error).message)) throw e;
         try { await smtp.cmd("RSET", [250]); } catch (_) { throw e; }
       }
     }
   } finally {
     await smtp.close();
   }
+  if (sent === 0 && lastError) throw lastError;
   return sent;
 }
 
@@ -678,6 +687,10 @@ export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new 
       await sql`select public.mark_backup_emailed(${b.id}, ${now})`;
       await setStatus(sql, "backup_email", true, `Weekly backup emailed ${now.toISOString()} (${Math.round(gz.length / 1024)} KB)`);
     } catch (e) {
+      // Saved in Settings → Backups (and the function logs). backup_to_email
+      // waits an hour before trying again, or until tomorrow if Gmail said
+      // the daily sending limit was reached.
+      console.warn("weekly backup email:", (e as Error).message);
       await setStatus(sql, "backup_email", false, (e as Error).message);
     }
   });
