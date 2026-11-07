@@ -405,12 +405,16 @@ function weekPlanHtml(units, dues, plan, opts = {}) {
       ` : `<p class="field-hint">Every week will include: ${esc(units.map((u) => u.base).join(", "))}.</p>`}
     </div>`;
 }
+// The teacher's own choice of "same every week" / "one per week" sticks; until
+// they choose, it follows the documents picked (one → same, several → in order),
+// so picking quizzes one at a time still spreads them one per week.
 function defaultWeekPlan(units, weeks, prev) {
-  const mode = prev && prev.mode ? prev.mode : units.length > 1 ? "order" : "same";
-  return { mode, weeks: Array.from({ length: weeks }, (_, i) => (units[i] ? units[i].key : "")) };
+  const chosen = !!(prev && prev.chosen);
+  const mode = chosen ? prev.mode : units.length > 1 ? "order" : "same";
+  return { mode, chosen, weeks: Array.from({ length: weeks }, (_, i) => (units[i] ? units[i].key : "")) };
 }
 function wireWeekPlan(mount, plan, redraw) {
-  mount.querySelectorAll('input[name="wpMode"]').forEach((r) => r.addEventListener("change", () => { plan.mode = r.value; redraw(); }));
+  mount.querySelectorAll('input[name="wpMode"]').forEach((r) => r.addEventListener("change", () => { plan.mode = r.value; plan.chosen = true; redraw(); }));
   mount.querySelectorAll("[data-wp-week]").forEach((s) => s.addEventListener("change", () => { plan.weeks[+s.dataset.wpWeek] = s.value; redraw(); }));
 }
 // The material ids for each week (or the one assignment), from a plan.

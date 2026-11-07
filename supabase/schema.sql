@@ -437,7 +437,9 @@ alter table public.courses
 
 create or replace function public.email_kind_important(p_kind text)
 returns boolean language sql immutable as $$
-  select coalesce(p_kind, '') in ('cancel','message','announcement','due','enrollment','signup','teacher')
+  -- 'welcome' = "your account has been approved": someone waiting to be let
+  -- in hasn't opened the site yet, so the email is how they find out.
+  select coalesce(p_kind, '') in ('cancel','message','announcement','due','enrollment','signup','teacher','welcome')
 $$;
 
 -- Every bell notification can carry a link (where tapping it goes) and is

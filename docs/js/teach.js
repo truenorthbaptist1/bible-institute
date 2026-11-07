@@ -415,23 +415,23 @@ function openMoveClass(c, fromDate) {
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="mvTitle" style="max-width:460px;">
-        <h2 id="mvTitle" style="font-size:1.15rem;margin:0 0 6px;">Move a Class</h2>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="moveTitle" style="max-width:460px;">
+        <h2 id="moveTitle" style="font-size:1.15rem;margin:0 0 6px;">Move a Class</h2>
         <p class="field-hint" style="margin:0 0 12px;">The class on <strong>${esc(longDay(fromDate))}</strong> moves to the day you pick. Students are told, and the lesson goes with it.</p>
-        <label for="mvDate">New day</label>
-        <input type="date" id="mvDate" min="${todayStr()}">
-        <label for="mvNote">Note for students <span class="field-hint" style="display:inline;margin:0;">(optional)</span></label>
-        <input type="text" id="mvNote" maxlength="200" placeholder="e.g. Moved for the revival meetings">
+        <label for="moveDate">New day</label>
+        <input type="date" id="moveDate" min="${todayStr()}">
+        <label for="moveNote">Note for students <span class="field-hint" style="display:inline;margin:0;">(optional)</span></label>
+        <input type="text" id="moveNote" maxlength="200" placeholder="e.g. Moved for the revival meetings">
         <div class="form-actions">
-          <button class="btn btn-primary" id="mvSave">Move the Class</button>
-          <button class="btn btn-ghost" id="mvClose">Never Mind</button>
+          <button class="btn btn-primary" id="moveSave">Move the Class</button>
+          <button class="btn btn-ghost" id="moveClose">Never Mind</button>
         </div>
       </div>
     </div>`;
-  document.getElementById("mvClose").addEventListener("click", closeModal);
-  document.getElementById("mvSave").addEventListener("click", () => {
-    const d = document.getElementById("mvDate").value;
-    const note = document.getElementById("mvNote").value.trim();
+  document.getElementById("moveClose").addEventListener("click", closeModal);
+  document.getElementById("moveSave").addEventListener("click", () => {
+    const d = document.getElementById("moveDate").value;
+    const note = document.getElementById("moveNote").value.trim();
     if (!d) { toast("Pick the new day."); return; }
     if (d === fromDate) { toast("That's the same day."); return; }
     run(async () => {
