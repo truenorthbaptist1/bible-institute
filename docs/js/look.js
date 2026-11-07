@@ -353,7 +353,7 @@ function classGlanceHtml(c) {
   grades.forEach(({ u, g }) => {
     const why = [];
     if (g.pct !== null && g.pct < 70) why.push(`grade ${g.pct}%`);
-    const missing = c.assignments.filter((a) => { const st = getSubmission(c, a, u.id).status; return dueFor(c, a, u.id) < today && st !== "submitted" && st !== "graded"; }).length;
+    const missing = c.assignments.filter((a) => { const st = getSubmission(c, a, u.id).status; return dueFor(c, a, u.id) < today && st !== "submitted" && st !== "graded" && !beforeJoined(c, a, u.id); }).length;
     if (missing >= 2) why.push(`${missing} past due`);
     const recent = days.slice(-4).filter((d) => (c.attMarks[d] || {})[u.id] === "absent").length;
     if (recent >= 2) why.push(`${recent} recent absences`);

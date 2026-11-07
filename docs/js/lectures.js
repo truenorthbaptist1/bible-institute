@@ -54,6 +54,16 @@ function selfPacedShift(c, sid) {
   if (!e || !e.startOn) return 0;
   return daysBetween(c.schedule.startDate, e.startOn);
 }
+// Was this assignment due before the student joined the course? (Nov 7, 2026
+// — found by the simulated semester: a student added in week 4 got zeros for
+// weeks 1–3.) Work due before they enrolled isn't counted against them as
+// missing; anything they do turn in still counts. Not for self-paced courses,
+// whose dates already count from each student's start.
+function beforeJoined(c, a, sid) {
+  if (!c || c.pace === "self") return false;
+  const e = (c.enrollment || {})[sid];
+  return !!(e && e.startOn && a.due < e.startOn);
+}
 // An assignment's due date for one student (teachers' screens; a student's
 // own screens already have their dates).
 function dueFor(c, a, sid) {
@@ -906,7 +916,7 @@ function onlineAttendanceHtml(c, date, list) {
         const st = marks[u.id];
         const best = Math.max(0, ...lessons.map((l) => (l.views[u.id] || {}).pct || 0));
         return `<div class="att-row att-row-auto">
-          <div class="att-who">${avatarHtml(u, 34)}<span>${esc(lastFirst(u.name))}<small>${TRACK_SHORT[effTrack(c, u.id)]}</small></span></div>
+          <div class="att-who">${avatarHtml(u, 34)}<span>${esc(lastFirst(u.name))}${nameTwin(u)}<small>${TRACK_SHORT[effTrack(c, u.id)]}</small></span></div>
           <div class="att-auto">${st ? `<span class="pill ${st === "present" ? "pill-green" : st === "absent" ? "pill-red" : "pill-gray"}">${ATT_LABEL[st]}</span>` : `<span class="pill pill-gold">Waiting</span>`}
             <small>${esc((notes[u.id] || {}).note || (st ? "" : lessons.length ? `${Math.round(best)}% of the recording watched` : "has until a week after the recording is posted"))}</small></div>
         </div>`;

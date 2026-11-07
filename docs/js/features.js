@@ -631,7 +631,7 @@ function drawRecordGradesModal(c, after, gc) {
               const pct = prev && prev.percent !== null ? prev.percent : g.pct;
               const letter = prev ? prev.grade : g.letter || "I";
               return `<tr data-rg-student="${u.id}" data-rg-att="${g.attendance && g.attendance.pct !== null ? g.attendance.pct : ""}">
-                <td><strong>${esc(lastFirst(u.name))}</strong>${prev ? `<div class="ts-small">Recorded ${esc(new Date(prev.recordedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</div>` : ""}</td>
+                <td><strong>${esc(lastFirst(u.name))}</strong>${nameTwin(u)}${prev ? `<div class="ts-small">Recorded ${esc(new Date(prev.recordedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</div>` : ""}</td>
                 <td class="num"><input type="number" class="rg-pct" min="0" max="110" step="0.1" value="${pct === null ? "" : pct}" aria-label="Score for ${esc(u.name)}"></td>
                 <td><select class="rg-grade" aria-label="Grade for ${esc(u.name)}">${GRADE_CHOICES.map(([k, l]) => `<option value="${k}" ${k === letter ? "selected" : ""}>${l}</option>`).join("")}</select></td>
                 <td><input type="text" class="rg-note" maxlength="300" value="${esc(prev ? prev.note : "")}" aria-label="Note for ${esc(u.name)}"></td>

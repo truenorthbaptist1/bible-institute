@@ -1245,6 +1245,61 @@ begin
    order by m.user_id, m.created_at;
 end $$;
 
+-- A due date moved (Edit assignment, Nov 7, 2026): reminders go out again
+-- for the new date, and the course's students are told.
+create or replace function public.on_assignment_due_change() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare c courses%rowtype; s record;
+begin
+  if new.due is distinct from old.due then
+    delete from assignment_reminders where assignment_id = new.id;
+    select * into c from courses where id = new.course_id;
+    if not c.archived then
+      for s in select e.student_id from enrollments e join profiles p on p.id = e.student_id and p.status = 'active'
+                where e.course_id = new.course_id
+                  and not exists (select 1 from submissions x where x.assignment_id = new.id and x.student_id = e.student_id
+                                    and x.status in ('submitted','graded')) loop
+        perform public.notify(s.student_id, 'Due date changed: ' || new.title || ' (' || c.title || ') is now due '
+                              || trim(to_char(new.due, 'Day')) || ', ' || trim(to_char(new.due, 'Month')) || ' ' || extract(day from new.due),
+                              '/', 'due');
+      end loop;
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists on_assignment_due_change on public.assignments;
+create trigger on_assignment_due_change after update of due on public.assignments
+  for each row execute function public.on_assignment_due_change();
+
+-- When Gmail refuses a batch (Nov 7, 2026 — found by the simulated
+-- semester): the notifications claimed for those people go back in the queue,
+-- so nothing is lost while email is down. claim_email_deliveries marked them
+-- (emailed_at = p_at); this un-marks exactly that run's marks. Daily-summary
+-- people get their summary on the next run instead of waiting a day.
+create or replace function public.release_email_deliveries(p_users jsonb, p_at timestamptz)
+returns int
+language plpgsql volatile security definer set search_path = public as $$
+declare v_ids uuid[]; v_n int;
+begin
+  v_ids := array(select (x #>> '{}')::uuid from jsonb_array_elements(coalesce(p_users, '[]'::jsonb)) x);
+  update notifications set emailed_at = null where user_id = any (v_ids) and emailed_at = p_at;
+  get diagnostics v_n = row_count;
+  update profiles set last_digest_on = null
+   where id = any (v_ids) and notify_email = 'daily' and last_digest_on = (p_at at time zone 'America/Anchorage')::date;
+  return v_n;
+end $$;
+
+-- After Gmail refuses (wrong password, sending limit…), wait before trying
+-- again instead of every minute: 15 minutes, or an hour for the sending limit.
+create or replace function public.email_paused(p_now timestamptz default now())
+returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from service_status
+                  where key = 'email' and not ok
+                    and updated_at > p_now - case when detail ~* '5\.4\.5|sending limit|quota exceeded'
+                                                  then interval '1 hour' else interval '15 minutes' end)
+$$;
+
 -- Assignment due-date reminders become ordinary notifications (bell,
 -- phone, and email), at 6 PM the evening before and/or 8 AM the day it's
 -- due, as each student chose. Returns how many were added.
@@ -2376,6 +2431,8 @@ revoke execute on function public.claim_attendance_reminders() from public, anon
 revoke execute on function public.notify(uuid, text, text, text) from public, anon, authenticated;
 revoke execute on function public.claim_push_deliveries(timestamptz) from public, anon, authenticated;
 revoke execute on function public.claim_email_deliveries(timestamptz) from public, anon, authenticated;
+revoke execute on function public.release_email_deliveries(jsonb, timestamptz) from public, anon, authenticated;
+revoke execute on function public.email_paused(timestamptz) from public, anon, authenticated;
 revoke execute on function public.queue_assignment_reminders(timestamptz) from public, anon, authenticated;
 revoke execute on function public.backup_snapshot() from public, anon, authenticated;
 revoke execute on function public.take_backup(text) from public, anon, authenticated;
@@ -2584,7 +2641,10 @@ begin
           continue;
         end if;
 
-        if v_ok or v_closed then
+        -- A class held before the student joined is never marked Absent or
+        -- Excused for them (Nov 7, 2026: a week-4 joiner was marked Absent for
+        -- weeks 1–3); if they watch it anyway, it still counts.
+        if v_ok or (v_closed and not (c.pace = 'calendar' and d < e.start_on)) then
           insert into attendance_days (course_id, class_date, held, teacher_taken)
           values (c.id, d, true, false) on conflict do nothing;
           insert into attendance (course_id, class_date, student_id, status, auto, note)

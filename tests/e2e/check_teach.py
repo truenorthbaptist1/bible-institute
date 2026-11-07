@@ -416,7 +416,8 @@ with sync_playwright() as p:
     # Everything taught today becomes yesterday's class, with its live-stream recording.
     psql("""update teach_events set class_date = class_date - 1, at = at - interval '1 day' where course_id='c1';
       update live_chat set class_date = class_date - 1, created_at = created_at - interval '1 day', answered_at = answered_at - interval '1 day' where course_id='c1';
-      update course_plan set taught_on = taught_on - 1 where course_id='c1' and taught_on is not null;""")
+      update course_plan set taught_on = taught_on - 1 where course_id='c1' and taught_on is not null;
+      update enrollments set start_on = start_on - 1 where course_id='c1';""")
     yday = psql("select current_date - 1")
     lid = psql(f"""insert into lessons (course_id, video_id, title, class_date, stream_started_at, status)
       select 'c1', 'replayVid01', 'Hermeneutics — class stream', '{yday}', min(at) - interval '60 seconds', 'ok' from teach_events where course_id='c1' returning id""")

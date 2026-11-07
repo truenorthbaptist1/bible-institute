@@ -43,3 +43,33 @@ About 620 checks. Three bugs found and fixed (commit with this file):
    every week (the "same each week" mode stuck from the first pick).
 3. People whose sign-up was approved weren't emailed (the "welcome" notice
    wasn't one of the always-emailed kinds).
+
+## Round 2 — a messy term (Nov 7, 2026)
+
+`ROUND=round2.py sh tests/semester/run_semester.sh` (set `SIM=/tmp/sim2` to keep
+round 1's results). "Romans", hybrid, Tue/Thu 8:30 PM, Oct 2027 → Jan 2028
+(daylight saving ends, Thanksgiving, Christmas, New Year), 35 students, with:
+a student joining in week 4, a track switch, a student in Panama, accented and
+duplicate names, a deleted account, a drop and re-enroll, a substitute teacher,
+a stream that starts late, a stream that splits in two, a recording posted 10
+days late, a deleted video, YouTube's daily limit running out, Gmail refusing
+the password for 4 days, a mid-term time change, a move onto a day that
+already has class, a make-up added then canceled, a cancel after attendance,
+points changed after grading, extra credit, a graded assignment deleted,
+weights that add to 90, an Incomplete, and final grades.
+`check` lines must pass; `observe` lines are written to round2_observed.json
+for a person to read.
+
+Found and fixed:
+1. Notices created while Gmail was refusing were marked sent and lost. They
+   now go back in the queue, and retries wait 15 minutes (an hour for the
+   sending limit) instead of every minute.
+2. A student added mid-term got zeros for work due before they joined, and
+   online students were marked Absent for classes before they joined.
+3. Assignments couldn't be edited after they were made (due date, points,
+   weight, name, instructions, opening date). Now there's an Edit button; for a
+   weekly series each week's due date can be moved, and students are told.
+4. Two students with the same name looked identical on staff screens; their
+   emails now show under the name.
+5. A recording uploaded late lands on the latest class day; the teacher now
+   sees "No recording for <day>" under Needs Your Attention.

@@ -120,6 +120,7 @@ function thisWeekItems() {
     if (!d || d > weekOut) return;
     const sub = getSubmission(c, a, sid);
     const done = sub.status === "submitted" || sub.status === "graded";
+    if (!done && beforeJoined(c, a, sid)) return;   // due before they enrolled
     const lock = assignmentLock(a);
     if (done && d < today) return;          // finished and past: nothing to show
     if (!done && d < addDaysISO(today, -21)) return; // long-forgotten: leave to My Grades
@@ -146,6 +147,7 @@ function thisWeekItems() {
     open.forEach((l) => {
       const d = l.classDate;
       if (!d || seen.has(d) || d > today || (d === today && !classIsOver(c)) || d < addDaysISO(today, -21)) return;
+      if (d < ((c.enrollment[sid] || {}).startOn || "")) return;   // before they joined
       if (watchedPct(l, sid) >= WATCH_SHARE) return;
       const mark = (c.attMarks[d] || {})[sid];
       const missedIt = track === "classroom" ? mark === "absent" : !["present", "late", "excused"].includes(mark);
@@ -339,6 +341,22 @@ function attentionItems() {
       text: days.length === 1 ? `Attendance not taken for ${fmtDay(last)}` : `Attendance not taken for ${days.length} class days`,
       sub: c.title, act: "Take Attendance" });
   });
+  // A recent class with no recording yet (Nov 7, 2026). Online students can't
+  // be counted for it, and a recording uploaded late lands on the latest class
+  // day instead — so when another day has two, say so: the teacher sets the
+  // right class day on the Lectures tab.
+  taught.filter((c) => courseHasLectures(c) && c.format !== "in_person" && c.pace !== "self").forEach((c) => {
+    const today = todayStr();
+    const per = {};
+    c.lessons.filter((l) => playableLesson(l) && l.classDate).forEach((l) => { per[l.classDate] = (per[l.classDate] || 0) + 1; });
+    const missing = classDates(c).filter((d) => d < addDaysISO(today, -1) && d >= addDaysISO(today, -21) && !per[d]);
+    if (!missing.length) return;
+    const doubled = Object.keys(per).filter((d) => per[d] > 1 && d > missing[0]).sort();
+    items.push({ kind: "recordings", course: c, n: missing.length,
+      text: missing.length === 1 ? `No recording for ${fmtDay(missing[0])}` : `No recording for ${missing.length} class days`,
+      sub: doubled.length ? `${c.title} — ${fmtDay(doubled[0])} has ${per[doubled[0]]}; if one belongs to ${fmtDay(missing[0])}, set its class day` : `${c.title} — online students can't be counted until it's posted`,
+      act: "Lectures" });
+  });
   // Enrollment requests for the classes I teach (Admins also see classes with no teacher yet).
   courses.filter((c) => !c.archived && (iTeach(c) || (isAdmin() && !c.facultyId)) && c.enrollmentRequests.length).forEach((c) => {
     const n = c.enrollmentRequests.length;
@@ -368,7 +386,7 @@ function myTeachingClasses() {
 function attentionCardHtml() {
   const items = attentionItems();
   const classes = myTeachingClasses();
-  const ico = { grade: "cap", attendance: "check", requests: "users", messages: "mail", signups: "user", setup: "gear" };
+  const ico = { grade: "cap", attendance: "check", requests: "users", messages: "mail", signups: "user", setup: "gear", recordings: "video" };
   return `<div class="card week-card attention-card" id="needsAttention">
     <div class="week-head">
       <h2>${icon("bell")} Needs Your Attention</h2>
@@ -402,6 +420,7 @@ function wireAttention(main) {
     if (it.kind === "messages") return go("messages");
     if (it.kind === "signups") return go("settings");
     if (it.kind === "setup") return go("manage", it.course.id, "setup");
+    if (it.kind === "recordings") return go("manage", it.course.id, "lectures");
   }));
   card.querySelectorAll("[data-attn-class]").forEach((b) => b.addEventListener("click", () => {
     const [cid, date] = b.dataset.attnClass.split("|");

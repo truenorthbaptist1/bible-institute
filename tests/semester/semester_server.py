@@ -6,6 +6,10 @@ import os, sys, json
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "e2e"))
 import server  # noqa: E402
 
+class AnyPassword(dict):
+    def get(self, k, d=None):
+        return dict.get(self, k, "Faithful-2027")
+server.PASSWORDS = AnyPassword()
 PEOPLE = ["thomas.reed@example.com", "ruth.bailey@example.com", "caleb.dawson@example.com", "silas.monroe@example.com",
           "hannah.pruitt@example.com", "jonah.keller@example.com"]
 for e in PEOPLE:

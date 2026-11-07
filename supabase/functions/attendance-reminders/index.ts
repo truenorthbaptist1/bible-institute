@@ -634,8 +634,11 @@ export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new 
     }
   }
 
-  // 4. … and email.
-  const emails = (await safely("email deliveries", () => sql`select * from public.claim_email_deliveries(${now})`)) as Note[] | null;
+  // 4. … and email. If Gmail refused the last try, wait a little before the
+  //    next (email_paused); if it refuses this batch, the notifications go
+  //    back in the queue (release_email_deliveries) so they're sent later.
+  const paused = !!(await safely("email pause", async () => (await sql`select public.email_paused(${now}) as p`)[0].p));
+  const emails = paused ? null : (await safely("email deliveries", () => sql`select * from public.claim_email_deliveries(${now})`)) as Note[] | null;
   if (emails && emails.length) {
     const mails: Mail[] = [];
     for (const [, list] of groupByUser(emails)) {
@@ -649,11 +652,13 @@ export async function runReminders(sql: Sql, fetchImpl = fetch, now: Date = new 
     } catch (e) {
       console.warn("email:", (e as Error).message);
       await setStatus(sql, "email", false, (e as Error).message);
+      const users = [...new Set(emails.map((x) => x.user_id))];
+      await safely("email release", () => sql`select public.release_email_deliveries(${JSON.stringify(users)}::jsonb, ${now})`);
     }
   }
 
   // 4b. Church library: due-date reminders to borrowers.
-  await safely("library reminders", async () => {
+  if (!paused) await safely("library reminders", async () => {
     try {
       out.library = await sendLibraryReminders(sql, now);
     } catch (e) {

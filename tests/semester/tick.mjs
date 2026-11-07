@@ -21,6 +21,7 @@ const yt = () => (existsSync(SIM + "/youtube.json") ? JSON.parse(readFileSync(SI
 const fakeFetch = async (url, opts) => {
   const u = new URL(String(url));
   if (u.host === "yt.test") {
+    if (existsSync(SIM + "/yt_quota")) return new Response(JSON.stringify({ error: { message: "The request cannot be completed because you have exceeded your quota.", errors: [{ reason: "quotaExceeded" }] } }), { status: 403 });
     const db = yt();
     if (u.pathname.endsWith("/playlistItems")) {
       const pl = db.playlists[u.searchParams.get("playlistId")];
@@ -43,6 +44,8 @@ const fakeFetch = async (url, opts) => {
   }
   throw new Error("unexpected fetch " + url);
 };
+// Round-2 switches: $SIM/gmail_off → Gmail rejects the password; $SIM/yt_quota → YouTube's daily limit is used up.
+if (existsSync(SIM + "/gmail_off")) setEnv("GMAIL_APP_PASSWORD", "wrong password");
 for (const iso of process.argv.slice(2)) {
   const out = await svc.runReminders(sql, fakeFetch, new Date(iso));
   console.log(JSON.stringify({ at: iso, ...out }));

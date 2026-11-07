@@ -656,6 +656,9 @@ const DB = {
     if (links.length) must(await sb.from("assignment_materials").insert(links));
     return rows.map((r) => r.id);
   },
+  async updateAssignment(id, patch) {
+    must(await sb.from("assignments").update(patch).eq("id", id));
+  },
   async setAssignmentMaterials(assignmentId, materialIds) {
     must(await sb.from("assignment_materials").delete().eq("assignment_id", assignmentId));
     const ids = [...new Set(materialIds)];

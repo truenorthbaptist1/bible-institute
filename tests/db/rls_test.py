@@ -863,7 +863,7 @@ outsider = mkuser("otto@example.com", "Otto Outsider")
 ALL_DAYS = "array['Mon','Tue','Wed','Thu','Fri','Sat','Sun']"
 admin(f"""insert into public.courses (id, title, faculty_id, sched_mode, sched_start, sched_weeks, sched_days, sched_time, attendance_on, attendance_weight, format, playlist_id)
           values ('hy', 'Hybrid Hermeneutics', '{phil}', 'scheduled', public.local_today() - 20, 8, {ALL_DAYS}, '19:00', true, 10, 'hybrid', 'PLabc123');
-          insert into public.enrollments (course_id, student_id) values ('hy', '{rv}'), ('hy', '{lv}'), ('hy', '{cl}');
+          insert into public.enrollments (course_id, student_id, start_on) values ('hy', '{rv}', public.local_today() - 20), ('hy', '{lv}', public.local_today() - 20), ('hy', '{cl}', public.local_today() - 20);
           insert into public.courses (id, title, faculty_id, archived) values ('pastc', 'Past Course', '{phil}', true);""")
 check("Students can't change their own enrollment row directly", False,
       f"update public.enrollments set track = 'live' where course_id = 'hy' and student_id = '{rv}'", rv)
@@ -931,6 +931,12 @@ admin(f"update public.lessons set added_at = now() - interval '30 days' where id
 admin("select public.settle_online_attendance('hy')")
 check("Week passed without watching → Absent", True,
       f"select status || ',' || note from public.attendance where course_id = 'hy' and student_id = '{lv}' and class_date = public.local_today() - 20", lv, expect_out="absent,Not watched within a week")
+late = mkuser("lena@example.com", "Lena Late")
+admin(f"insert into public.enrollments (course_id, student_id, track, track_chosen) values ('hy', '{late}', 'live', true)")
+admin("select public.settle_online_attendance('hy')")
+check("A student who joins mid-course isn't marked Absent for classes before they joined", True,
+      f"select count(*) from public.attendance where course_id = 'hy' and student_id = '{late}'", late, expect_out=0)
+admin(f"delete from public.enrollments where course_id = 'hy' and student_id = '{late}'")
 
 # live
 check("Live check-ins don't count when class isn't on", True, "select public.record_live_minute('hy') ->> 'counted'", lv, expect_out="false")

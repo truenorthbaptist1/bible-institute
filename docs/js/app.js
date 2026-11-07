@@ -144,6 +144,15 @@ function isLateSubmission(assignment, sub) {
   return !!(sub && sub.submittedAt && due && sub.submittedAt > due);
 }
 
+// Two people with the same name (Nov 7, 2026 — two "Mary Smith"s looked
+// identical on the grade sheet): on staff screens, add their email under the
+// name so the teacher can tell them apart. Students never see emails.
+function nameTwin(u) {
+  if (!u || role === "student" || !u.email) return "";
+  const n = (u.name || "").trim().toLowerCase();
+  return users.some((x) => x.id !== u.id && (x.name || "").trim().toLowerCase() === n)
+    ? `<small class="name-twin" style="display:block;font-weight:400;color:var(--muted-foreground);font-size:.75rem;">${esc(u.email)}</small>` : "";
+}
 function userName(id) {
   const u = users.find((x) => x.id === id);
   return u ? u.name : "Unknown";
@@ -2734,6 +2743,9 @@ function renderGradeSheet(main) {
                         if (sub.status === "submitted") {
                           return `<td><button class="cell-grade cell-turnedin" data-cell="${c.id}|${a.id}|${u.id}">Needs grading${lateDot}</button></td>`;
                         }
+                        if (beforeJoined(c, a, u.id)) {
+                          return `<td><span class="cell-status cell-notdue" title="Due before this student joined — not counted">—</span></td>`;
+                        }
                         if (dueFor(c, a, u.id) < todayStr()) {
                           return `<td><span class="cell-status cell-missing">Missing</span></td>`;
                         }
@@ -2744,7 +2756,7 @@ function renderGradeSheet(main) {
                   .join("");
                 const letterCls = letterPillClass(grade.letter);
                 return `<tr>
-                <td class="gs-sticky"><strong>${esc(u.name)}</strong></td>
+                <td class="gs-sticky"><strong>${esc(u.name)}</strong>${nameTwin(u)}</td>
                 ${cells}
                 ${c.att.on ? `<td title="${grade.attendance ? `${grade.attendance.counts.present} present · ${grade.attendance.counts.late} late · ${grade.attendance.counts.absent} absent · ${grade.attendance.counts.excused} excused` : ""}">${grade.attendance && grade.attendance.pct !== null ? `${grade.attendance.pct}%` : `<span class="cell-status cell-notdue">—</span>`}</td>` : ""}
                 <td style="text-align:right;">${grade.pct === null ? `<span style="color:var(--muted-foreground);">Not yet</span>` : `<strong>${grade.pct}%</strong> <span class="pill ${letterCls}">${grade.letter}</span>`}</td>
@@ -3616,6 +3628,7 @@ function assignmentCategories(course) {
 function assignmentOutcome(course, a, studentId) {
   const sub = getSubmission(course, a, studentId);
   if (sub.status === "graded") return (sub.score ?? 0) / (a.points || 1);
+  if (beforeJoined(course, a, studentId)) return null;  // due before they enrolled
   if (dueFor(course, a, studentId) < todayStr() && sub.status !== "submitted") return 0;
   return null;
 }
@@ -3687,6 +3700,7 @@ function renderAssignmentsList(c) {
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
             ${teach ? `<button class="btn btn-ghost btn-sm" data-view-roster="${a.id}">View Submissions</button>` : ""}
+            ${iManage(c) ? `<button class="btn btn-ghost btn-sm" data-edit-assignment="${a.id}">Edit</button>` : ""}
             ${iManage(c) ? `<button class="btn btn-ghost btn-sm" data-asg-docs="${a.id}">Documents</button>` : ""}
             <button class="btn btn-ghost btn-sm" data-delete-assignment="${a.id}" aria-label="Delete ${esc(a.title)}">Delete</button>
           </div>
@@ -3705,6 +3719,7 @@ function renderAssignmentsList(c) {
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
           <button class="btn btn-ghost btn-sm" data-view-series="${g.seriesId}">View Weeks</button>
+          ${iManage(c) ? `<button class="btn btn-ghost btn-sm" data-edit-series="${g.seriesId}">Edit</button>` : ""}
           ${iManage(c) ? `<button class="btn btn-ghost btn-sm" data-series-docs="${g.seriesId}">Documents</button>` : ""}
           <button class="btn btn-ghost btn-sm" data-delete-series="${g.seriesId}" aria-label="Delete series ${esc(g.seriesLabel)}">Delete</button>
         </div>
@@ -3722,6 +3737,12 @@ function renderAssignmentsList(c) {
   });
   wrap.querySelectorAll("[data-series-docs]").forEach((btn) => {
     btn.addEventListener("click", () => openAssignmentDocsModal(c, c.assignments.filter((a) => a.seriesId === btn.dataset.seriesDocs)));
+  });
+  wrap.querySelectorAll("[data-edit-assignment]").forEach((btn) => {
+    btn.addEventListener("click", () => openEditAssignmentModal(c, [c.assignments.find((a) => a.id === btn.dataset.editAssignment)]));
+  });
+  wrap.querySelectorAll("[data-edit-series]").forEach((btn) => {
+    btn.addEventListener("click", () => openEditAssignmentModal(c, c.assignments.filter((a) => a.seriesId === btn.dataset.editSeries)));
   });
   wireDocChips(c, wrap);
   const deleteAssignments = async (items, label) => {
@@ -3926,6 +3947,84 @@ function openAddAssignmentModal(course) {
       closeModal();
     }, null,
       { success: rows.length === 1 ? "Assignment added." : `${rows.length} weekly assignments added.` });
+  });
+}
+
+// Change an assignment after it's made (Nov 7, 2026): its name, instructions,
+// points, weight, due date(s) and opening date. For a weekly series, items is
+// every week: name, instructions, points and weight apply to all of them, and
+// each week's due date can be moved on its own (a canceled class, a break…).
+// Turned-in work and grades stay as they are.
+function openEditAssignmentModal(course, items) {
+  items = items.filter(Boolean).slice().sort((a, b) => a.due.localeCompare(b.due));
+  if (!items.length) return;
+  const series = items.length > 1 || !!items[0].seriesId;
+  const first = items[0];
+  const name = series ? (first.seriesLabel || first.title) : first.title;
+  const graded = items.reduce((n, a) => n + (a.submissions || []).filter((s) => s.status === "graded").length, 0);
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="eaTitle" style="max-width:560px;">
+        <h2 id="eaTitle" style="font-size:1.15rem;margin:0 0 6px;">Edit ${series ? "Weekly Assignment" : "Assignment"}</h2>
+        <p class="field-hint" style="margin:0 0 10px;">Turned-in work and grades stay as they are.${series ? " Name, instructions, points and weight apply to every week." : ""}</p>
+        <label for="eaName">${series ? "Series name" : "Title"}</label>
+        <input type="text" id="eaName" maxlength="200" value="${esc(name)}">
+        <label for="eaInstr">Instructions <span class="field-optional">(optional)</span></label>
+        <textarea id="eaInstr" rows="3">${esc(first.instructions || "")}</textarea>
+        <div class="form-row">
+          <div><label for="eaPoints">Points possible</label><input type="number" id="eaPoints" min="1" max="200" value="${first.points}"></div>
+          <div><label for="eaWeight">Grade weight (%)</label><input type="number" id="eaWeight" min="0" max="100" value="${first.weight || 0}"></div>
+        </div>
+        <label>${series ? "Due dates" : "Due date"}</label>
+        <div class="ea-dues">
+          ${items.map((a, i) => `<div class="form-row" style="align-items:center;">
+            ${series ? `<div style="flex:0 0 90px;font-size:.88rem;">Week ${i + 1}</div>` : ""}
+            <div><input type="date" data-ea-due="${a.id}" value="${a.due}" aria-label="Due date${series ? ` for week ${i + 1}` : ""}"></div>
+            ${a.openDate ? `<div class="field-hint" style="margin:0;">opens ${esc(fmtDay(a.openDate, { month: "short", day: "numeric" }))}${series ? " — moves with it" : ""}</div>` : ""}
+          </div>`).join("")}
+        </div>
+        ${!series ? `<label for="eaOpen">Locked until <span class="field-optional">(optional — leave empty to allow turning in any time)</span></label>
+        <input type="date" id="eaOpen" value="${first.openDate || ""}">` : ""}
+        <div class="form-actions">
+          <button class="btn btn-primary" id="eaSave">Save Changes</button>
+          <button class="btn btn-ghost" id="eaClose">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("eaClose").addEventListener("click", closeModal);
+  document.getElementById("eaSave").addEventListener("click", async () => {
+    const newName = document.getElementById("eaName").value.trim();
+    if (!newName) { document.getElementById("eaName").focus(); return; }
+    const points = parseInt(document.getElementById("eaPoints").value, 10);
+    if (!(points >= 1)) { toast("Points must be at least 1."); document.getElementById("eaPoints").focus(); return; }
+    const weight = Math.max(0, Math.min(100, parseFloat(document.getElementById("eaWeight").value) || 0));
+    const instructions = document.getElementById("eaInstr").value.trim();
+    const dues = {};
+    for (const a of items) {
+      const v = root.querySelector(`[data-ea-due="${a.id}"]`).value;
+      if (!v) { toast("Every due date needs a date."); return; }
+      dues[a.id] = v;
+    }
+    if (points !== first.points && graded && !(await askConfirm({ title: "Change the points?",
+      text: `${graded} grade${graded === 1 ? " has" : "s have"} already been given out of ${first.points}. They keep their scores (for example ${first.points - 1}/${first.points} becomes ${first.points - 1}/${points}), so check them after saving.`, ok: "Change Points" }))) return;
+    const patches = items.map((a) => {
+      const p = { instructions, points, weight, due: dues[a.id] };
+      if (series) {
+        const oldLabel = a.seriesLabel || name;
+        p.series_label = newName;
+        p.title = a.title.startsWith(oldLabel) ? newName + a.title.slice(oldLabel.length) : a.title;
+        // a week that unlocks some days before it's due keeps that gap
+        if (a.openDate) p.open_date = addDaysISO(a.openDate, daysBetween(a.due, dues[a.id]));
+      } else {
+        p.title = newName;
+        const open = document.getElementById("eaOpen").value || null;
+        p.open_date = open;
+        p.submit_anytime = !open;
+      }
+      return [a.id, p];
+    });
+    run(async () => { for (const [id, p] of patches) await DB.updateAssignment(id, p); closeModal(); }, null, { success: "Assignment updated." });
   });
 }
 
@@ -4244,7 +4343,7 @@ function renderAttendance(main) {
     <div class="card att-roster">
       ${roster.map((u) => `
         <div class="att-row" data-student="${u.id}">
-          <div class="att-who">${avatarHtml(u, 34)}<span>${esc(lastFirst(u.name))}${((c.attNotes[date] || {})[u.id] || {}).auto ? `<small class="att-madeup">${esc(c.attNotes[date][u.id].note)}</small>` : ""}</span></div>
+          <div class="att-who">${avatarHtml(u, 34)}<span>${esc(lastFirst(u.name))}${nameTwin(u)}${((c.attNotes[date] || {})[u.id] || {}).auto ? `<small class="att-madeup">${esc(c.attNotes[date][u.id].note)}</small>` : ""}</span></div>
           <div class="att-marks" role="radiogroup" aria-label="Attendance for ${esc(u.name)}">
             ${ATT_STATUSES.map((s) => `<button type="button" role="radio" aria-checked="${attDraft.marks[u.id] === s}" class="att-mark att-mark-${s} ${attDraft.marks[u.id] === s ? "on" : ""}" data-mark="${s}" title="${ATT_LABEL[s]}"><span class="att-full">${ATT_LABEL[s]}</span><span class="att-short">${ATT_LABEL[s][0]}</span></button>`).join("")}
           </div>

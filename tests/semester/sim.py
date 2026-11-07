@@ -42,6 +42,14 @@ def log(msg):
     print(f"[{NOW[0].strftime('%a %b %d %H:%M') if NOW[0] else '--'}] {msg}", flush=True)
 
 
+OBSERVED = []   # facts worth a human look (not pass/fail)
+
+
+def observe(area, what, value):
+    OBSERVED.append((NOW[0].isoformat() if NOW[0] else "", area, what, value))
+    log(f"• {area}: {what} → {str(value)[:300]}")
+
+
 def check(cond, area, what, detail=""):
     if cond:
         CHECKS["pass"] += 1
@@ -132,9 +140,8 @@ def mails():
         return out
     import email
     from email import policy
-    for f in sorted(os.listdir(MAILDIR)):
-        if not f.endswith(".eml"):
-            continue
+    files = sorted(os.path.relpath(os.path.join(dp, f), MAILDIR) for dp, _, fs in os.walk(MAILDIR) for f in fs if f.endswith(".eml"))
+    for f in files:
         raw = open(os.path.join(MAILDIR, f), "rb").read()
         m = email.message_from_bytes(raw, policy=policy.default)
         to = (re.search(rb"^X-Envelope-To: (.*)$", raw, re.M) or [b"", b""])[1].decode().strip()
@@ -166,7 +173,7 @@ class Browsers:
         """Opens the site as `who` (a Person) at the simulated time, signed in."""
         ctx = self.browser.new_context(
             viewport={"width": 390, "height": 844} if mobile else {"width": 1280, "height": 900},
-            is_mobile=mobile, has_touch=mobile, timezone_id="America/Anchorage", accept_downloads=True)
+            is_mobile=mobile, has_touch=mobile, timezone_id=getattr(who, "tz", "America/Anchorage"), accept_downloads=True)
         self.open.append(ctx)
         ctx.clock.install(time=NOW[0].astimezone(dt.timezone.utc).timestamp())
         ctx.add_init_script("window.TNBBI_TEST_NO_TOUR = true; window.TNBBI_TEST_LIVE_BEAT = 3000;")
@@ -262,8 +269,8 @@ def reveal_tab(page, tab):
 
 
 class Person:
-    def __init__(self, name, email, google=False, password="Faithful-2027"):
-        self.name, self.email, self.google, self.password = name, email, google, password
+    def __init__(self, name, email, google=False, password="Faithful-2027", tz="America/Anchorage"):
+        self.name, self.email, self.google, self.password, self.tz = name, email, google, password, tz
         self.id = None
 
     def load_id(self):
@@ -289,6 +296,7 @@ def restore(name):
         src = os.path.join(SIM + f".snap_{name}", f)
         dst = os.path.join(SIM, f)
         if os.path.isdir(src):
-            shutil.rmtree(dst, ignore_errors=True); shutil.copytree(src, dst)
+            # keep this run's own mail folder; bring back the saved mail beside it
+            shutil.copytree(src, dst, dirs_exist_ok=True)
         elif os.path.exists(src):
             shutil.copy(src, dst)
