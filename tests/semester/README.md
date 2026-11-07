@@ -73,3 +73,37 @@ Found and fixed:
    emails now show under the name.
 5. A recording uploaded late lands on the latest class day; the teacher now
    sees "No recording for <day>" under Needs Your Attention.
+
+## Round 3 — every feature, file by file (Nov 7, 2026)
+
+Rounds 1–2 and the repo's browser tests were rerun with coverage on
+(`COVERAGE_DIR=/tmp/cov`, then `python3 tests/semester/coverage.py`), which
+lists, per file in docs/js, the named functions that never ran, and the
+database functions never called (Postgres `track_functions = 'all'`; plain
+`language sql` functions are inlined and never counted). `cov_run.py` adds
+coverage to any existing browser test script.
+
+`ROUND=round3.py sh tests/semester/run_semester.sh` then drives what was
+missing, as real people: sign-up with email confirmation, password reset,
+sign-out and the idle sign-out, enrollment requests (withdraw, deny, approve
+all, add student), editing/deleting courses and accounts, profiles and photos,
+document and file viewers, series and rosters, calendars and phone calendar
+links, message export, the Resource Library, notification links and the Back
+button, the Study Bible, every editor toolbar button and table tool, text
+size, the tour, Help search, transcripts (PDF, CSV, hand entries, a W), past
+records (import, link, remove), canceling and restoring a class, archiving,
+announcements, discussion, Teachers-only documents, assignment documents,
+memory verse, lectures (add, date, replace, hide, remove), the lesson plan,
+clearing attendance, self-paced start dates, changing how a student attends,
+email preferences, backups, an Admin recording grades, the librarian's
+"Same as…", and the "new version" bar. `dev.sh` reruns single phases fast.
+
+Coverage after all rounds: 682 of 709 named functions in docs/js. What's left
+is phone push (headless Chromium can't subscribe), the YouTube player's error
+messages, the slide grid, and code no screen uses any more (courseTile,
+renderPlaceholder, attendanceTodayCount, studentCourseCardHtml's helpers,
+DB.removeClassDay).
+
+Found and fixed: after a search in quotes ("born again"), the Study Bible
+left "Exact phrase" selected, so the next search without quotes found
+nothing. Quotes now apply to that search only.

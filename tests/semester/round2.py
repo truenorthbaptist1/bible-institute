@@ -602,6 +602,7 @@ if __name__ == "__main__":
             globals()["phase_" + ph]()
     finally:
         B.close_all()
+        save_coverage(os.path.splitext(os.path.basename(__file__))[0] + "-" + "-".join(x.replace(":", "_") for x in phases))
         print("\nCHECKS:", CHECKS)
         json.dump({"checks": CHECKS, "findings": FINDINGS, "js_errors": JS_ERRORS, "observed": OBSERVED},
                   open(os.path.join(SIM, "round2_results.json"), "w"), indent=1, default=str)

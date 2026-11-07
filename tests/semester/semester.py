@@ -835,7 +835,8 @@ def phase_end():
     feed = json.dumps(qj(f"select * from public.calendar_feed_events('{tok}')"))
     check(str(CANCELED) not in feed or "cancel" in feed.lower(), "calendar", "the snow day isn't on the phone calendar as a class", "")
     check(str(MOVED_TO) in feed and str(MAKEUP) in feed, "calendar", "the moved class and the make-up day are on the phone calendar", feed[:300])
-    check(str(MOVED_FROM) not in feed, "calendar", "the old Mar 17 day isn't on the phone calendar", "")
+    ev = qj(f"select kind, day::text from public.calendar_feed_events('{tok}') where day = '{MOVED_FROM}'")
+    check(all(e["kind"] == "canceled" for e in ev), "calendar", "the old Mar 17 day shows only as canceled on the phone calendar", ev)
 
     # Copy the course for the fall term.
     set_clock(ak(2027, 5, 5, 19, 0))
@@ -899,7 +900,7 @@ def phase_end():
     STATE["emails_per_person"] = per
     nb = qj("select p.name, count(*) n, count(*) filter (where not n.read) unread from notifications n join profiles p on p.id = n.user_id group by 1 order by 2 desc")
     log("Bell notifications per person: " + json.dumps(nb))
-    dup = qj("select p.name, n.subject, count(*) c from notifications n join profiles p on p.id = n.user_id group by 1, 2 having count(*) > 1 order by 3 desc limit 10")
+    dup = qj("select p.name, n.subject, (n.created_at at time zone 'America/Anchorage')::date d, count(*) c from notifications n join profiles p on p.id = n.user_id group by 1, 2, 3 having count(*) > 1 order by 4 desc limit 10")
     check(not dup, "notifications", "nobody gets the same notice twice", dup)
     json.dump({"emails": per, "bell": nb, "fall": STATE.get("fall_lectures")}, open(os.path.join(SIM, "summary.json"), "w"), indent=1, default=str)
 
@@ -915,6 +916,7 @@ if __name__ == "__main__":
             globals()["phase_" + ph]()
     finally:
         B.close_all()
+        save_coverage(os.path.splitext(os.path.basename(__file__))[0] + "-" + "-".join(x.replace(":", "_") for x in phases))
         print("\nCHECKS:", CHECKS)
         json.dump({"checks": CHECKS, "findings": FINDINGS, "js_errors": JS_ERRORS}, open(os.path.join(SIM, "results.json"), "w"), indent=1)
         for f in FINDINGS:

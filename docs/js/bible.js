@@ -369,11 +369,11 @@ function renderStudyBible(main) {
     </div>
     <form class="sb-searchbar card" id="sbSearchForm" role="search">
       <span class="sb-search-icon">${icon("search")}</span>
-      <input id="sbQuery" type="search" autocomplete="off" spellcheck="false" placeholder="A reference (Rom 8:28), words (grace through faith), or a Strong's number (G26)" value="${esc(sbMode === "search" ? sbSearch.q : sbMode === "concordance" ? sbConc.code || "" : "")}" aria-label="Search the Bible">
+      <input id="sbQuery" type="search" autocomplete="off" spellcheck="false" placeholder="A reference (Rom 8:28), words (grace through faith), or a Strong's number (G26)" value="${esc(sbMode === "search" ? (sbSearch.typed || sbSearch.q) : sbMode === "concordance" ? sbConc.code || "" : "")}" aria-label="Search the Bible">
       <select id="sbSearchMode" aria-label="How to match words">
-        <option value="all" ${sbSearch.mode === "all" ? "selected" : ""}>All words</option>
-        <option value="phrase" ${sbSearch.mode === "phrase" ? "selected" : ""}>Exact phrase</option>
-        <option value="any" ${sbSearch.mode === "any" ? "selected" : ""}>Any word</option>
+        <option value="all" ${(sbSearch.picked || sbSearch.mode) === "all" ? "selected" : ""}>All words</option>
+        <option value="phrase" ${(sbSearch.picked || sbSearch.mode) === "phrase" ? "selected" : ""}>Exact phrase</option>
+        <option value="any" ${(sbSearch.picked || sbSearch.mode) === "any" ? "selected" : ""}>Any word</option>
       </select>
       <select id="sbSearchScope" aria-label="Where to search">
         <option value="all" ${sbSearch.scope === "all" ? "selected" : ""}>Whole Bible</option>
@@ -441,7 +441,10 @@ function sbRunQuery(main, raw, mode, scope) {
   const ref = !/^".*"$/.test(q) && parseBibleReference(q);
   if (ref) { const r = ref[0]; sbGoto(main, r.book, r.c1, r.v1); return; }
   const phrase = /^".*"$/.test(q);
-  sbSearch = { q: phrase ? q.slice(1, -1) : q, mode: phrase ? "phrase" : mode, scope, hits: null, shown: 50, book: "" };
+  // Quotes mean "exact phrase" for this search only (Nov 7, 2026): the box keeps
+  // the quotes and the dropdown keeps the person's own choice, so the next
+  // search without quotes isn't silently run as an exact phrase.
+  sbSearch = { q: phrase ? q.slice(1, -1) : q, typed: q, mode: phrase ? "phrase" : mode, picked: mode, scope, hits: null, shown: 50, book: "" };
   sbMode = "search";
   renderStudyBible(main);
 }

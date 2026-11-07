@@ -155,13 +155,51 @@ def mails():
 
 
 # ---------------------------------------------------------------- browsers
+# Which functions in the site's own code ran (Nov 7, 2026 — round 3). Every
+# browser session records call counts; close_all() adds them up here, and
+# save_coverage() writes them to $COVERAGE_DIR (if set) for coverage.py.
+COVER = {}
+
+
+def save_coverage(tag):
+    d = os.environ.get("COVERAGE_DIR")
+    if not d:
+        return
+    os.makedirs(d, exist_ok=True)
+    json.dump({u: sorted(v) for u, v in COVER.items()}, open(os.path.join(d, f"{tag}.json"), "w"))
+    try:   # and which database functions were called (needs track_functions = 'all')
+        rows = qj("select funcname, calls from pg_stat_user_functions where schemaname = 'public'")
+        json.dump({r["funcname"]: r["calls"] for r in rows}, open(os.path.join(d, f"{tag}.sql.json"), "w"))
+    except Exception as e:
+        print("sql coverage:", e)
+
+
 class Browsers:
     def __init__(self):
         self.pw = sync_playwright().start()
         self.browser = self.pw.chromium.launch()
         self.open = []
+        self.cdps = []
+
+    def _take_coverage(self):
+        for cdp in self.cdps:
+            try:
+                res = cdp.send("Profiler.takePreciseCoverage")
+            except Exception:
+                continue
+            for sc in res.get("result", []):
+                url = sc.get("url", "")
+                if "/js/" not in url or "localhost" not in url:
+                    continue
+                f = url.split("/js/")[-1].split("?")[0]
+                ran = COVER.setdefault(f, set())
+                for fn in sc.get("functions", []):
+                    if fn.get("functionName") and fn["ranges"] and fn["ranges"][0].get("count", 0) > 0:
+                        ran.add(fn["functionName"])
+        self.cdps = []
 
     def close_all(self):
+        self._take_coverage()
         for ctx in self.open:
             try:
                 ctx.close()
@@ -187,7 +225,20 @@ class Browsers:
         ctx.route(re.compile(r".*youtube\.com/iframe_api.*"), lambda r: r.fulfill(body=FAKE_YT, content_type="application/javascript"))
         ctx.route(re.compile(r".*(ytimg|youtube|youtube-nocookie)\.com.*"), lambda r: r.abort())
         ctx.route(re.compile(r".*/js/config\.js$"), lambda r: r.fulfill(body=CONFIG, content_type="application/javascript"))
+        # The background service's own buttons (test email etc.) — its server side
+        # is tested in tests/functions; here it just answers like it does.
+        ctx.route(re.compile(r".*/functions/v1/attendance-reminders.*"),
+                  lambda r: r.fulfill(body=json.dumps({"sent": 1, "delivered": 1, "publicKey": "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U"}),
+                                      content_type="application/json"))
         page = ctx.new_page()
+        if os.environ.get("COVERAGE_DIR"):
+            try:
+                cdp = ctx.new_cdp_session(page)
+                cdp.send("Profiler.enable")
+                cdp.send("Profiler.startPreciseCoverage", {"callCount": True, "detailed": False})
+                self.cdps.append(cdp)
+            except Exception:
+                pass
         tag = who.name
         page.on("pageerror", lambda e: self._err(tag, page, str(e)))
         page.on("console", lambda m: m.type == "error" and not re.search(r"Failed to load resource|ERR_FAILED|net::", m.text)
