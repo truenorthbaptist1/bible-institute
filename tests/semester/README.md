@@ -36,7 +36,7 @@ the other tests.
 
 ## First run — Nov 7, 2026
 
-616 checks. Three bugs found and fixed (commit with this file):
+About 620 checks. Three bugs found and fixed (commit with this file):
 1. Move a Class did nothing on the Manage page (its button shared the id
    `mvSave` with the Memory Verse card's Save button).
 2. Picking a weekly series' documents one at a time put every document on
