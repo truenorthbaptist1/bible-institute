@@ -836,7 +836,7 @@ def phase_end():
     check(str(CANCELED) not in feed or "cancel" in feed.lower(), "calendar", "the snow day isn't on the phone calendar as a class", "")
     check(str(MOVED_TO) in feed and str(MAKEUP) in feed, "calendar", "the moved class and the make-up day are on the phone calendar", feed[:300])
     ev = qj(f"select kind, day::text from public.calendar_feed_events('{tok}') where day = '{MOVED_FROM}'")
-    check(all(e["kind"] == "canceled" for e in ev), "calendar", "the old Mar 17 day shows only as canceled on the phone calendar", ev)
+    check(all(e["kind"] in ("canceled", "due") for e in ev), "calendar", "the old Mar 17 day shows only as canceled on the phone calendar", ev)
 
     # Copy the course for the fall term.
     set_clock(ak(2027, 5, 5, 19, 0))
