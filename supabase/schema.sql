@@ -1447,16 +1447,20 @@ begin
           c.sched_weeks, c.sched_days, c.sched_time,
           case when p_start is null then null else 'scheduled' end, p_start,
           c.attendance_on, c.attendance_weight, c.attendance_late_credit, c.location, c.meeting_url,
-          c.format, c.pace, c.playlist_id, c.class_minutes)
+          c.format, c.pace, case when c.pace = 'self' then c.playlist_id else '' end, c.class_minutes)
   returning id into v_new;
-  -- The lectures come along (re-dated automatically to the new calendar);
-  -- the new course can switch to a different playlist later.
-  insert into lessons (course_id, video_id, title, position, duration_seconds, published_at, status,
-                       from_playlist, replaces, hidden, notified_at, live_notified_at)
-  select v_new, video_id, title, position, duration_seconds, published_at, status,
-         from_playlist, replaces, hidden, now(), now()
-    from lessons where course_id = p_course and status <> 'removed';
-  if c.playlist_id <> '' then
+  -- A self-paced course's lectures ARE the course, so they come along. A
+  -- course that follows the class calendar records a new class each meeting:
+  -- last term's recordings and playlist stay behind (Nov 7, 2026), so they
+  -- never pass for this term's classes; the teacher links a new playlist.
+  if c.pace = 'self' then
+    insert into lessons (course_id, video_id, title, position, duration_seconds, published_at, status,
+                         from_playlist, replaces, hidden, notified_at, live_notified_at)
+    select v_new, video_id, title, position, duration_seconds, published_at, status,
+           from_playlist, replaces, hidden, now(), now()
+      from lessons where course_id = p_course and status <> 'removed';
+  end if;
+  if c.pace = 'self' and c.playlist_id <> '' then
     insert into playlist_sync (course_id, playlist_id, synced_at, requested_at)
     values (v_new, c.playlist_id, null, now());
   end if;

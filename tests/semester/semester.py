@@ -867,8 +867,8 @@ def phase_end():
         check(q(f"select count(*) from class_cancellations where course_id = '{new}'") == "0"
               and q(f"select count(*) from class_extra_days where course_id = '{new}'") == "0", "copy course",
               "spring's snow day, moved class and make-up day don't carry over")
-        lec = qj(f"select count(*) n, count(s.class_date) dated, min(s.class_date) first from public.lesson_schedule('{new}') s")
-        log("Fall copy's lectures: " + json.dumps(lec))
+        lec = qj(f"select (select count(*) from lessons where course_id = '{new}') n, playlist_id from courses where id = '{new}'")
+        check(lec[0]["n"] == 0 and lec[0]["playlist_id"] == "", "copy course", "spring's recordings and playlist stay behind (the fall class records anew)", lec)
         STATE["fall_lectures"] = lec
 
     # Archive the spring course; the transcript stays.

@@ -118,6 +118,10 @@ check("…but an Admin can", True,
       f"update public.profiles set status = 'active' where id = '{stu3}'; select status from public.profiles where id = '{stu3}'", church, expect_out="active")
 
 # --- courses & enrollment ------------------------------------------------------
+# The starter catalogue's "Genesis to Revelation" (c8) is the course that hasn't
+# started yet. Its real start date (Nov 3, 2026) has passed, so keep it a month
+# ahead of whatever today is, or these checks would go stale.
+admin("update public.courses set sched_mode = 'scheduled', sched_start = public.local_today() + 30 where id = 'c8'")
 check("Students can browse the catalogue", True, "select count(*) from public.courses", stu3, expect_out=8)
 check("Students cannot create courses", False, "insert into public.courses (title) values ('Hack')", stu1)
 check("Students cannot edit courses (0 rows)", True,
@@ -978,8 +982,8 @@ check("Students can't read playlist status", True, "select count(*) from public.
 
 # copying a course keeps its lectures
 newc = check("Copy the course for a new term", True, "select public.copy_course('hy', 'Hybrid Hermeneutics II', public.local_today() + 60)", phil)
-check("…its playlist and lectures come along", True,
-      f"select c.playlist_id || ',' || c.format || ',' || (select count(*) from public.lessons l where l.course_id = c.id) from public.courses c where c.id = '{newc}'", phil, expect_out="PLabc123,hybrid,4")
+check("…last term's recordings and playlist stay behind (a class-calendar course records anew)", True,
+      f"select '[' || c.playlist_id || '],' || c.format || ',' || (select count(*) from public.lessons l where l.course_id = c.id) from public.courses c where c.id = '{newc}'", phil, expect_out="[],hybrid,0")
 
 # self-paced
 admin(f"""insert into public.courses (id, title, faculty_id, sched_mode, sched_start, sched_weeks, sched_days, sched_time, attendance_on, format, pace)

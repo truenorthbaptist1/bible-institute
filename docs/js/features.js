@@ -183,6 +183,7 @@ function openCancelClassModal(c, presetDate, after) {
         </select>
         <label for="ccReason">Reason <span class="field-hint" style="display:inline;margin:0;">(shown to students)</span></label>
         <input type="text" id="ccReason" maxlength="200" placeholder="e.g. Roads are closed by snow — stay safe.">
+        <p class="field-hint" id="ccTaken" style="margin:8px 0 0;" hidden>Attendance was already taken that day. Once it's canceled, that day won't count for or against anyone.</p>
         <div class="form-actions">
           <button class="btn btn-danger" id="ccConfirm">Cancel Class &amp; Notify Students</button>
           <button class="btn btn-ghost" id="ccClose">Never Mind</button>
@@ -190,6 +191,9 @@ function openCancelClassModal(c, presetDate, after) {
       </div>
     </div>`;
   document.getElementById("ccClose").addEventListener("click", closeModal);
+  const taken = () => { const d = document.getElementById("ccDate").value; document.getElementById("ccTaken").hidden = !((c.attDays || {})[d] || (c.autoDays || {})[d]); };
+  document.getElementById("ccDate").addEventListener("change", taken);
+  taken();
   document.getElementById("ccConfirm").addEventListener("click", () => {
     const d = document.getElementById("ccDate").value;
     const reason = document.getElementById("ccReason").value.trim();
@@ -333,6 +337,7 @@ function openCopyCourseModal(c) {
         <h2 id="cpTitle" style="font-size:1.15rem;margin:0 0 6px;">Copy for a New Term</h2>
         <p style="margin:0 0 6px;color:var(--muted-foreground);font-size:.88rem;">Makes a new course with the same description, credits, schedule pattern, attendance settings, location, files, and assignments. Due dates move along with the new start date.</p>
         <p style="margin:0 0 6px;color:var(--muted-foreground);font-size:.88rem;">Not copied: students, turned-in work, grades, attendance, messages, discussion, or announcements. You'll be its teacher.</p>
+        ${c.format !== "in_person" || c.playlistId ? `<p style="margin:0 0 6px;color:var(--muted-foreground);font-size:.88rem;">${c.pace === "self" ? "Its lecture videos and YouTube playlist come along." : "Last term's class recordings and YouTube playlist stay with this course — make a new playlist for the new term and link it on the new course's Manage page."}</p>` : ""}
         <label for="cpName">New course name</label>
         <input type="text" id="cpName" value="${esc(c.title)}">
         <label for="cpStart">New start date</label>

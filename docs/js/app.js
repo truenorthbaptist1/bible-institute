@@ -3323,6 +3323,7 @@ function renderManage(main) {
         <div style="display:flex;gap:8px;margin-top:10px;flex-shrink:0;">
           <button class="btn btn-outline-gold btn-sm" id="mgEditCourse">Edit Course Details</button>
           ${role === "faculty" ? `<button class="btn btn-ghost btn-sm" id="mgCopyCourse">${icon("copy")} Copy for a New Term</button>` : ""}
+          ${isAdmin() && !iTeach(c) && c.studentIds.length ? `<button class="btn btn-ghost btn-sm" id="mgRecordGrades">${icon("scroll")} Record Final Grades</button>` : ""}
           ${c.archived && isAdmin() ? `<button class="btn btn-danger btn-sm" id="mgDeleteCourse">Delete Course</button>` : ""}
         </div>
       </div>
@@ -3438,6 +3439,10 @@ function renderManage(main) {
   document.getElementById("backLink").addEventListener("click", () => { view = "catalogue"; renderNav(); renderMain(); });
   document.getElementById("mgAddAssignment").addEventListener("click", () => openAddAssignmentModal(c));
   document.getElementById("mgEditCourse").addEventListener("click", () => openEditCourseModal(c));
+  // An Admin finishing a term for a teacher who can't (Nov 7, 2026): the grade
+  // sheet is the teacher's, so this is their way to the Record Final Grades form.
+  const mgRecBtn = document.getElementById("mgRecordGrades");
+  if (mgRecBtn) mgRecBtn.addEventListener("click", () => openRecordGradesModal(c, () => renderMain()));
   const mgDeleteBtn = document.getElementById("mgDeleteCourse");
   if (mgDeleteBtn) mgDeleteBtn.addEventListener("click", () => openDeleteCourseModal(c));
 
@@ -4187,6 +4192,8 @@ function studentAttendance(c, studentId) {
   Object.keys(allDays).sort().forEach((ds) => {
     const day = allDays[ds];
     if (!day.held) return;
+    // A day canceled after attendance was taken doesn't count (Nov 7, 2026).
+    if (typeof isCanceled === "function" && isCanceled(c, ds)) return;
     const st = (c.attMarks[ds] || {})[studentId];
     if (!st) return; // wasn't on the roster that day
     counts[st]++;

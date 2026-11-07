@@ -351,3 +351,12 @@ def restore(name):
             shutil.copytree(src, dst, dirs_exist_ok=True)
         elif os.path.exists(src):
             shutil.copy(src, dst)
+
+
+def phase_schema():
+    """Re-runs supabase/schema.sql on the restored database (it's safe to re-run),
+    so a saved snapshot picks up today's database code."""
+    p = subprocess.run(["psql", "-h", "/var/tmp/pgtest", "-p", "5499", "-U", "postgres", "-d", "t", "-q", "-v", "ON_ERROR_STOP=1",
+                        "-f", os.path.join(HERE, "..", "..", "supabase", "schema.sql")], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr[-800:])

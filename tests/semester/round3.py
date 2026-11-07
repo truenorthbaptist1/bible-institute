@@ -855,10 +855,9 @@ def phase_extras():
     q(f"insert into enrollments (course_id, student_id) values ('{cid[GEN]}', '{P['amber'].id}') on conflict do nothing")
     q(f"update courses set archived = false where id = '{cid[GEN]}'")
     site(a, "await loadAll();")
-    go(a, "catalogue")
-    a.locator(f"[data-archive-toggle='{cid[GEN]}']").click(); a.wait_for_timeout(500); confirm(a)
-    if check(a.locator("#arRecord").count() == 1, "final grades", "an Admin archiving a course is offered Record Final Grades"):
-        a.click("#arRecord"); a.wait_for_selector("#rgSave", timeout=15000)
+    go(a, "manage", cid[GEN])
+    if check(a.locator("#mgRecordGrades").count() == 1, "final grades", "an Admin who doesn't teach the course has Record Final Grades on its page"):
+        a.click("#mgRecordGrades"); a.wait_for_selector("#rgSave", timeout=15000)
         rows = a.locator("[data-rg-student]").count()
         check(rows >= 1, "final grades", "the Admin's form lists the class (grades come from the database)", rows)
         a.click("#rgSave"); settle(a)
