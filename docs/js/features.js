@@ -395,18 +395,25 @@ function termSortKey(e) {
   const y = /(\d{4})/.exec(e.term || "");
   return y ? `${y[1]}-00-00` : "0000";
 }
+// The semester a course starts in: "Spring 2024 - Spring 2025" → "Spring 2024".
+function startTerm(term) {
+  const m = /(winter|spring|summer|fall|autumn)\D*?(\d{4})/i.exec(term || "");
+  return m ? m[1][0].toUpperCase() + m[1].slice(1).toLowerCase() + " " + m[2] : (term || "");
+}
+// One heading per semester. A course that ran longer goes under the semester
+// it started in, with its full span shown under the title (termSpan).
 function groupByTerm(entries) {
   const groups = [];
   const byTerm = new Map();
-  // Same starting term: a single semester comes before a course that runs longer ("Spring 2024 - Spring 2025").
   [...entries].sort((a, b) => termSortKey(a).localeCompare(termSortKey(b)) || (a.term || "").length - (b.term || "").length
-    || (a.term || "").localeCompare(b.term || "") || a.courseTitle.localeCompare(b.courseTitle)).forEach((e) => {
-    const k = e.term || "Courses";
+    || a.courseTitle.localeCompare(b.courseTitle)).forEach((e) => {
+    const k = startTerm(e.term) || "Courses";
     if (!byTerm.has(k)) { const g = { term: k, items: [] }; byTerm.set(k, g); groups.push(g); }
     byTerm.get(k).items.push(e);
   });
   return groups;
 }
+function termSpan(e, g) { return e.term && e.term !== g.term ? e.term.replace(/\s*-\s*/, " – ") : ""; }
 // Who this transcript is for.
 function transcriptPerson(ref) {
   const entries = transcripts.filter((t) => t.studentRef === ref);
@@ -471,7 +478,7 @@ function renderTranscript(main) {
           <thead><tr><th>Course</th><th>Instructor</th><th class="num">Credits</th><th class="num">Score</th><th class="num">Grade</th>${canEdit ? "<th></th>" : ""}</tr></thead>
           <tbody>
           ${g.items.map((e) => `<tr>
-            <td><strong>${esc(e.courseTitle)}</strong>${e.level ? `<div class="ts-small">${esc(e.level)} Level</div>` : ""}${e.note ? `<div class="ts-small">${esc(e.note)}</div>` : ""}</td>
+            <td><strong>${esc(e.courseTitle)}</strong>${e.level ? `<div class="ts-small">${esc(e.level)} Level</div>` : ""}${termSpan(e, g) ? `<div class="ts-small">${esc(termSpan(e, g))}</div>` : ""}${e.note ? `<div class="ts-small">${esc(e.note)}</div>` : ""}</td>
             <td>${esc(e.teacherName || "—")}</td>
             <td class="num">${fmtCredits(e.credits)}</td>
             <td class="num">${e.percent === null ? "—" : Math.round(e.percent * 10) / 10 + "%"}</td>
@@ -778,7 +785,7 @@ async function downloadTranscriptPdf(refs) {
       cols.forEach((c) => doc.text(c.t, c.x, y, c.a ? { align: c.a } : undefined)); y += 12;
       g.items.forEach((e) => {
         const titleLines = doc.splitTextToSize(pdfText(e.courseTitle), cols[0].w);
-        const sub = [e.level ? `${e.level} Level` : "", e.note].filter(Boolean).join(" - ");
+        const sub = [e.level ? `${e.level} Level` : "", termSpan(e, g).replace("–", "-"), e.note].filter(Boolean).join(" - ");
         const subLines = sub ? doc.splitTextToSize(pdfText(sub), cols[0].w) : [];
         const rowH = 12 * titleLines.length + 10 * subLines.length + 8;
         ensure(rowH + 4);
