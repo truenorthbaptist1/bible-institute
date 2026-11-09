@@ -385,10 +385,12 @@ function transcriptSummary(entries) {
   });
   return { attempted, earned, gpa: gpaCredits ? Math.round((points / gpaCredits) * 100) / 100 : null };
 }
-// Sort by date; for past courses without dates, by the term's name ("Spring 2024").
+// Sort by the term a course starts in ("Spring 2024", or the first half of
+// "Spring 2024 - Spring 2025"), so dated and undated courses of the same term
+// stay together; by date only when the term doesn't name a season and year.
 function termSortKey(e) {
-  if (e.startDate || e.endDate) return e.startDate || e.endDate;
   const m = /(winter|spring|summer|fall|autumn)\D*(\d{4})/i.exec(e.term || "");
+  if (!m && (e.startDate || e.endDate)) return e.startDate || e.endDate;
   if (m) return `${m[2]}-${{ winter: "01", spring: "02", summer: "06", fall: "09", autumn: "09" }[m[1].toLowerCase()]}-00`;
   const y = /(\d{4})/.exec(e.term || "");
   return y ? `${y[1]}-00-00` : "0000";
@@ -396,7 +398,9 @@ function termSortKey(e) {
 function groupByTerm(entries) {
   const groups = [];
   const byTerm = new Map();
-  [...entries].sort((a, b) => termSortKey(a).localeCompare(termSortKey(b)) || a.courseTitle.localeCompare(b.courseTitle)).forEach((e) => {
+  // Same starting term: a single semester comes before a course that runs longer ("Spring 2024 - Spring 2025").
+  [...entries].sort((a, b) => termSortKey(a).localeCompare(termSortKey(b)) || (a.term || "").length - (b.term || "").length
+    || (a.term || "").localeCompare(b.term || "") || a.courseTitle.localeCompare(b.courseTitle)).forEach((e) => {
     const k = e.term || "Courses";
     if (!byTerm.has(k)) { const g = { term: k, items: [] }; byTerm.set(k, g); groups.push(g); }
     byTerm.get(k).items.push(e);
