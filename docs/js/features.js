@@ -1097,7 +1097,7 @@ function openLinkPastModal(p) {
 // ---------------------------------------------------------------------------
 // Backups & service health (Settings, Admins only)
 // ---------------------------------------------------------------------------
-const STATUS_LABEL_TEXT = { email: "Email notifications", backup: "Nightly backups", backup_email: "Weekly backup email" };
+const STATUS_LABEL_TEXT = { email: "Email notifications", backup: "Nightly backups" };
 async function renderBackupsCard() {
   const wrap = document.getElementById("backupsCard");
   if (!wrap) return;
@@ -1114,7 +1114,6 @@ async function renderBackupsCard() {
   wrap.innerHTML = `
     <div class="health-list">
       <div class="health-row ${last ? "ok" : "wait"}"><span class="health-dot"></span><div><strong>Nightly backup</strong><div class="field-hint" style="margin:2px 0 0;">${last ? `Last taken ${esc(when(last.taken_at))} · the last ${nightly.length} night${nightly.length === 1 ? " is" : "s are"} kept here` : "The first one is taken tonight at 2 AM."}</div></div></div>
-      <div class="health-row ${st("backup_email") ? (st("backup_email").ok ? "ok" : "bad") : "wait"}"><span class="health-dot"></span><div><strong>Weekly copy emailed to truenorthbaptist1@gmail.com</strong><div class="field-hint" style="margin:2px 0 0;">${st("backup_email") ? esc(st("backup_email").ok ? "Last sent " + when(st("backup_email").updated_at) : st("backup_email").detail) : "Sent Sunday mornings once email is set up."}</div></div></div>
       <div class="health-row ${emailSt ? (emailSt.ok ? "ok" : "bad") : "wait"}"><span class="health-dot"></span><div><strong>Email notifications</strong><div class="field-hint" style="margin:2px 0 0;">${emailSt ? (emailSt.ok ? "Working · " + esc(when(emailSt.updated_at)) : esc(emailSt.detail)) : "Not used yet."}</div></div></div>
     </div>
     <div class="form-actions" style="flex-wrap:wrap;">

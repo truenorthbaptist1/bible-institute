@@ -1874,21 +1874,16 @@ end $$;
 -- 3 AM, not only on Sunday. After a failed try it waits an hour before
 -- trying again, or 24 hours if Gmail said the daily sending limit was
 -- reached (it used to retry every minute, which kept Gmail blocked).
+-- Nov 9, 2026: the weekly emailed copy was turned off (it ran into Gmail's
+-- daily sending limit). Nightly backups are still kept in the site and can be
+-- downloaded from Settings → Backups. This now never returns a backup, so
+-- attendance-reminders sends no backup email.
 create or replace function public.backup_to_email(p_now timestamptz default now())
 returns table (id bigint, taken_at timestamptz, data jsonb)
 language sql stable security definer set search_path = public as $$
-  select b.id, b.taken_at, b.data from site_backups b
-   where b.kind = 'nightly'
-     and (p_now at time zone 'America/Anchorage')::time >= time '03:00'
-     and (extract(dow from (p_now at time zone 'America/Anchorage')) = 0
-          or not exists (select 1 from site_backups x where x.emailed_at > p_now - interval '7 days'))
-     and not exists (select 1 from site_backups x where x.emailed_at > p_now - interval '6 days')
-     and not exists (select 1 from service_status s
-                      where s.key = 'backup_email' and not s.ok
-                        and s.updated_at > p_now - case when s.detail ~* '5\.4\.5|sending limit|quota exceeded'
-                                                        then interval '24 hours' else interval '1 hour' end)
-   order by b.taken_at desc limit 1
+  select b.id, b.taken_at, b.data from site_backups b where false
 $$;
+delete from public.service_status where key = 'backup_email';
 create or replace function public.mark_backup_emailed(p_id bigint, p_at timestamptz default now()) returns void
 language sql security definer set search_path = public as $$
   update site_backups set emailed_at = p_at where id = p_id

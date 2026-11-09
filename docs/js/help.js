@@ -201,7 +201,7 @@ const HELP_TOPICS = [
     ["Deactivate or delete an account", "<strong>Make Inactive</strong> signs them out and blocks sign-in but keeps everything; <strong>Reactivate</strong> brings them back. <strong>Delete Permanently</strong> removes the account (their transcript is kept).", "delete remove deactivate inactive"],
     ["Transcripts", "The <strong>Transcripts</strong> tile lists every student, including former ones. Open one to review, correct, <strong>+ Add a Past Course</strong>, or download a PDF. You can also download all transcripts at once.", "transcripts pdf"],
     ["Past grades from before the site", "Transcripts → <strong>Past Records</strong>. Import old grade sheets as a CSV file (download the template to see the columns). Each record waits under the student's email and goes onto their transcript by itself once they sign up, confirm their email, and are approved. If someone uses a different email, use <strong>Link to Account</strong>.", "past records import csv old grades"],
-    ["Backups", "<strong>Settings → Backups</strong> shows the nightly backup (2 AM) and the weekly copy emailed to the church Gmail on Sundays, and lets you download a backup any time. <strong>Send Me a Test Email</strong> checks that site email works.", "backup restore download"],
+    ["Backups", "<strong>Settings → Backups</strong> shows the nightly backup (2 AM) and lets you download a backup any time. Keep downloaded copies somewhere safe, like the church Google Drive. <strong>Send Me a Test Email</strong> checks that site email works.", "backup restore download"],
   ]},
 ];
 
