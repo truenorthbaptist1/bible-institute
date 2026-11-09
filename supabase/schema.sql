@@ -522,7 +522,7 @@ create index if not exists idx_transcripts_student on public.transcript_entries(
 -- (added Oct 8, 2026), and scores just over 100 from extra credit.
 alter table public.transcript_entries drop constraint if exists transcript_entries_grade_check;
 alter table public.transcript_entries add constraint transcript_entries_grade_check check (grade in
-  ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU'));
+  ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU','NR'));
 alter table public.transcript_entries drop constraint if exists transcript_entries_percent_check;
 alter table public.transcript_entries add constraint transcript_entries_percent_check
   check (percent is null or (percent >= 0 and percent <= 110));
@@ -564,6 +564,11 @@ create index if not exists idx_past_records_email on public.past_records(email) 
 -- is marked awaiting_signup; published_at says when it was put on.
 alter table public.transcript_entries add column if not exists awaiting_signup boolean not null default false;
 alter table public.past_records add column if not exists published_at timestamptz;
+-- NR = grade not reported by the instructor (added Nov 9, 2026). Like I, W
+-- and AU it is shown on the transcript but not counted in the GPA.
+alter table public.past_records drop constraint if exists past_records_grade_check;
+alter table public.past_records add constraint past_records_grade_check check (grade in
+  ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU','NR'));
 
 -- Backups: a snapshot of every table, taken nightly (and whenever an Admin
 -- downloads one). Postgres compresses these automatically. Not readable
@@ -1688,8 +1693,8 @@ begin
     if v_status <> 'problem' then
       if v_name = '' then v_status := 'problem'; v_msg := 'Missing the student''s name.';
       elsif v_course = '' then v_status := 'problem'; v_msg := 'Missing the course.';
-      elsif v_grade not in ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU') then
-        v_status := 'problem'; v_msg := 'Grade must be a letter (A+ to F), P, I, W, or AU.';
+      elsif v_grade not in ('A+','A','A-','B+','B','B-','C+','C','C-','D+','D','D-','F','P','I','W','AU','NR') then
+        v_status := 'problem'; v_msg := 'Grade must be a letter (A+ to F), P, I, W, AU, or NR.';
       elsif v_email <> '' and v_email !~ '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$' then
         v_status := 'problem'; v_msg := 'That email doesn''t look right.';
       elsif v_pct is not null and (v_pct < 0 or v_pct > 110) then v_status := 'problem'; v_msg := 'Score must be 0 to 110.';

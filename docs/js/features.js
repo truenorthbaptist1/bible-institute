@@ -369,10 +369,10 @@ function openCopyCourseModal(c) {
 const GRADE_POINTS = { "A+": 4, A: 4, "A-": 3.7, "B+": 3.3, B: 3, "B-": 2.7, "C+": 2.3, C: 2, "C-": 1.7, "D+": 1.3, D: 1, "D-": 0.7, F: 0 };
 const GRADE_CHOICES = [
   ...Object.keys(GRADE_POINTS).map((k) => [k, k]),
-  ["P", "P — Pass"], ["I", "I — Incomplete"], ["W", "W — Withdrew"], ["AU", "AU — Audit"],
+  ["P", "P — Pass"], ["I", "I — Incomplete"], ["W", "W — Withdrew"], ["AU", "AU — Audit"], ["NR", "NR — Not reported by instructor"],
 ];
 function gradeEarnsCredit(g) { return g === "P" || (g in GRADE_POINTS && g !== "F"); }
-const GRADE_MEANING = { P: "Pass", I: "Incomplete", W: "Withdrew", AU: "Audit" };
+const GRADE_MEANING = { P: "Pass", I: "Incomplete", W: "Withdrew", AU: "Audit", NR: "Not reported by instructor" };
 let transcriptStudentRef = null; // Admin/teacher viewing someone else's; null = mine
 let transcriptsQuery = "";
 
@@ -479,7 +479,7 @@ function renderTranscript(main) {
       ${inProgress.length ? `
         <div class="ts-term">In progress</div>
         <ul class="ts-progress">${inProgress.map((c) => `<li>${esc(c.title)} <span class="ts-small">· ${c.credits} credit${c.credits === 1 ? "" : "s"}</span></li>`).join("")}</ul>` : ""}
-      <div class="ts-foot">Grading scale: A+ 97–100 · A 94–96 · A− 90–93 · B+ 87–89 · B 84–86 · B− 80–83 · C+ 77–79 · C 74–76 · C− 70–73 · F below 70 · P Pass · I Incomplete · W Withdrew · AU Audit. GPA on a 4.0 scale (A+/A 4.0, A− 3.7, B+ 3.3, B 3.0, B− 2.7, C+ 2.3, C 2.0, C− 1.7, F 0); P, I, W, and AU don't count toward it. Some earlier courses also used D grades (D+ 1.3, D 1.0, D− 0.7).</div>
+      <div class="ts-foot">Grading scale: A+ 97–100 · A 94–96 · A− 90–93 · B+ 87–89 · B 84–86 · B− 80–83 · C+ 77–79 · C 74–76 · C− 70–73 · F below 70 · P Pass · I Incomplete · W Withdrew · AU Audit · NR Grade not reported by instructor. GPA on a 4.0 scale (A+/A 4.0, A− 3.7, B+ 3.3, B 3.0, B− 2.7, C+ 2.3, C 2.0, C− 1.7, F 0); P, I, W, AU, and NR don't count toward it. Some earlier courses also used D grades (D+ 1.3, D 1.0, D− 0.7).</div>
     </div>`;
   document.getElementById("backLink").addEventListener("click", () => {
     if (viewingOther) { transcriptStudentRef = null; view = "transcripts"; } else view = role === "student" ? "grades" : "home";
@@ -794,7 +794,7 @@ async function downloadTranscriptPdf(refs) {
     });
     ensure(40);
     doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(...MUTED);
-    doc.text(doc.splitTextToSize("Grading scale: A+ 97-100, A 94-96, A- 90-93, B+ 87-89, B 84-86, B- 80-83, C+ 77-79, C 74-76, C- 70-73, F below 70. P Pass, I Incomplete, W Withdrew, AU Audit. Grade point average on a 4.0 scale (A+/A 4.0, A- 3.7, B+ 3.3, B 3.0, B- 2.7, C+ 2.3, C 2.0, C- 1.7, F 0; earlier D grades D+ 1.3, D 1.0, D- 0.7); P, I, W, and AU are not included.", W - 2 * M), M, y + 4);
+    doc.text(doc.splitTextToSize("Grading scale: A+ 97-100, A 94-96, A- 90-93, B+ 87-89, B 84-86, B- 80-83, C+ 77-79, C 74-76, C- 70-73, F below 70. P Pass, I Incomplete, W Withdrew, AU Audit, NR Grade not reported by instructor. Grade point average on a 4.0 scale (A+/A 4.0, A- 3.7, B+ 3.3, B 3.0, B- 2.7, C+ 2.3, C 2.0, C- 1.7, F 0; earlier D grades D+ 1.3, D 1.0, D- 0.7); P, I, W, AU, and NR are not included.", W - 2 * M), M, y + 4);
     footer(pageNo);
   });
   const one = refs.length === 1 ? transcriptPerson(refs[0]).name : "All Students";
