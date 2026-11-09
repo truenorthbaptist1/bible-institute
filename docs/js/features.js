@@ -452,6 +452,7 @@ function renderTranscript(main) {
     <div class="form-actions" style="margin:0 0 16px;flex-wrap:wrap;">
       <button class="btn btn-gold" id="trPdf">${icon("download")} Download PDF</button>
       ${canEdit && !p.former && !p.notJoined ? `<button class="btn btn-ghost" id="trAdd">+ Add a Past Course</button>` : ""}
+      ${canEdit && viewingOther && p.entries.length ? `<button class="btn btn-danger" id="trRemove" style="margin-left:auto;">Remove from Transcripts</button>` : ""}
     </div>
     <div class="transcript-sheet">
       <div class="ts-head">
@@ -499,6 +500,17 @@ function renderTranscript(main) {
   document.getElementById("trPdf").addEventListener("click", () => downloadTranscriptPdf([ref]));
   const add = document.getElementById("trAdd");
   if (add) add.addEventListener("click", () => openTranscriptEntryModal(null, p));
+  // Admins: drop someone the Institute isn't keeping a record of (Nov 9, 2026).
+  const rm = document.getElementById("trRemove");
+  if (rm) rm.addEventListener("click", async () => {
+    const ok = await askConfirm({
+      title: `Remove ${p.name} from Transcripts?`,
+      text: `This permanently deletes all ${p.entries.length} course${p.entries.length === 1 ? "" : "s"} on ${p.name}'s transcript, and the past records they came from. It can't be undone.${p.user ? "\n\nTheir account isn't deleted, so they'll still be listed with no courses. To remove the account too, use Settings." : ""}`,
+      ok: "Remove", danger: true,
+    });
+    if (!ok) return;
+    run(async () => { await DB.deleteStudentRecord(ref); transcriptStudentRef = null; view = "transcripts"; }, null, { success: `${p.name} was removed from Transcripts.` });
+  });
   main.querySelectorAll("[data-edit-entry]").forEach((b) => b.addEventListener("click", () => openTranscriptEntryModal(transcripts.find((t) => t.id === b.dataset.editEntry), p)));
 }
 function fmtCredits(n) { return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10); }
@@ -510,7 +522,7 @@ function renderTranscripts(main) {
   if (isAdmin()) users.filter((u) => u.role === "student" && u.status !== "pending" && !refs.has(u.id)).forEach((u) => refs.set(u.id, transcriptPerson(u.id)));
   const q = transcriptsQuery.trim().toLowerCase();
   const people = [...refs.values()].filter((p) => !q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q))
-    .sort((a, b) => (a.former - b.former) || lastFirst(a.name).localeCompare(lastFirst(b.name)));
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })); // by first name (Nov 9)
   main.innerHTML = `
     <button class="back-link" id="backLink">&larr; Back to Dashboard</button>
     <div class="page-header">

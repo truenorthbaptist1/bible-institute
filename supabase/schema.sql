@@ -1775,6 +1775,27 @@ begin
   delete from past_records where id = p_id;
 end $$;
 
+-- Removes everything on one person's transcript (Nov 9, 2026), for students
+-- the Institute isn't keeping a record of. The past records behind those
+-- courses, and any still waiting for the same person, go too, so they aren't
+-- put back. An account, if any, is left alone. Returns the courses removed.
+create or replace function public.delete_student_record(p_ref uuid) returns int
+language plpgsql security definer set search_path = public as $$
+declare v_n int;
+begin
+  if not public.is_super_admin() then raise exception 'Only an Admin can remove a student''s record.'; end if;
+  if p_ref is null then raise exception 'No student given.'; end if;
+  delete from past_records
+   where transcript_id in (select id from transcript_entries where student_ref = p_ref)
+      or claimed_by = p_ref
+      or (claimed_at is null and public.past_person_ref(email, student_name) = p_ref);
+  delete from transcript_entries where student_ref = p_ref;
+  get diagnostics v_n = row_count;
+  return v_n;
+end $$;
+revoke execute on function public.delete_student_record(uuid) from public, anon;
+grant execute on function public.delete_student_record(uuid) to authenticated;
+
 -- Accounts made before the site tracked email confirmation (early Oct
 -- 2026) have no email_verified_at even though Supabase confirmed them. Fill
 -- it in from Supabase's own record; that also hands them any past records

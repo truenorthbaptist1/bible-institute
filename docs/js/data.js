@@ -957,6 +957,10 @@ const DB = {
   async linkPastRecords(ids, profileId) {
     return must(await sb.rpc("link_past_records", { p_ids: ids, p_profile: profileId }));
   },
+  // Nov 9: everything on one person's transcript, and the past records behind it.
+  async deleteStudentRecord(ref) {
+    return must(await sb.rpc("delete_student_record", { p_ref: ref }));
+  },
   async deletePastRecord(id) {
     must(await sb.rpc("delete_past_record", { p_id: id }));
   },
