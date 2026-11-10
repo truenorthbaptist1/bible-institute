@@ -48,6 +48,8 @@ let courses = [];
 let users = [];
 let userTab = "active";
 let userSort = "name";
+let userQuery = ""; // Settings user search (Nov 9)
+const userGroupsOpen = new Set(); // which level sections are open in Settings
 
 const STATUS_LABEL = {
   not_started: ["Not started", "pill-gray"],
@@ -5524,6 +5526,7 @@ function renderSettings(main) {
           <option value="role">Sort: Role</option>
         </select>
       </div>
+      <input type="search" id="userSearch" placeholder="Search by name or email" value="${esc(userQuery)}" style="margin:10px 0 4px;">
       <div id="userListWrap" style="margin-top:6px;"></div>
     </div>
     <p style="color:var(--muted-foreground);font-size:.85rem;">New sign-ups wait under <strong>Waiting for Approval</strong> until Faculty or an Admin approves them (Admins get a bell notification). Approved accounts start as students.
@@ -5540,6 +5543,7 @@ function renderSettings(main) {
   });
   document.getElementById("sortSelect").value = userSort;
   document.getElementById("sortSelect").addEventListener("change", (e) => { userSort = e.target.value; renderUserList(); });
+  document.getElementById("userSearch").addEventListener("input", (e) => { userQuery = e.target.value; renderUserList(); });
 
   renderUserList();
 }
@@ -5588,16 +5592,17 @@ function renderUserList() {
     wrap.querySelectorAll("[data-delete]").forEach((btn) => btn.addEventListener("click", () => openDeleteUserModal(btn.dataset.delete)));
     return;
   }
-  const list = sortedUsers(users.filter((u) => u.status === userTab));
+  const q = userQuery.trim().toLowerCase();
+  const list = sortedUsers(users.filter((u) => u.status === userTab && (!q || u.name.toLowerCase().includes(q) || (u.email || "").toLowerCase().includes(q))));
 
   if (list.length === 0) {
-    wrap.innerHTML = `<div class="empty-state"><p>No ${userTab} users.</p></div>`;
+    wrap.innerHTML = `<div class="empty-state"><p>${q ? "No one matches that search." : `No ${userTab} users.`}</p></div>`;
     return;
   }
 
-  wrap.innerHTML = list
-    .map(
-      (u) => `
+  // Collapsible sections by level (Nov 9, 2026) so the list doesn't get long.
+  // Closed unless opened; a search opens every section with a match.
+  const row = (u) => `
     <div class="user-row" data-user="${u.id}">
       <div class="user-info user-info-avatar">
         <button class="avatar-btn" data-person="${u.id}" aria-label="View ${esc(u.name)}'s profile">${avatarHtml(u, 40)}</button>
@@ -5622,9 +5627,21 @@ function renderUserList() {
         }
         ${isAdmin() ? `<button class="btn btn-danger btn-sm" data-delete="${u.id}">Delete</button>` : ""}
       </div>
-    </div>`
-    )
-    .join("");
+    </div>`;
+  wrap.innerHTML = [["admin", "Admins"], ["faculty", "Faculty"], ["student", "Students"]].map(([k, label]) => {
+    const inGroup = list.filter((u) => userLevel(u) === k);
+    if (!inGroup.length) return "";
+    const open = q || userGroupsOpen.has(userTab + ":" + k);
+    return `<details class="docs-group user-group" data-group="${k}" ${open ? "open" : ""}>
+      <summary><span class="docs-group-name">${label}</span><span class="docs-count">${inGroup.length}</span></summary>
+      <div style="padding:0 14px;border-top:1px solid var(--border);">${inGroup.map(row).join("")}</div>
+    </details>`;
+  }).join("");
+  wrap.querySelectorAll("details.user-group").forEach((d) => d.addEventListener("toggle", () => {
+    if (q) return;
+    const key = userTab + ":" + d.dataset.group;
+    if (d.open) userGroupsOpen.add(key); else userGroupsOpen.delete(key);
+  }));
 
   wrap.querySelectorAll("[data-role-toggle]").forEach((toggle) => {
     toggle.querySelectorAll("button").forEach((btn) => {
