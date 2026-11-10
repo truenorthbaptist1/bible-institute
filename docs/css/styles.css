@@ -1155,7 +1155,7 @@ a.where-link:hover { text-decoration: underline; }
 /* Search boxes outside the Study Bible look like the other fields (the
    Transcripts and Past Records searches had been showing the browser's
    plain box). A list-style picker (select with size) gets soft corners. */
-#trSearch, #prSearch, #lpSearch { width: 100%; padding: 11px 16px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.95rem; font-family: inherit; background: var(--surface); color: var(--foreground); }
+#trSearch, #prSearch, #lpSearch, #userSearch { width: 100%; padding: 11px 16px; border: 1px solid var(--border); border-radius: 999px; font-size: 0.95rem; font-family: inherit; background: var(--surface); color: var(--foreground); }
 select[size] { border-radius: 14px; padding: 6px 8px; }
 select[size] option { padding: 6px 8px; border-radius: 8px; }
 

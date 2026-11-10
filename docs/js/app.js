@@ -5526,7 +5526,7 @@ function renderSettings(main) {
           <option value="role">Sort: Role</option>
         </select>
       </div>
-      <input type="search" id="userSearch" placeholder="Search by name or email" value="${esc(userQuery)}" style="margin:10px 0 4px;">
+      <input type="search" id="userSearch" placeholder="Search by name or email" value="${esc(userQuery)}" style="margin:12px 0 4px;">
       <div id="userListWrap" style="margin-top:6px;"></div>
     </div>
     <p style="color:var(--muted-foreground);font-size:.85rem;">New sign-ups wait under <strong>Waiting for Approval</strong> until Faculty or an Admin approves them (Admins get a bell notification). Approved accounts start as students.
